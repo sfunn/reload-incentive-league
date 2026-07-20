@@ -86,6 +86,19 @@ const INITIAL_CONSULTANTS = [{
   name: "Natasha Barnard",
   team: "josh"
 }];
+
+// Fixed weekly metric options. The Atlas field name each maps to is kept in
+// brackets so this is ready to line up once the Atlas API feed is connected.
+const METRIC_CVS_OUT = "CV's Out (Candidates presented)";
+const METRIC_INTERVIEWS = "Interviews (Candidates IV stage)";
+const METRIC_RATIO = "CV-to-interview ratio (presented-to-interviewed ratio)";
+const METRIC_OPTIONS = [METRIC_CVS_OUT, METRIC_INTERVIEWS, METRIC_RATIO];
+const METRIC_SHORT = {
+  [METRIC_CVS_OUT]: "CVs out",
+  [METRIC_INTERVIEWS]: "interviews",
+  [METRIC_RATIO]: "ratio"
+};
+const CVS_OUT_RATIO_MINIMUM = 0.65;
 const RANK_POINTS = [5, 4, 3, 2, 1];
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -111,12 +124,17 @@ function monthLabel(monthKey) {
 function computeWeekRows(week, consultants) {
   const entered = consultants.filter(c => week.rows[c.id] !== undefined);
   const missing = consultants.filter(c => week.rows[c.id] === undefined);
+  const isCvsOutWeek = week.metric === METRIC_CVS_OUT;
   const rows = entered.map(c => {
     const entry = week.rows[c.id];
+    const cvs = Number(entry.cvs) || 0;
+    const interviews = Number(entry.interviews) || 0;
+    const metricValue = isCvsOutWeek ? cvs : Number(entry.metricValue) || 0;
     return {
       ...c,
-      cvs: Number(entry.cvs) || 0,
-      metricValue: Number(entry.metricValue) || 0
+      cvs,
+      interviews,
+      metricValue
     };
   });
   const sorted = [...rows].sort((a, b) => b.metricValue - a.metricValue || b.cvs - a.cvs);
@@ -126,7 +144,13 @@ function computeWeekRows(week, consultants) {
     r.__rank = rank;
     const rankPoints = rank <= 5 ? RANK_POINTS[rank - 1] : 0;
     const cvPenalty = r.cvs < 5 ? -(5 - r.cvs) : 0;
-    const metricPenalty = week.threshold !== null && week.threshold !== undefined && week.threshold !== "" && r.metricValue < Number(week.threshold) ? -1 : 0;
+    let metricPenalty = 0;
+    if (isCvsOutWeek) {
+      const ratio = r.cvs > 0 ? r.interviews / r.cvs : 0;
+      metricPenalty = ratio < CVS_OUT_RATIO_MINIMUM ? -1 : 0;
+    } else if (week.threshold !== null && week.threshold !== undefined && week.threshold !== "" && r.metricValue < Number(week.threshold)) {
+      metricPenalty = -1;
+    }
     const net = rankPoints + cvPenalty + metricPenalty;
     return {
       ...r,
@@ -484,7 +508,8 @@ function App() {
       const entry = week.rows[c.id];
       rows[c.id] = entry ? {
         cvs: String(entry.cvs),
-        metricValue: String(entry.metricValue)
+        metricValue: String(entry.metricValue),
+        interviews: String(entry.interviews ?? "")
       } : {};
     });
     setFormRows(rows);
@@ -505,10 +530,12 @@ function App() {
       const r = formRows[c.id];
       const hasCvs = r && r.cvs !== undefined && r.cvs !== "";
       const hasMetric = r && r.metricValue !== undefined && r.metricValue !== "";
-      if (hasCvs || hasMetric) {
+      const hasInterviews = r && r.interviews !== undefined && r.interviews !== "";
+      if (hasCvs || hasMetric || hasInterviews) {
         newRowsPart[c.id] = {
           cvs: Number(r.cvs) || 0,
-          metricValue: Number(r.metricValue) || 0
+          metricValue: Number(r.metricValue) || 0,
+          interviews: Number(r.interviews) || 0
         };
       }
     });
@@ -921,21 +948,32 @@ function App() {
     style: inputStyle
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Metric (e.g. Interviews booked)"), /*#__PURE__*/React.createElement("input", {
-    type: "text",
+  }, "Metric"), /*#__PURE__*/React.createElement("select", {
     value: existingWeekForDate ? existingWeekForDate.metric : formMetric,
     disabled: !!existingWeekForDate && !editingWeekId,
     onChange: e => setFormMetric(e.target.value),
-    placeholder: "Interviews booked",
     style: inputStyle
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "",
+    disabled: true
+  }, "Select this week's metric…"), METRIC_OPTIONS.map(m => /*#__PURE__*/React.createElement("option", {
+    key: m,
+    value: m
+  }, m)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Threshold (optional)"), /*#__PURE__*/React.createElement("input", {
+  }, (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_CVS_OUT ? "Ratio requirement" : (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_RATIO ? "Threshold (%, optional)" : "Threshold (optional)"), (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_CVS_OUT ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...inputStyle,
+      display: "flex",
+      alignItems: "center",
+      color: INDIGO_MUTED
+    }
+  }, "Fixed at 65%") : /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: existingWeekForDate ? existingWeekForDate.threshold ?? "" : formThreshold,
     disabled: !!existingWeekForDate && !editingWeekId,
     onChange: e => setFormThreshold(e.target.value),
-    placeholder: "e.g. 3",
+    placeholder: (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
     style: inputStyle
   }))), existingWeekForDate && !editingWeekId && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -978,6 +1016,10 @@ function App() {
     }
   }, t.label))))), (editingWeekId ? Object.keys(TEAMS) : [formTeam]).map(teamId => {
     const teamInfo = TEAMS[teamId];
+    const effectiveMetric = existingWeekForDate ? existingWeekForDate.metric : formMetric;
+    const col1Label = effectiveMetric === METRIC_CVS_OUT ? "CVs Out" : "CVs sent";
+    const col2Label = effectiveMetric === METRIC_CVS_OUT ? "Interviews" : effectiveMetric === METRIC_RATIO ? "Ratio (%)" : "Interviews";
+    const col2Field = effectiveMetric === METRIC_CVS_OUT ? "interviews" : "metricValue";
     return /*#__PURE__*/React.createElement(Panel, {
       key: teamId
     }, /*#__PURE__*/React.createElement("div", {
@@ -997,6 +1039,23 @@ function App() {
         margin: 0
       }
     }, teamInfo.label)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 120px 140px",
+        gap: 10,
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("span", {
+      style: {
+        ...labelStyle,
+        marginBottom: 0
+      }
+    }, col1Label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        ...labelStyle,
+        marginBottom: 0
+      }
+    }, col2Label)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
@@ -1018,16 +1077,17 @@ function App() {
     }, c.name), /*#__PURE__*/React.createElement("input", {
       type: "number",
       min: "0",
-      placeholder: "CVs sent",
+      placeholder: col1Label,
       value: formRows[c.id]?.cvs ?? "",
       onChange: e => updateFormRow(c.id, "cvs", e.target.value),
       style: inputStyleSmall
     }), /*#__PURE__*/React.createElement("input", {
       type: "number",
       min: "0",
-      placeholder: "Metric result",
-      value: formRows[c.id]?.metricValue ?? "",
-      onChange: e => updateFormRow(c.id, "metricValue", e.target.value),
+      max: effectiveMetric === METRIC_RATIO ? 100 : undefined,
+      placeholder: col2Label,
+      value: formRows[c.id]?.[col2Field] ?? "",
+      onChange: e => updateFormRow(c.id, col2Field, e.target.value),
       style: inputStyleSmall
     })))));
   }), /*#__PURE__*/React.createElement("button", {
@@ -1102,7 +1162,7 @@ function App() {
     eyebrow: `Week ending ${latestWeek.date} — ${latestWeek.metric}`,
     title: "This week's leaderboard"
   }), /*#__PURE__*/React.createElement(TableHeader, {
-    cols: ["Rank", "Consultant", "Team", "Metric", "CVs", "Points"]
+    cols: ["Rank", "Consultant", "Team", latestWeek.metric === METRIC_CVS_OUT ? "CVs Out" : "Metric", "CVs", "Points"]
   }), latestWeekRows.map(r => /*#__PURE__*/React.createElement(RowLine, {
     key: r.id,
     highlighted: r.rank <= 5
@@ -1122,7 +1182,7 @@ function App() {
     color: TEAMS[r.team].color
   }, TEAMS[r.team].short), /*#__PURE__*/React.createElement(Cell, {
     width: 70
-  }, r.metricValue), /*#__PURE__*/React.createElement(Cell, {
+  }, r.metricValue, latestWeek.metric === METRIC_RATIO ? "%" : ""), /*#__PURE__*/React.createElement(Cell, {
     width: 50
   }, r.cvs), /*#__PURE__*/React.createElement(Cell, {
     width: 70,
@@ -1134,7 +1194,7 @@ function App() {
       fontSize: 12,
       color: INDIGO_MUTED
     }
-  }, "Top 5 score league points. Penalties: <5 CVs sent, or missed this week's threshold."), latestWeekMissing.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, latestWeek.metric === METRIC_CVS_OUT ? "Top 5 score league points. Penalties: fewer than 5 CVs sent, or a CV-to-interview ratio below 65%." : "Top 5 score league points. Penalties: fewer than 5 CVs sent, or missed this week's threshold."), latestWeekMissing.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       fontSize: 12,
@@ -1177,7 +1237,7 @@ function App() {
       fontFamily: "'Work Sans', sans-serif",
       fontWeight: 600
     }
-  }, TEAMS[teamId].label, " · ", w.metricValue, " ", latestWeek.metric.toLowerCase())))))), /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
+  }, TEAMS[teamId].label, " · ", w.metricValue, latestWeek.metric === METRIC_RATIO ? "%" : "", " ", METRIC_SHORT[latestWeek.metric] || latestWeek.metric.toLowerCase())))))), /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
     eyebrow: `${sortedWeeks.length} week${sortedWeeks.length === 1 ? "" : "s"} played`,
     title: "Season standings"
   }), /*#__PURE__*/React.createElement(TableHeader, {
