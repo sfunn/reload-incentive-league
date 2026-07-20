@@ -631,7 +631,7 @@ function App() {
           results: rows.map(r => ({
             name: r.name,
             team: TEAMS[r.team].label,
-            cvsSent: r.cvs,
+            cvsOut: r.cvs,
             metricValue: r.metricValue,
             rank: r.rank,
             weeklyPoints: r.net
@@ -651,7 +651,7 @@ function App() {
           max_tokens: 1000,
           messages: [{
             role: "user",
-            content: `You are analysing a recruitment incentive league table for Reload. Two teams: Team James and Team Josh, 10 consultants total. Here is the full season's weekly data as JSON (each week has a rotating metric, CVs sent, and computed weekly points which already include rank points and any penalties):\n\n${JSON.stringify(dataset)}\n\nAnswer this question concisely, referencing specific consultants/numbers where relevant:\n\n${question}`
+            content: `You are analysing a recruitment incentive league table for Reload. Two teams: Team James and Team Josh, 10 consultants total. Here is the full season's weekly data as JSON (each week has a rotating metric, CVs Out, and computed weekly points which already include rank points and any penalties):\n\n${JSON.stringify(dataset)}\n\nAnswer this question concisely, referencing specific consultants/numbers where relevant:\n\n${question}`
           }]
         })
       });
@@ -1017,7 +1017,7 @@ function App() {
   }, t.label))))), (editingWeekId ? Object.keys(TEAMS) : [formTeam]).map(teamId => {
     const teamInfo = TEAMS[teamId];
     const effectiveMetric = existingWeekForDate ? existingWeekForDate.metric : formMetric;
-    const col1Label = effectiveMetric === METRIC_CVS_OUT ? "CVs Out" : "CVs sent";
+    const col1Label = "CVs Out";
     const col2Label = effectiveMetric === METRIC_CVS_OUT ? "Interviews" : effectiveMetric === METRIC_RATIO ? "Ratio (%)" : "Interviews";
     const col2Field = effectiveMetric === METRIC_CVS_OUT ? "interviews" : "metricValue";
     return /*#__PURE__*/React.createElement(Panel, {
@@ -1194,7 +1194,7 @@ function App() {
       fontSize: 12,
       color: INDIGO_MUTED
     }
-  }, latestWeek.metric === METRIC_CVS_OUT ? "Top 5 score league points. Penalties: fewer than 5 CVs sent, or a CV-to-interview ratio below 65%." : "Top 5 score league points. Penalties: fewer than 5 CVs sent, or missed this week's threshold."), latestWeekMissing.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, latestWeek.metric === METRIC_CVS_OUT ? "Top 5 score league points. Penalties: fewer than 5 CVs Out, or a CV-to-interview ratio below 65%." : "Top 5 score league points. Penalties: fewer than 5 CVs Out, or missed this week's threshold."), latestWeekMissing.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       fontSize: 12,
@@ -1407,7 +1407,7 @@ function App() {
     value: question,
     onChange: e => setQuestion(e.target.value),
     onKeyDown: e => e.key === "Enter" && askQuestion(),
-    placeholder: "e.g. Who's had the best month for CVs sent?",
+    placeholder: "e.g. Who's had the best month for CVs Out?",
     style: {
       ...inputStyle,
       flex: 1
