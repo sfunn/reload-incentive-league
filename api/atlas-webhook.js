@@ -65,6 +65,7 @@ export default async function handler(req, res) {
   const rawBody = await getRawBody(req);
 
   console.log("[atlas-webhook] rawBody length:", rawBody.length);
+  console.log("[atlas-webhook] all header names:", Object.keys(req.headers).join(", "));
   console.log("[atlas-webhook] svix-id present:", !!req.headers["svix-id"]);
   console.log("[atlas-webhook] secret configured, length:", (process.env.ATLAS_WEBHOOK_SECRET || "").length);
 
