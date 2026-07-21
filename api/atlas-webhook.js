@@ -47,14 +47,15 @@ function isoWeekKey(dateStr) {
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-async function lookupAtlasUserEmail(userId) {
-  const res = await fetch("https://api.recruitwithatlas.com/api/v1/users?pageSize=100", {
-    headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Atlas users lookup failed: ${res.status}`);
+async function lookupCandidateOwnerEmail(projectId, candidateId) {
+  const res = await fetch(
+    `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
+    { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+  );
+  if (!res.ok) throw new Error(`Atlas candidate lookup failed: ${res.status}`);
   const json = await res.json();
-  const user = (json.data || []).find((u) => u.id === userId);
-  return user ? user.email : null;
+  const owner = json.data && json.data.owner;
+  return owner ? owner.email : null;
 }
 
 export default async function handler(req, res) {
@@ -88,8 +89,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, skipped: true, reason: "not a stage move" });
   }
 
-  const { newStage, movedByUserId, movedAt } = payload.data || {};
-  if (!newStage || !movedByUserId || !movedAt) {
+  const { newStage, candidateId, projectId, movedAt } = payload.data || {};
+  if (!newStage || !candidateId || !projectId || !movedAt) {
     return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
   }
 
@@ -100,15 +101,18 @@ export default async function handler(req, res) {
 
   let consultantId = null;
   try {
-    const email = await lookupAtlasUserEmail(movedByUserId);
+    // Credit goes to whoever OWNS the candidate, not whoever physically moved
+    // the pipeline stage — so admin/manager moves made on a consultant's
+    // behalf still count correctly for that consultant.
+    const email = await lookupCandidateOwnerEmail(projectId, candidateId);
     if (email) consultantId = EMAIL_TO_CONSULTANT[email] || null;
   } catch (e) {
     // Still acknowledge receipt so Atlas doesn't retry indefinitely on our error
-    return res.status(200).json({ ok: true, error: "user lookup failed" });
+    return res.status(200).json({ ok: true, error: "candidate owner lookup failed" });
   }
 
   if (!consultantId) {
-    return res.status(200).json({ ok: true, skipped: true, reason: "unmapped Atlas user" });
+    return res.status(200).json({ ok: true, skipped: true, reason: "unmapped candidate owner" });
   }
 
   const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
