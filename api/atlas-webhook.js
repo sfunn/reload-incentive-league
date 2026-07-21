@@ -14,16 +14,16 @@ const CVS_OUT_STAGE = "CV Sent";
 const INTERVIEW_STAGES = ["1st Stage Interview"]; // add "HR call" / "HRX" here if needed
 
 const EMAIL_TO_CONSULTANT = {
-  // "alex.silverman@example.com": "alex-silverman",
-  // "ash.thiara@example.com": "ash-thiara",
-  // "jack.thompson@example.com": "jack-thompson",
-  // "max.hart@example.com": "max-hart",
-  // "oleg.sokyrka@example.com": "oleg-sokyrka",
-  // "alex.aparo@example.com": "alex-aparo",
-  // "jack.routledge@example.com": "jack-routledge",
-  // "joe.purton@example.com": "joe-purton",
-  // "josh.davis@example.com": "josh-davis",
-  // "natasha.barnard@example.com": "natasha-barnard",
+  "alex@reloadsearch.com": "alex-silverman",
+  "ash@reloadsearch.com": "ash-thiara",
+  "jack@reloadsearch.com": "jack-thompson",
+  "max@reloadsearch.com": "max-hart",
+  "oleg@reloadsearch.com": "oleg-sokyrka",
+  "alexander@reloadsearch.com": "alex-aparo",
+  "jackr@reloadsearch.com": "jack-routledge",
+  "joe@reloadsearch.com": "joe-purton",
+  "joshd@reloadsearch.com": "josh-davis",
+  "natasha@reloadsearch.com": "natasha-barnard",
 };
 // ============================================================================
 
