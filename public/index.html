@@ -360,6 +360,8 @@ function App() {
   const [showPasscodeBox, setShowPasscodeBox] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+  const [atlasPulling, setAtlasPulling] = useState(false);
+  const [atlasError, setAtlasError] = useState("");
   const [tab, setTab] = useState("table");
   const [formDate, setFormDate] = useState(todayStr());
   const [formMetric, setFormMetric] = useState("");
@@ -578,6 +580,43 @@ function App() {
     await persist(next);
     cancelEdit();
     setTab("table");
+  }
+  async function pullFromAtlas() {
+    setAtlasPulling(true);
+    setAtlasError("");
+    try {
+      const res = await fetch("/api/atlas-tally");
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json();
+      const tally = data.tally || {};
+      const effectiveMetric = existingWeekForDate ? existingWeekForDate.metric : formMetric;
+      const targetConsultants = editingWeekId ? consultants : consultants.filter(c => c.team === formTeam);
+      let matched = 0;
+      setFormRows(prev => {
+        const next = { ...prev };
+        targetConsultants.forEach(c => {
+          const t = tally[c.id];
+          if (!t) return;
+          matched += 1;
+          const cvs = t.cvsOut || 0;
+          const interviews = t.interviews || 0;
+          if (effectiveMetric === METRIC_CVS_OUT) {
+            next[c.id] = { ...next[c.id], cvs: String(cvs), interviews: String(interviews) };
+          } else if (effectiveMetric === METRIC_RATIO) {
+            const pct = cvs > 0 ? Math.round(interviews / cvs * 100) : 0;
+            next[c.id] = { ...next[c.id], cvs: String(cvs), metricValue: String(pct) };
+          } else {
+            next[c.id] = { ...next[c.id], cvs: String(cvs), metricValue: String(interviews) };
+          }
+        });
+        return next;
+      });
+      if (matched === 0) setAtlasError("No Atlas activity found yet for this week.");
+    } catch (e) {
+      setAtlasError("Couldn't reach Atlas data.");
+    } finally {
+      setAtlasPulling(false);
+    }
   }
   async function deleteWeek(id) {
     const next = weeks.filter(w => w.id !== id);
@@ -1090,7 +1129,17 @@ function App() {
       onChange: e => updateFormRow(c.id, col2Field, e.target.value),
       style: inputStyleSmall
     })))));
-  }), /*#__PURE__*/React.createElement("button", {
+  }), atlasError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: MELON_LINK
+    }
+  }, atlasError), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: pullFromAtlas,
+    disabled: atlasPulling,
+    style: ghostStyle
+  }, atlasPulling ? "Pulling from Atlas…" : "Pull numbers from Atlas"), /*#__PURE__*/React.createElement("button", {
     onClick: saveWeek,
     disabled: !formMetric.trim() && !existingWeekForDate,
     style: primaryButtonStyle(!formMetric.trim() && !existingWeekForDate)
@@ -1594,6 +1643,7 @@ function primaryButtonStyle(disabled) {
 }
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(/*#__PURE__*/React.createElement(App, null));
+
 </script>
 </body>
 </html>
