@@ -65,18 +65,18 @@ export default async function handler(req, res) {
   const rawBody = await getRawBody(req);
 
   console.log("[atlas-webhook] rawBody length:", rawBody.length);
-  console.log("[atlas-webhook] all header names:", Object.keys(req.headers).join(", "));
-  console.log("[atlas-webhook] svix-id present:", !!req.headers["svix-id"]);
   console.log("[atlas-webhook] secret configured, length:", (process.env.ATLAS_WEBHOOK_SECRET || "").length);
+
+  const svixHeaders = {
+    "svix-id": req.headers["svix-id"] || req.headers["webhook-id"],
+    "svix-timestamp": req.headers["svix-timestamp"] || req.headers["webhook-timestamp"],
+    "svix-signature": req.headers["svix-signature"] || req.headers["webhook-signature"],
+  };
 
   let payload;
   try {
     const wh = new Webhook(process.env.ATLAS_WEBHOOK_SECRET);
-    payload = wh.verify(rawBody, {
-      "svix-id": req.headers["svix-id"],
-      "svix-timestamp": req.headers["svix-timestamp"],
-      "svix-signature": req.headers["svix-signature"],
-    });
+    payload = wh.verify(rawBody, svixHeaders);
   } catch (e) {
     console.error("[atlas-webhook] verification failed:", e.message);
     return res.status(401).json({ error: "Invalid webhook signature" });
