@@ -1,11 +1,11 @@
-const { kv } = require("@vercel/kv");
-const { Webhook } = require("svix");
+import { kv } from "@vercel/kv";
+import { Webhook } from "svix";
 
 // ============================================================================
 // CONFIG — confirm/adjust these two things once you know for sure:
-// 1. STAGE_INTERVIEW below — confirm with Atlas/your team whether "Candidates
+// 1. INTERVIEW_STAGES below — confirm with Atlas/your team whether "Candidates
 //    to IV stage" means only "1st Stage Interview", or also "HR call"/"HRX".
-//    If it's more than one stage, change INTERVIEW_STAGES to include them all.
+//    If it's more than one stage, add them all to the array.
 // 2. EMAIL_TO_CONSULTANT — fill this in using the real response from
 //    GET /api/v1/users (match each consultant's Atlas email to their id from
 //    public/index.html's INITIAL_CONSULTANTS list).
@@ -57,7 +57,7 @@ async function lookupAtlasUserEmail(userId) {
   return user ? user.email : null;
 }
 
-async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -65,11 +65,8 @@ async function handler(req, res) {
   const rawBody = await getRawBody(req);
 
   console.log("[atlas-webhook] rawBody length:", rawBody.length);
-  console.log("[atlas-webhook] rawBody preview:", rawBody.slice(0, 120));
   console.log("[atlas-webhook] svix-id present:", !!req.headers["svix-id"]);
-  console.log("[atlas-webhook] svix-timestamp present:", !!req.headers["svix-timestamp"]);
-  console.log("[atlas-webhook] svix-signature present:", !!req.headers["svix-signature"]);
-  console.log("[atlas-webhook] secret configured:", !!process.env.ATLAS_WEBHOOK_SECRET, "length:", (process.env.ATLAS_WEBHOOK_SECRET || "").length);
+  console.log("[atlas-webhook] secret configured, length:", (process.env.ATLAS_WEBHOOK_SECRET || "").length);
 
   let payload;
   try {
@@ -122,5 +119,8 @@ async function handler(req, res) {
   return res.status(200).json({ ok: true, consultantId, metric, weekKey });
 }
 
-module.exports = handler;
-module.exports.config = { api: { bodyParser: false } };
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
