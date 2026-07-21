@@ -64,6 +64,13 @@ async function handler(req, res) {
 
   const rawBody = await getRawBody(req);
 
+  console.log("[atlas-webhook] rawBody length:", rawBody.length);
+  console.log("[atlas-webhook] rawBody preview:", rawBody.slice(0, 120));
+  console.log("[atlas-webhook] svix-id present:", !!req.headers["svix-id"]);
+  console.log("[atlas-webhook] svix-timestamp present:", !!req.headers["svix-timestamp"]);
+  console.log("[atlas-webhook] svix-signature present:", !!req.headers["svix-signature"]);
+  console.log("[atlas-webhook] secret configured:", !!process.env.ATLAS_WEBHOOK_SECRET, "length:", (process.env.ATLAS_WEBHOOK_SECRET || "").length);
+
   let payload;
   try {
     const wh = new Webhook(process.env.ATLAS_WEBHOOK_SECRET);
@@ -73,6 +80,7 @@ async function handler(req, res) {
       "svix-signature": req.headers["svix-signature"],
     });
   } catch (e) {
+    console.error("[atlas-webhook] verification failed:", e.message);
     return res.status(401).json({ error: "Invalid webhook signature" });
   }
 
