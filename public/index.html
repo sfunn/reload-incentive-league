@@ -1176,7 +1176,7 @@ function App() {
     React.createElement("button", {
       onClick: authMode === "login" ? doLogin : doSignup,
       disabled: authLoading,
-      style: primaryButtonStyle
+      style: primaryButtonStyle(authLoading)
     }, authLoading ? "…" : authMode === "login" ? "Log In" : "Create account"),
     authMode === "signup" && React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED, marginTop: 8 } },
       "Only works for your reloadsearch.com email — check with Scott or Lee if it's not recognised."
