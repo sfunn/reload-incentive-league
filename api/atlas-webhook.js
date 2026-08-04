@@ -9,7 +9,7 @@ import { Webhook } from "svix";
 // 2. EMAIL_TO_CONSULTANT — already filled in with real Atlas emails.
 // ============================================================================
 const CVS_OUT_STAGE = "CV Sent";
-const INTERVIEW_STAGES = ["1st Stage Interview"]; // add "HR call" / "HRX" here if needed
+const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -119,33 +119,4 @@ export default async function handler(req, res) {
     console.log("[atlas-webhook] candidate owner email:", email);
 
     if (email && TEAM_LEADER_EMAILS.has(email)) {
-      console.log("[atlas-webhook] skipped: owner is a team leader, not tracked on leaderboard");
-      return res.status(200).json({ ok: true, skipped: true, reason: "team leader, excluded from leaderboard" });
-    }
-
-    if (email) consultantId = EMAIL_TO_CONSULTANT[email] || null;
-  } catch (e) {
-    console.error("[atlas-webhook] owner lookup failed:", e.message);
-    // Still acknowledge receipt so Atlas doesn't retry indefinitely on our error
-    return res.status(200).json({ ok: true, error: "candidate owner lookup failed" });
-  }
-
-  if (!consultantId) {
-    console.log("[atlas-webhook] skipped: no consultant mapped for this owner email");
-    return res.status(200).json({ ok: true, skipped: true, reason: "unmapped candidate owner" });
-  }
-
-  const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
-  const current = (await kv.get(weekKey)) || {};
-  if (!current[consultantId]) current[consultantId] = { cvsOut: 0, interviews: 0 };
-  current[consultantId][metric] += 1;
-  await kv.set(weekKey, current);
-
-  return res.status(200).json({ ok: true, consultantId, metric, weekKey });
-}
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
+      console.log("[atlas-webhook] skipped: owner is a team leader, not tracked on
