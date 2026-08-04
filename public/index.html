@@ -87,6 +87,19 @@ const INITIAL_CONSULTANTS = [{
   team: "josh"
 }];
 
+// Deal Lead Award includes everyone the CVs Out / Interviews league table
+// doesn't: James and Josh, the two team leaders, who are real fee-earners.
+// They're tagged with the team they lead purely for badge colouring.
+const DEAL_CONSULTANTS = [...INITIAL_CONSULTANTS, {
+  id: "james-lancer",
+  name: "James Lancer",
+  team: "james"
+}, {
+  id: "josh-stark",
+  name: "Josh Stark",
+  team: "josh"
+}];
+
 // Fixed weekly metric options. The Atlas field name each maps to is kept in
 // brackets so this is ready to line up once the Atlas API feed is connected.
 const METRIC_CVS_OUT = "CV's Out (Candidates presented)";
@@ -375,6 +388,26 @@ function App() {
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState("");
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reload-anthropic-key") || "");
+
+  // --- Deal Lead Award state ---
+  const [dealsYear, setDealsYear] = useState(new Date().getUTCFullYear());
+  const [dealsLeaderboard, setDealsLeaderboard] = useState([]);
+  const [dealsLoading, setDealsLoading] = useState(false);
+  const [dealsError, setDealsError] = useState("");
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [superAdminPasscode, setSuperAdminPasscode] = useState("");
+  const [showSuperAdminBox, setShowSuperAdminBox] = useState(false);
+  const [superAdminInput, setSuperAdminInput] = useState("");
+  const [superAdminError, setSuperAdminError] = useState("");
+  const [superAdminUnlocking, setSuperAdminUnlocking] = useState(false);
+  const [dealDetails, setDealDetails] = useState([]);
+  const [dealDetailsLoading, setDealDetailsLoading] = useState(false);
+  const [fxRates, setFxRates] = useState({});
+  const [fxMonthInput, setFxMonthInput] = useState(monthOf(todayStr()));
+  const [fxGbpInput, setFxGbpInput] = useState("");
+  const [fxEurInput, setFxEurInput] = useState("");
+  const [fxSaving, setFxSaving] = useState(false);
+  const [fxError, setFxError] = useState("");
   const refreshWeeks = useCallback(async () => {
     try {
       const res = await fetch(API_URL);
@@ -711,6 +744,128 @@ function App() {
     setApiKey(value);
     localStorage.setItem("reload-anthropic-key", value);
   }
+
+  // --- Deal Lead Award functions ---
+  const refreshDealsLeaderboard = useCallback(async year => {
+    setDealsLoading(true);
+    setDealsError("");
+    try {
+      const res = await fetch(`/api/deals?year=${year}`);
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setDealsLeaderboard(data.leaderboard || []);
+    } catch (e) {
+      setDealsError("Couldn't reach deal data.");
+    } finally {
+      setDealsLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (tab === "deals") refreshDealsLeaderboard(dealsYear);
+  }, [tab, dealsYear, refreshDealsLeaderboard]);
+  async function trySuperAdminUnlock() {
+    if (!superAdminInput.trim()) return;
+    setSuperAdminUnlocking(true);
+    setSuperAdminError("");
+    try {
+      const res = await fetch(`/api/deals?year=${dealsYear}&detail=true&passcode=${encodeURIComponent(superAdminInput)}`);
+      if (res.status === 401) {
+        setSuperAdminError("Incorrect passcode");
+        return;
+      }
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setDealDetails(data.records || []);
+      setIsSuperAdmin(true);
+      setSuperAdminPasscode(superAdminInput);
+      setSuperAdminInput("");
+      setShowSuperAdminBox(false);
+      loadFxRates();
+    } catch (e) {
+      setSuperAdminError("Couldn't reach the server — try again.");
+    } finally {
+      setSuperAdminUnlocking(false);
+    }
+  }
+  function lockSuperAdmin() {
+    setIsSuperAdmin(false);
+    setSuperAdminPasscode("");
+    setDealDetails([]);
+  }
+  const loadDealDetails = useCallback(async () => {
+    if (!isSuperAdmin) return;
+    setDealDetailsLoading(true);
+    try {
+      const res = await fetch(`/api/deals?year=${dealsYear}&detail=true&passcode=${encodeURIComponent(superAdminPasscode)}`);
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setDealDetails(data.records || []);
+    } catch (e) {
+      // silent — the leaderboard fetch above already shows a connection error if relevant
+    } finally {
+      setDealDetailsLoading(false);
+    }
+  }, [isSuperAdmin, superAdminPasscode, dealsYear]);
+  useEffect(() => {
+    if (isSuperAdmin) loadDealDetails();
+  }, [isSuperAdmin, dealsYear, loadDealDetails]);
+  async function markPaid(feeId, splitId, paidVal) {
+    try {
+      const res = await fetch("/api/deals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: superAdminPasscode, feeId, splitId, paid: paidVal })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadDealDetails();
+      await refreshDealsLeaderboard(dealsYear);
+    } catch (e) {
+      // no-op — the checkbox will simply not flip if this fails
+    }
+  }
+  const loadFxRates = useCallback(async () => {
+    try {
+      const res = await fetch("/api/fx-rates");
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setFxRates(data.rates || {});
+    } catch (e) {
+      // silent
+    }
+  }, []);
+  async function saveFxRate() {
+    if (!fxMonthInput.trim()) return;
+    setFxSaving(true);
+    setFxError("");
+    try {
+      const res = await fetch("/api/fx-rates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          passcode: superAdminPasscode,
+          monthKey: fxMonthInput.trim(),
+          rates: {
+            GBP: parseFloat(fxGbpInput) || 0,
+            EUR: parseFloat(fxEurInput) || 0,
+            USD: 1
+          }
+        })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadFxRates();
+      await refreshDealsLeaderboard(dealsYear);
+      await loadDealDetails();
+    } catch (e) {
+      setFxError("Couldn't save the rate — try again.");
+    } finally {
+      setFxSaving(false);
+    }
+  }
+  const dealsYearOptions = useMemo(() => {
+    const current = new Date().getUTCFullYear();
+    return [current - 1, current, current + 1];
+  }, []);
+
   const fontImport = `
     @import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap');
   `;
@@ -726,6 +881,9 @@ function App() {
   }, {
     id: "quarterly",
     label: "Quarterly"
+  }, {
+    id: "deals",
+    label: "Deal Lead Award"
   }, {
     id: "ask",
     label: "Ask The Table"
@@ -1490,7 +1648,123 @@ function App() {
       whiteSpace: "pre-wrap",
       color: INDIGO
     }
-  }, answer))))));
+  }, answer)), tab === "deals" && React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 20 }
+  },
+    React.createElement(Panel, null,
+      React.createElement("div", {
+        style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }
+      },
+        React.createElement(SectionTitle, {
+          eyebrow: "Total revenue, converted to USD",
+          title: "Deal Lead Award"
+        }),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          dealsYearOptions.map(y => React.createElement("button", {
+            key: y,
+            onClick: () => setDealsYear(y),
+            style: {
+              ...chipStyle,
+              background: dealsYear === y ? MELON : "rgba(255,176,140,0.14)",
+              fontWeight: dealsYear === y ? 700 : 500
+            }
+          }, y))
+        )
+      ),
+      dealsError && React.createElement("div", {
+        style: { marginBottom: 12, padding: "10px 14px", background: "rgba(255,176,140,0.16)", border: `1px solid ${MELON}`, borderRadius: 8, fontSize: 12.5, color: INDIGO }
+      }, dealsError),
+      dealsLoading ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+      dealsLeaderboard.length === 0 ? React.createElement(EmptyState, { text: `No deals recorded yet for ${dealsYear}.` }) :
+      React.createElement(React.Fragment, null,
+        React.createElement(TableHeader, { cols: ["Pos", "Consultant", "Team", "Total (USD)"] }),
+        dealsLeaderboard.map((r, i) => {
+          const consultant = DEAL_CONSULTANTS.find(c => c.id === r.consultantId);
+          const team = consultant ? consultant.team : null;
+          return React.createElement(RowLine, { key: r.consultantId, highlighted: i < 3 },
+            React.createElement(Cell, { width: 50 }, i + 1),
+            React.createElement(Cell, { flex: true }, r.consultantName || r.consultantId),
+            React.createElement(Cell, { width: 90, color: team ? TEAMS[team].color : INDIGO_MUTED }, team ? TEAMS[team].short : "—"),
+            React.createElement(Cell, { width: 120, bold: true }, `$${Math.round(r.totalUSD).toLocaleString()}`)
+          );
+        })
+      ),
+      React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+        "Resets each 1 January. Deals in a currency with no exchange rate set for that month are held back until Scott or Lee set one below."
+      )
+    ),
+    React.createElement(Panel, null,
+      !isSuperAdmin ? React.createElement(React.Fragment, null,
+        React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
+        showSuperAdminBox ? React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+          React.createElement("input", {
+            type: "password",
+            value: superAdminInput,
+            autoFocus: true,
+            onChange: e => { setSuperAdminInput(e.target.value); setSuperAdminError(""); },
+            onKeyDown: e => e.key === "Enter" && trySuperAdminUnlock(),
+            placeholder: "Passcode",
+            style: { ...inputStyleSmall, width: 140 }
+          }),
+          React.createElement("button", { onClick: trySuperAdminUnlock, disabled: superAdminUnlocking, style: ghostStyle },
+            superAdminUnlocking ? "Checking…" : "Unlock"
+          )
+        ) : React.createElement("button", { onClick: () => setShowSuperAdminBox(true), style: ghostStyle }, "🔒 Unlock"),
+        superAdminError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, superAdminError)
+      ) : React.createElement(React.Fragment, null,
+        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } },
+          React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
+          React.createElement("button", { onClick: lockSuperAdmin, style: ghostStyle }, "🔓 Log out")
+        ),
+        React.createElement("div", { style: { marginBottom: 20 } },
+          React.createElement("div", { style: labelStyle }, "This month's exchange rate (→ USD)"),
+          React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" } },
+            React.createElement("div", null,
+              React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Month (YYYY-MM)"),
+              React.createElement("input", { type: "text", value: fxMonthInput, onChange: e => setFxMonthInput(e.target.value), placeholder: "2026-08", style: { ...inputStyleSmall, width: 100 } })
+            ),
+            React.createElement("div", null,
+              React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "£ GBP rate"),
+              React.createElement("input", { type: "number", step: "0.0001", value: fxGbpInput, onChange: e => setFxGbpInput(e.target.value), placeholder: "1.27", style: { ...inputStyleSmall, width: 90 } })
+            ),
+            React.createElement("div", null,
+              React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "€ EUR rate"),
+              React.createElement("input", { type: "number", step: "0.0001", value: fxEurInput, onChange: e => setFxEurInput(e.target.value), placeholder: "1.09", style: { ...inputStyleSmall, width: 90 } })
+            ),
+            React.createElement("button", { onClick: saveFxRate, disabled: fxSaving, style: ghostStyle }, fxSaving ? "Saving…" : "Save rate")
+          ),
+          fxError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, fxError),
+          Object.keys(fxRates).length > 0 && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+            Object.entries(fxRates).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 6).map(([mk, r]) =>
+              `${mk}: £${r.GBP || "—"} · €${r.EUR || "—"}`
+            ).join("   ·   ")
+          )
+        ),
+        React.createElement("div", { style: labelStyle }, `${dealsYear} deals`),
+        dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+        dealDetails.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
+        React.createElement(React.Fragment, null,
+          React.createElement(TableHeader, { cols: ["Date", "Consultant", "Amount", "USD", "Paid"] }),
+          dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
+            React.createElement(Cell, { width: 90 }, r.feeDate || "—"),
+            React.createElement(Cell, { flex: true }, r.consultantName || r.consultantEmail || "Unmapped"),
+            React.createElement(Cell, { width: 110 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && r.share !== "100.00" ? ` (${r.share}%)` : ""}`),
+            React.createElement(Cell, { width: 100 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
+            React.createElement(Cell, { width: 60 },
+              React.createElement("input", {
+                type: "checkbox",
+                checked: !!r.paid,
+                onChange: e => markPaid(r.feeId, r.splitId, e.target.checked)
+              })
+            )
+          ))
+        ),
+        React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
+          "Marking a deal Paid starts the 4-month commission payout the following month (commission sheets: coming in the next phase)."
+        )
+      )
+    )
+  )))));
 }
 function EmptyState({
   text
