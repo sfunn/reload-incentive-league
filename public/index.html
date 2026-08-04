@@ -1806,7 +1806,12 @@ function App() {
       dealsLoading ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
       dealsLeaderboard.length === 0 ? React.createElement(EmptyState, { text: `No deals recorded yet for ${dealsYear}.` }) :
       React.createElement(React.Fragment, null,
-        React.createElement(TableHeader, { cols: ["Pos", "Consultant", "Team", "Total (USD)"] }),
+        React.createElement(TableHeader, { cols: [
+          { label: "Pos", width: 50 },
+          { label: "Consultant", flex: true },
+          { label: "Team", width: 90 },
+          { label: "Total (USD)", width: 120 }
+        ] }),
         dealsLeaderboard.map((r, i) => {
           const consultant = DEAL_CONSULTANTS.find(c => c.id === r.consultantId);
           const team = consultant ? consultant.team : null;
@@ -1852,7 +1857,16 @@ function App() {
         dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
         dealDetails.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
         React.createElement(React.Fragment, null,
-          React.createElement(TableHeader, { cols: ["Date", "Consultant", "Candidate", "Client", "Start", "Amount", "USD", "Paid"] }),
+          React.createElement(TableHeader, { cols: [
+            { label: "Date", width: 90 },
+            { label: "Consultant", width: 130 },
+            { label: "Candidate", width: 130 },
+            { label: "Client", width: 120 },
+            { label: "Start", width: 90 },
+            { label: "Amount", width: 110 },
+            { label: "USD", width: 100 },
+            { label: "Paid", width: 60 }
+          ] }),
           dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
             React.createElement(Cell, { width: 90 }, toDayMonthYear(r.feeDate)),
             React.createElement(Cell, { width: 130 }, r.consultantName || r.consultantEmail || "Unmapped"),
@@ -1879,7 +1893,15 @@ function App() {
       pwdError && React.createElement("div", { style: { marginBottom: 10, fontSize: 11.5, color: MELON_LINK } }, pwdError),
       userAccounts.length === 0 ? React.createElement(EmptyState, { text: "Loading…" }) :
       React.createElement(React.Fragment, null,
-        React.createElement(TableHeader, { cols: ["Name", "Email", "Has account", "Admin", "Super Admin", "New password", ""] }),
+        React.createElement(TableHeader, { cols: [
+          { label: "Name", width: 110 },
+          { label: "Email", flex: true },
+          { label: "Has account", width: 80 },
+          { label: "Admin", width: 70 },
+          { label: "Super Admin", width: 90 },
+          { label: "New password", width: 130 },
+          { label: "", width: 100 }
+        ] }),
         userAccounts.map(u => React.createElement(RowLine, { key: u.email },
           React.createElement(Cell, { width: 110 }, u.name),
           React.createElement(Cell, { flex: true, color: INDIGO_MUTED }, u.email),
@@ -1971,13 +1993,22 @@ function TableHeader({
       color: INDIGO_MUTED,
       textTransform: "uppercase"
     }
-  }, cols.map((c, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      width: i === 1 ? undefined : 70,
-      flex: i === 1 ? 1 : undefined
-    }
-  }, c)));
+  }, cols.map((c, i) => {
+    // Cols can be a plain string (legacy tables: column 2 flexes, the rest
+    // are a fixed 70px) or an { label, width, flex } object for tables with
+    // custom per-column widths that need to line up with their Cell props.
+    const isObj = c && typeof c === "object";
+    const label = isObj ? c.label : c;
+    const width = isObj ? c.width : (i === 1 ? undefined : 70);
+    const flex = isObj ? c.flex : (i === 1 ? 1 : undefined);
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        width: flex ? undefined : width,
+        flex: flex ? 1 : undefined
+      }
+    }, label);
+  }));
 }
 function RowLine({
   children,
