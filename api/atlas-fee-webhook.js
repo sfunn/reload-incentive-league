@@ -73,7 +73,7 @@ export default async function handler(req, res) {
 
   let payload;
   try {
-    const wh = new Webhook(process.env.ATLAS_WEBHOOK_SECRET);
+    const wh = new Webhook(process.env.ATLAS_FEE_WEBHOOK_SECRET);
     payload = wh.verify(rawBody, svixHeaders);
   } catch (e) {
     console.error("[atlas-fee-webhook] verification failed:", e.message);
