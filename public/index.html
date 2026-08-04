@@ -423,6 +423,31 @@ function App() {
   const [fxEurInput, setFxEurInput] = useState("");
   const [fxSaving, setFxSaving] = useState(false);
   const [fxError, setFxError] = useState("");
+
+  // --- Auth state (login/signup/reset) ---
+  const [authUser, setAuthUser] = useState(() => {
+    try {
+      const raw = localStorage.getItem("reload-auth");
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [showAuthBox, setShowAuthBox] = useState(false);
+  const [authMode, setAuthMode] = useState("login"); // login | signup | forgot | reset
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authPasswordConfirm, setAuthPasswordConfirm] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // --- Manage Logins (Scott & Lee) ---
+  const [userAccounts, setUserAccounts] = useState([]);
+  const [newPasswordInputs, setNewPasswordInputs] = useState({});
+  const [pwdSavingEmail, setPwdSavingEmail] = useState(null);
+  const [pwdError, setPwdError] = useState("");
+  const [pwdNoticeEmail, setPwdNoticeEmail] = useState(null);
   const refreshWeeks = useCallback(async () => {
     try {
       const res = await fetch(API_URL);
@@ -796,10 +821,48 @@ function App() {
       setSuperAdminInput("");
       setShowSuperAdminBox(false);
       loadFxRates();
+      loadUserAccounts(superAdminInput);
     } catch (e) {
       setSuperAdminError("Couldn't reach the server — try again.");
     } finally {
       setSuperAdminUnlocking(false);
+    }
+  }
+  const loadUserAccounts = useCallback(async (passcodeOverride) => {
+    const pc = passcodeOverride || superAdminPasscode;
+    try {
+      const res = await fetch(`/api/auth?action=list-users&passcode=${encodeURIComponent(pc)}`);
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setUserAccounts(data.users || []);
+    } catch (e) {
+      // silent — the deal details fetch already surfaces a connection error if relevant
+    }
+  }, [superAdminPasscode]);
+  async function setUserPassword(email) {
+    const newPassword = (newPasswordInputs[email] || "").trim();
+    if (!newPassword || newPassword.length < 8) {
+      setPwdError("Password must be at least 8 characters.");
+      return;
+    }
+    setPwdSavingEmail(email);
+    setPwdError("");
+    try {
+      const res = await fetch("/api/auth?action=admin-set-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: superAdminPasscode, email, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPwdError(data.error || "Couldn't set the password."); return; }
+      setNewPasswordInputs(prev => ({ ...prev, [email]: "" }));
+      setPwdNoticeEmail(email);
+      setTimeout(() => setPwdNoticeEmail(null), 3000);
+      loadUserAccounts();
+    } catch (e) {
+      setPwdError("Couldn't reach the server — try again.");
+    } finally {
+      setPwdSavingEmail(null);
     }
   }
   function lockSuperAdmin() {
@@ -894,6 +957,57 @@ function App() {
     return [current, current + 1];
   }, []);
 
+  // --- Auth functions ---
+  async function doSignup() {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const res = await fetch("/api/auth?action=signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setAuthError(data.error || "Couldn't sign up."); return; }
+      const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase() };
+      localStorage.setItem("reload-auth", JSON.stringify(user));
+      setAuthUser(user);
+      setShowAuthBox(false);
+      setAuthPassword("");
+    } catch (e) {
+      setAuthError("Couldn't reach the server — try again.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+  async function doLogin() {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const res = await fetch("/api/auth?action=login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setAuthError(data.error || "Couldn't log in."); return; }
+      const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase() };
+      localStorage.setItem("reload-auth", JSON.stringify(user));
+      setAuthUser(user);
+      setShowAuthBox(false);
+      setAuthPassword("");
+    } catch (e) {
+      setAuthError("Couldn't reach the server — try again.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem("reload-auth");
+    setAuthUser(null);
+  }
+
   // Converts an ISO date string ("2026-08-04") to day/month/year ("04/08/2026")
   // for display. Leaves anything already non-ISO or empty untouched.
   function toDayMonthYear(dateStr) {
@@ -921,7 +1035,10 @@ function App() {
   }, {
     id: "deals",
     label: "Deal Lead Award"
-  }, {
+  }, ...(authUser ? [{
+    id: "commission",
+    label: "My Commission"
+  }] : []), {
     id: "ask",
     label: "Ask The Table"
   }];
@@ -1000,7 +1117,13 @@ function App() {
   }, unlocking ? "Checking…" : "Unlock")) : /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowPasscodeBox(true),
     style: ghostStyle
-  }, "🔒 Admin"))), passcodeError && /*#__PURE__*/React.createElement("div", {
+  }, "🔒 Admin"), authUser ? /*#__PURE__*/React.createElement("button", {
+    onClick: logout,
+    style: ghostStyle
+  }, `${authUser.name} · Log out`) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowAuthBox(true),
+    style: ghostStyle
+  }, "Log In"))), passcodeError && /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "right",
       fontSize: 11.5,
@@ -1018,7 +1141,50 @@ function App() {
       fontSize: 12.5,
       color: INDIGO
     }
-  }, "Couldn't reach the shared league data. Check that this is deployed on Vercel with the KV integration connected, or try refreshing."))), /*#__PURE__*/React.createElement("div", {
+  }, "Couldn't reach the shared league data. Check that this is deployed on Vercel with the KV integration connected, or try refreshing."), showAuthBox && /*#__PURE__*/React.createElement("div", {
+    style: { marginTop: 14, padding: "18px 20px", background: WHITE, borderRadius: 12, maxWidth: 380 }
+  },
+    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+      React.createElement("div", { style: { display: "flex", gap: 14 } },
+        ["login", "signup"].map(m => React.createElement("button", {
+          key: m,
+          onClick: () => { setAuthMode(m); setAuthError(""); setAuthNotice(""); },
+          style: {
+            border: "none", background: "none", cursor: "pointer",
+            fontFamily: "'Work Sans', sans-serif", fontWeight: authMode === m ? 700 : 500,
+            fontSize: 13, color: authMode === m ? INDIGO : INDIGO_MUTED, padding: 0,
+          }
+        }, m === "login" ? "Log In" : "Sign Up"))
+      ),
+      React.createElement("button", {
+        onClick: () => { setShowAuthBox(false); setAuthError(""); setAuthNotice(""); },
+        style: { border: "none", background: "none", cursor: "pointer", color: INDIGO_MUTED, fontSize: 16 }
+      }, "✕")
+    ),
+    React.createElement("input", {
+      type: "email", placeholder: "you@reloadsearch.com", value: authEmail,
+      onChange: e => setAuthEmail(e.target.value),
+      style: { ...inputStyleSmall, width: "100%", marginBottom: 8, boxSizing: "border-box" }
+    }),
+    React.createElement("input", {
+      type: "password", placeholder: "Password", value: authPassword,
+      onChange: e => setAuthPassword(e.target.value),
+      style: { ...inputStyleSmall, width: "100%", marginBottom: 8, boxSizing: "border-box" }
+    }),
+    authError && React.createElement("div", { style: { fontSize: 11.5, color: MELON_LINK, marginBottom: 8 } }, authError),
+    authNotice && React.createElement("div", { style: { fontSize: 11.5, color: INDIGO_MUTED, marginBottom: 8 } }, authNotice),
+    React.createElement("button", {
+      onClick: authMode === "login" ? doLogin : doSignup,
+      disabled: authLoading,
+      style: primaryButtonStyle
+    }, authLoading ? "…" : authMode === "login" ? "Log In" : "Create account"),
+    authMode === "signup" && React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED, marginTop: 8 } },
+      "Only works for your reloadsearch.com email — check with Scott or Lee if it's not recognised."
+    ),
+    React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED, marginTop: 8 } },
+      "Forgotten your password? Ask Scott or Lee to reset it for you."
+    )
+  ))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: INDIGO,
       padding: "22px 24px"
@@ -1802,6 +1968,52 @@ function App() {
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
           "Marking a deal Paid starts the 4-month commission payout the following month (commission sheets: coming in the next phase)."
         )
+      )
+    ),
+    isSuperAdmin && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Manage Logins" }),
+      pwdError && React.createElement("div", { style: { marginBottom: 10, fontSize: 11.5, color: MELON_LINK } }, pwdError),
+      userAccounts.length === 0 ? React.createElement(EmptyState, { text: "Loading…" }) :
+      React.createElement(React.Fragment, null,
+        React.createElement(TableHeader, { cols: ["Name", "Email", "Has account", "New password", ""] }),
+        userAccounts.map(u => React.createElement(RowLine, { key: u.email },
+          React.createElement(Cell, { width: 130 }, u.name),
+          React.createElement(Cell, { flex: true, color: INDIGO_MUTED }, u.email),
+          React.createElement(Cell, { width: 90, color: u.hasAccount ? VERDIGRIS : INDIGO_MUTED }, u.hasAccount ? "Yes" : "Not yet"),
+          React.createElement(Cell, { width: 150 },
+            React.createElement("input", {
+              type: "text",
+              value: newPasswordInputs[u.email] || "",
+              onChange: e => setNewPasswordInputs(prev => ({ ...prev, [u.email]: e.target.value })),
+              placeholder: "New password",
+              style: { ...inputStyleSmall, width: 130 }
+            })
+          ),
+          React.createElement(Cell, { width: 110 },
+            pwdNoticeEmail === u.email ? React.createElement("span", { style: { color: VERDIGRIS, fontSize: 12 } }, "Saved ✓") :
+            React.createElement("button", {
+              onClick: () => setUserPassword(u.email),
+              disabled: pwdSavingEmail === u.email,
+              style: ghostStyle
+            }, pwdSavingEmail === u.email ? "Saving…" : (u.hasAccount ? "Reset" : "Set"))
+          )
+        ))
+      ),
+      React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
+        "Setting a password here creates the account if it doesn't exist yet, or overwrites it if it does — the consultant can log in with it straight away."
+      )
+    )
+  ), tab === "commission" && React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 20 }
+  },
+    React.createElement(Panel, null,
+      React.createElement(SectionTitle, {
+        eyebrow: authUser ? authUser.name : "",
+        title: "My Commission"
+      }),
+      !authUser ? React.createElement(EmptyState, { text: "Log in to see your commission sheet." }) :
+      React.createElement("div", { style: { color: INDIGO_MUTED, fontSize: 14.5, lineHeight: 1.6 } },
+        `Hi ${authUser.name} — you're logged in. Commission sheets (your bands, running total, and monthly payouts) are being built next and will appear here.`
       )
     )
   ))));
