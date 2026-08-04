@@ -930,7 +930,7 @@ function App() {
       });
       const data = await res.json();
       if (!res.ok) { setAuthError(data.error || "Couldn't sign up."); return; }
-      const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase() };
+      const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase(), isAdmin: data.isAdmin, isSuperAdmin: data.isSuperAdmin };
       localStorage.setItem("reload-auth", JSON.stringify(user));
       setAuthUser(user);
       setShowAuthBox(false);
@@ -952,7 +952,7 @@ function App() {
       });
       const data = await res.json();
       if (!res.ok) { setAuthError(data.error || "Couldn't log in."); return; }
-      const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase() };
+      const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase(), isAdmin: data.isAdmin, isSuperAdmin: data.isSuperAdmin };
       localStorage.setItem("reload-auth", JSON.stringify(user));
       setAuthUser(user);
       setShowAuthBox(false);
