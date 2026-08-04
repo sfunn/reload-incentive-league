@@ -863,8 +863,17 @@ function App() {
   }
   const dealsYearOptions = useMemo(() => {
     const current = new Date().getUTCFullYear();
-    return [current - 1, current, current + 1];
+    return [current, current + 1];
   }, []);
+
+  // Converts an ISO date string ("2026-08-04") to day/month/year ("04/08/2026")
+  // for display. Leaves anything already non-ISO or empty untouched.
+  function toDayMonthYear(dateStr) {
+    if (!dateStr) return "—";
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+    if (!m) return dateStr;
+    return `${m[3]}/${m[2]}/${m[1]}`;
+  }
 
   const fontImport = `
     @import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap');
@@ -1744,10 +1753,13 @@ function App() {
         dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
         dealDetails.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
         React.createElement(React.Fragment, null,
-          React.createElement(TableHeader, { cols: ["Date", "Consultant", "Amount", "USD", "Paid"] }),
+          React.createElement(TableHeader, { cols: ["Date", "Consultant", "Candidate", "Client", "Start", "Amount", "USD", "Paid"] }),
           dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
-            React.createElement(Cell, { width: 90 }, r.feeDate || "—"),
-            React.createElement(Cell, { flex: true }, r.consultantName || r.consultantEmail || "Unmapped"),
+            React.createElement(Cell, { width: 90 }, toDayMonthYear(r.feeDate)),
+            React.createElement(Cell, { width: 130 }, r.consultantName || r.consultantEmail || "Unmapped"),
+            React.createElement(Cell, { width: 130, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
+            React.createElement(Cell, { width: 120, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
+            React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
             React.createElement(Cell, { width: 110 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && r.share !== "100.00" ? ` (${r.share}%)` : ""}`),
             React.createElement(Cell, { width: 100 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
             React.createElement(Cell, { width: 60 },
