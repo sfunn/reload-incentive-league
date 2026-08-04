@@ -2,6 +2,7 @@ const { kv } = require("@vercel/kv");
 
 const RECORDS_KEY = "atlas-fee-records";
 const FX_KEY = "atlas-fx-rates";
+const PLACEMENTS_KEY = "atlas-placements";
 
 function monthKeyFromDateStr(dateStr) {
   const d = dateStr ? new Date(dateStr) : new Date();
@@ -43,8 +44,18 @@ module.exports = async (req, res) => {
         return res.status(401).json({ error: "Incorrect passcode" });
       }
       const yearRecords = records.filter((r) => r.year === year);
+      const placements = (await kv.get(PLACEMENTS_KEY)) || {};
       const withUSD = await Promise.all(
-        yearRecords.map(async (r) => ({ ...r, usdAmount: await convertToUSD(r, allRates) }))
+        yearRecords.map(async (r) => {
+          const placement = r.placementId ? placements[r.placementId] : null;
+          return {
+            ...r,
+            usdAmount: await convertToUSD(r, allRates),
+            candidateName: (placement && placement.candidateName) || null,
+            clientCompanyName: (placement && placement.clientCompanyName) || null,
+            placementStartDate: (placement && placement.startDate) || null,
+          };
+        })
       );
       return res.status(200).json({ year, records: withUSD });
     }
