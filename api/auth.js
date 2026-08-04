@@ -19,6 +19,12 @@ const EMAIL_TO_CONSULTANT = {
   "natasha@reloadsearch.com": { id: "natasha-barnard", name: "Natasha Barnard" },
   "james@reloadsearch.com": { id: "james-lancer", name: "James Lancer" },
   "josh@reloadsearch.com": { id: "josh-stark", name: "Josh Stark" },
+  // Scott and Lee aren't consultants (no leaderboard entry, no commission
+  // sheet), but they still need real accounts to log in through the same
+  // single login as everyone else — their Super Admin status comes from
+  // SUPER_ADMIN_EMAILS in _authHelpers.js, not from being in this list.
+  "scott@reloadsearch.com": { id: null, name: "Scott Finn" },
+  "lee@reloadsearch.com": { id: null, name: "Lee Mamo" },
 };
 
 function normalizeEmail(email) {
