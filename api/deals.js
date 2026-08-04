@@ -1,4 +1,5 @@
 const { kv } = require("@vercel/kv");
+const { getUserFromRequest } = require("./_authHelpers");
 
 const RECORDS_KEY = "atlas-fee-records";
 const FX_KEY = "atlas-fx-rates";
@@ -23,7 +24,7 @@ async function convertToUSD(record, allRates) {
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -34,14 +35,12 @@ module.exports = async (req, res) => {
     const allRates = (await kv.get(FX_KEY)) || {};
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
 
-    // Scott/Lee-only: full detail view, including unconverted deals
+    // Super Admin only: full detail view, including unconverted deals
     // (missing an FX rate for their month) so they know a rate needs setting.
     if (req.query.detail === "true") {
-      if (!process.env.SUPER_ADMIN_PASSCODE) {
-        return res.status(500).json({ error: "SUPER_ADMIN_PASSCODE is not set on the server" });
-      }
-      if (req.query.passcode !== process.env.SUPER_ADMIN_PASSCODE) {
-        return res.status(401).json({ error: "Incorrect passcode" });
+      const user = await getUserFromRequest(req);
+      if (!user || !user.isSuperAdmin) {
+        return res.status(401).json({ error: "Super Admin access required" });
       }
       const yearRecords = records.filter((r) => r.year === year);
       const placements = (await kv.get(PLACEMENTS_KEY)) || {};
@@ -79,16 +78,14 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "POST") {
-    // Mark a fee record as paid — Scott/Lee only. This is the manual
+    // Mark a fee record as paid — Super Admin only. This is the manual
     // trigger point: the 4-month commission payout clock starts the month
     // AFTER this is set, computed later in the commission logic (Phase 2).
-    const { passcode, feeId, splitId, paid } = req.body || {};
-    if (!process.env.SUPER_ADMIN_PASSCODE) {
-      return res.status(500).json({ error: "SUPER_ADMIN_PASSCODE is not set on the server" });
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
     }
-    if (passcode !== process.env.SUPER_ADMIN_PASSCODE) {
-      return res.status(401).json({ error: "Incorrect passcode" });
-    }
+    const { feeId, splitId, paid } = req.body || {};
     if (!feeId || !splitId) {
       return res.status(400).json({ error: "feeId and splitId are required" });
     }
