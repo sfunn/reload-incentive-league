@@ -125,6 +125,21 @@ function monthOf(dateStr) {
   const d = new Date(dateStr);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
+// UI-facing month display, matching the DD/MM/YYYY convention used
+// elsewhere in the app — shown as "MM/YYYY" since there's no day component.
+// Internally we still key everything by "YYYY-MM" (monthOf's format),
+// since that's what the fee webhook derives from each deal's date.
+function toDisplayMonth(monthKey) {
+  const [y, m] = (monthKey || "").split("-");
+  if (!y || !m) return "";
+  return `${m}/${y}`;
+}
+function fromDisplayMonth(display) {
+  const match = /^(\d{1,2})\/(\d{4})$/.exec((display || "").trim());
+  if (!match) return null;
+  const m = match[1].padStart(2, "0");
+  return `${match[2]}-${m}`;
+}
 function monthLabel(monthKey) {
   const [y, m] = monthKey.split("-");
   const d = new Date(Date.UTC(Number(y), Number(m) - 1, 1));
@@ -403,7 +418,7 @@ function App() {
   const [dealDetails, setDealDetails] = useState([]);
   const [dealDetailsLoading, setDealDetailsLoading] = useState(false);
   const [fxRates, setFxRates] = useState({});
-  const [fxMonthInput, setFxMonthInput] = useState(monthOf(todayStr()));
+  const [fxMonthInput, setFxMonthInput] = useState(toDisplayMonth(monthOf(todayStr())));
   const [fxGbpInput, setFxGbpInput] = useState("");
   const [fxEurInput, setFxEurInput] = useState("");
   const [fxSaving, setFxSaving] = useState(false);
@@ -833,22 +848,35 @@ function App() {
       // silent
     }
   }, []);
+  // Keep the rate inputs showing whatever's actually stored for the selected
+  // month, so editing one currency can never silently blank out the other.
+  useEffect(() => {
+    const monthKey = fromDisplayMonth(fxMonthInput);
+    const stored = monthKey ? fxRates[monthKey] : null;
+    setFxGbpInput(stored && stored.GBP ? String(stored.GBP) : "");
+    setFxEurInput(stored && stored.EUR ? String(stored.EUR) : "");
+  }, [fxMonthInput, fxRates]);
   async function saveFxRate() {
-    if (!fxMonthInput.trim()) return;
+    const monthKey = fromDisplayMonth(fxMonthInput);
+    if (!monthKey) {
+      setFxError("Enter the month as MM/YYYY, e.g. 08/2026.");
+      return;
+    }
     setFxSaving(true);
     setFxError("");
     try {
+      // Merge with whatever's already stored for this month — an empty
+      // input means "leave this currency as it was", not "set it to zero".
+      const existing = fxRates[monthKey] || {};
+      const gbp = fxGbpInput.trim() === "" ? existing.GBP || 0 : parseFloat(fxGbpInput) || 0;
+      const eur = fxEurInput.trim() === "" ? existing.EUR || 0 : parseFloat(fxEurInput) || 0;
       const res = await fetch("/api/fx-rates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           passcode: superAdminPasscode,
-          monthKey: fxMonthInput.trim(),
-          rates: {
-            GBP: parseFloat(fxGbpInput) || 0,
-            EUR: parseFloat(fxEurInput) || 0,
-            USD: 1
-          }
+          monthKey,
+          rates: { GBP: gbp, EUR: eur, USD: 1 }
         })
       });
       if (!res.ok) throw new Error("save failed");
@@ -1729,8 +1757,8 @@ function App() {
           React.createElement("div", { style: labelStyle }, "This month's exchange rate (→ USD)"),
           React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" } },
             React.createElement("div", null,
-              React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Month (YYYY-MM)"),
-              React.createElement("input", { type: "text", value: fxMonthInput, onChange: e => setFxMonthInput(e.target.value), placeholder: "2026-08", style: { ...inputStyleSmall, width: 100 } })
+              React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Month (MM/YYYY)"),
+              React.createElement("input", { type: "text", value: fxMonthInput, onChange: e => setFxMonthInput(e.target.value), placeholder: "08/2026", style: { ...inputStyleSmall, width: 100 } })
             ),
             React.createElement("div", null,
               React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "£ GBP rate"),
@@ -1745,7 +1773,7 @@ function App() {
           fxError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, fxError),
           Object.keys(fxRates).length > 0 && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
             Object.entries(fxRates).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 6).map(([mk, r]) =>
-              `${mk}: £${r.GBP || "—"} · €${r.EUR || "—"}`
+              `${toDisplayMonth(mk)}: £${r.GBP || "—"} · €${r.EUR || "—"}`
             ).join("   ·   ")
           )
         ),
