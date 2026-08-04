@@ -1,6 +1,7 @@
 const { kv } = require("@vercel/kv");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { getUserFromRequest, SUPER_ADMIN_EMAILS, USERS_KEY } = require("./_authHelpers");
 
 // Only these 12 people are allowed to have an account — this is a fixed
 // whitelist, not open signup. Same set as the Deal Lead Award (10 consultants
@@ -20,29 +21,20 @@ const EMAIL_TO_CONSULTANT = {
   "josh@reloadsearch.com": { id: "josh-stark", name: "Josh Stark" },
 };
 
-const USERS_KEY = "auth-users";
-
 function normalizeEmail(email) {
   return (email || "").trim().toLowerCase();
 }
 
-function requireSuperAdmin(req, res) {
-  if (!process.env.SUPER_ADMIN_PASSCODE) {
-    res.status(500).json({ error: "SUPER_ADMIN_PASSCODE is not set on the server" });
-    return false;
-  }
-  const passcode = req.method === "GET" ? req.query.passcode : (req.body || {}).passcode;
-  if (passcode !== process.env.SUPER_ADMIN_PASSCODE) {
-    res.status(401).json({ error: "Incorrect passcode" });
-    return false;
-  }
-  return true;
+function effectiveRoles(email, record) {
+  const isSuperAdmin = !!(record && record.isSuperAdmin) || SUPER_ADMIN_EMAILS.has(email);
+  const isAdmin = !!(record && record.isAdmin) || isSuperAdmin;
+  return { isAdmin, isSuperAdmin };
 }
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
@@ -50,23 +42,61 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: "AUTH_JWT_SECRET is not set on the server" });
   }
 
-  const action = req.method === "GET" ? req.query.action : req.query.action;
+  const action = req.query.action;
   const body = req.body || {};
 
-  // --- LIST USERS: Scott/Lee only, to see who has an account yet ---
+  // --- LIST USERS: Super Admin only ---
   if (req.method === "GET" && action === "list-users") {
-    if (!requireSuperAdmin(req, res)) return;
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
     const users = (await kv.get(USERS_KEY)) || {};
-    const list = Object.entries(EMAIL_TO_CONSULTANT).map(([email, c]) => ({
-      email,
-      name: c.name,
-      consultantId: c.id,
-      hasAccount: !!users[email],
-    }));
+    const list = Object.entries(EMAIL_TO_CONSULTANT).map(([email, c]) => {
+      const record = users[email];
+      const roles = effectiveRoles(email, record);
+      return {
+        email,
+        name: c.name,
+        consultantId: c.id,
+        hasAccount: !!record,
+        isAdmin: roles.isAdmin,
+        isSuperAdmin: roles.isSuperAdmin,
+        isPermanentSuperAdmin: SUPER_ADMIN_EMAILS.has(email),
+      };
+    });
     return res.status(200).json({ users: list });
   }
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  // --- SIGN UP ---
+  if (action === "signup") {
+    const email = normalizeEmail(body.email);
+    const { password } = body;
+    const consultant = EMAIL_TO_CONSULTANT[email];
+    if (!consultant) {
+      return res.status(403).json({ error: "This email isn't recognised. Check with Scott or Lee." });
+    }
+    if (!password || password.length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters." });
+    }
+    const users = (await kv.get(USERS_KEY)) || {};
+    if (users[email]) {
+      return res.status(409).json({ error: "An account already exists for this email — try logging in instead." });
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    users[email] = {
+      passwordHash,
+      consultantId: consultant.id,
+      name: consultant.name,
+      isAdmin: false,
+      isSuperAdmin: false,
+      createdAt: new Date().toISOString(),
+    };
+    await kv.set(USERS_KEY, users);
+    const roles = effectiveRoles(email, users[email]);
+    const token = jwt.sign({ email }, process.env.AUTH_JWT_SECRET, { expiresIn: "30d" });
+    return res.status(200).json({ ok: true, token, consultantId: consultant.id, name: consultant.name, ...roles });
+  }
 
   // --- LOG IN ---
   if (action === "login") {
@@ -81,14 +111,15 @@ module.exports = async (req, res) => {
     if (!match) {
       return res.status(401).json({ error: "Incorrect password." });
     }
-    const token = jwt.sign({ email, consultantId: user.consultantId, name: user.name }, process.env.AUTH_JWT_SECRET, { expiresIn: "30d" });
-    return res.status(200).json({ ok: true, token, consultantId: user.consultantId, name: user.name });
+    const roles = effectiveRoles(email, user);
+    const token = jwt.sign({ email }, process.env.AUTH_JWT_SECRET, { expiresIn: "30d" });
+    return res.status(200).json({ ok: true, token, consultantId: user.consultantId, name: user.name, ...roles });
   }
 
-  // --- ADMIN SET/RESET PASSWORD: Scott/Lee only. Creates the account if it
-  // doesn't exist yet, or overwrites the password if it does. ---
+  // --- ADMIN SET/RESET PASSWORD: Super Admin only ---
   if (action === "admin-set-password") {
-    if (!requireSuperAdmin(req, res)) return;
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
     const email = normalizeEmail(body.email);
     const { newPassword } = body;
     const consultant = EMAIL_TO_CONSULTANT[email];
@@ -101,11 +132,33 @@ module.exports = async (req, res) => {
     const users = (await kv.get(USERS_KEY)) || {};
     const passwordHash = await bcrypt.hash(newPassword, 10);
     users[email] = {
+      ...(users[email] || {}),
       passwordHash,
       consultantId: consultant.id,
       name: consultant.name,
+      isAdmin: (users[email] && users[email].isAdmin) || false,
+      isSuperAdmin: (users[email] && users[email].isSuperAdmin) || false,
       createdAt: (users[email] && users[email].createdAt) || new Date().toISOString(),
     };
+    await kv.set(USERS_KEY, users);
+    return res.status(200).json({ ok: true });
+  }
+
+  // --- ADMIN SET ROLES: Super Admin only ---
+  if (action === "admin-set-roles") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    const email = normalizeEmail(body.email);
+    const consultant = EMAIL_TO_CONSULTANT[email];
+    if (!consultant) {
+      return res.status(400).json({ error: "That email isn't on the consultant list." });
+    }
+    const users = (await kv.get(USERS_KEY)) || {};
+    if (!users[email]) {
+      return res.status(400).json({ error: "This person doesn't have an account yet — set a password for them first." });
+    }
+    users[email].isAdmin = !!body.isAdmin;
+    users[email].isSuperAdmin = !!body.isSuperAdmin;
     await kv.set(USERS_KEY, users);
     return res.status(200).json({ ok: true });
   }
