@@ -1,32 +1,27 @@
 const { kv } = require("@vercel/kv");
+const { getUserFromRequest } = require("./_authHelpers");
 
 const KEY = "reload-league-weeks";
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
   if (req.method === "GET") {
-    if (typeof req.query.checkPasscode === "string") {
-      const valid = req.query.checkPasscode === process.env.ADMIN_PASSCODE;
-      return res.status(200).json({ valid });
-    }
     const weeks = (await kv.get(KEY)) || [];
     return res.status(200).json({ weeks });
   }
 
   if (req.method === "POST") {
-    const { passcode, weeks } = req.body || {};
-    if (!process.env.ADMIN_PASSCODE) {
-      return res.status(500).json({ error: "ADMIN_PASSCODE is not set on the server" });
-    }
-    if (passcode !== process.env.ADMIN_PASSCODE) {
-      return res.status(401).json({ error: "Incorrect passcode" });
+    const { weeks } = req.body || {};
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isAdmin) {
+      return res.status(401).json({ error: "Admin access required to save manual entries." });
     }
     if (!Array.isArray(weeks)) {
       return res.status(400).json({ error: "Malformed weeks payload" });
