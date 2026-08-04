@@ -381,12 +381,6 @@ function App() {
   const [consultants] = useState(INITIAL_CONSULTANTS);
   const [weeks, setWeeks] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [adminPasscode, setAdminPasscode] = useState("");
-  const [passcodeInput, setPasscodeInput] = useState("");
-  const [passcodeError, setPasscodeError] = useState("");
-  const [showPasscodeBox, setShowPasscodeBox] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
   const [atlasPulling, setAtlasPulling] = useState(false);
   const [atlasError, setAtlasError] = useState("");
@@ -409,12 +403,6 @@ function App() {
   const [dealsLeaderboard, setDealsLeaderboard] = useState([]);
   const [dealsLoading, setDealsLoading] = useState(false);
   const [dealsError, setDealsError] = useState("");
-  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
-  const [superAdminPasscode, setSuperAdminPasscode] = useState("");
-  const [showSuperAdminBox, setShowSuperAdminBox] = useState(false);
-  const [superAdminInput, setSuperAdminInput] = useState("");
-  const [superAdminError, setSuperAdminError] = useState("");
-  const [superAdminUnlocking, setSuperAdminUnlocking] = useState(false);
   const [dealDetails, setDealDetails] = useState([]);
   const [dealDetailsLoading, setDealDetailsLoading] = useState(false);
   const [fxRates, setFxRates] = useState({});
@@ -441,6 +429,13 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+
+  // Derived roles from the logged-in user — replaces the old separate
+  // Admin/Super Admin passcodes entirely. Everyone uses the same login;
+  // these two flags (set by Scott/Lee in Manage Logins) unlock extra tabs
+  // and panels automatically.
+  const isAdmin = !!(authUser && authUser.isAdmin);
+  const isSuperAdmin = !!(authUser && authUser.isSuperAdmin);
 
   // --- Manage Logins (Scott & Lee) ---
   const [userAccounts, setUserAccounts] = useState([]);
@@ -479,10 +474,10 @@ function App() {
       const res = await fetch(API_URL, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authUser ? authUser.token : ""}`
         },
         body: JSON.stringify({
-          passcode: adminPasscode,
           weeks: nextWeeks
         })
       });
@@ -492,7 +487,7 @@ function App() {
     } catch (e) {
       setSaveState("error");
     }
-  }, [adminPasscode]);
+  }, [authUser]);
   const sortedWeeks = useMemo(() => [...weeks].sort((a, b) => a.date.localeCompare(b.date)), [weeks]);
   const latestWeek = sortedWeeks[sortedWeeks.length - 1];
   const latestWeekComputed = latestWeek ? computeWeekRows(latestWeek, consultants) : null;
@@ -696,32 +691,6 @@ function App() {
     setWeeks(next);
     await persist(next);
   }
-  async function tryUnlock() {
-    if (!passcodeInput.trim()) return;
-    setUnlocking(true);
-    setPasscodeError("");
-    try {
-      const res = await fetch(`${API_URL}?checkPasscode=${encodeURIComponent(passcodeInput)}`);
-      const data = await res.json();
-      if (data.valid) {
-        setIsAdmin(true);
-        setAdminPasscode(passcodeInput);
-        setPasscodeInput("");
-        setShowPasscodeBox(false);
-      } else {
-        setPasscodeError("Incorrect passcode");
-      }
-    } catch (e) {
-      setPasscodeError("Couldn't reach the server — try again.");
-    } finally {
-      setUnlocking(false);
-    }
-  }
-  function lockAdmin() {
-    setIsAdmin(false);
-    setAdminPasscode("");
-    if (tab === "entry") setTab("table");
-  }
   async function askQuestion() {
     if (!question.trim()) return;
     if (!apiKey.trim()) {
@@ -803,42 +772,19 @@ function App() {
   useEffect(() => {
     if (tab === "deals") refreshDealsLeaderboard(dealsYear);
   }, [tab, dealsYear, refreshDealsLeaderboard]);
-  async function trySuperAdminUnlock() {
-    if (!superAdminInput.trim()) return;
-    setSuperAdminUnlocking(true);
-    setSuperAdminError("");
+  const loadUserAccounts = useCallback(async () => {
+    if (!authUser) return;
     try {
-      const res = await fetch(`/api/deals?year=${dealsYear}&detail=true&passcode=${encodeURIComponent(superAdminInput)}`);
-      if (res.status === 401) {
-        setSuperAdminError("Incorrect passcode");
-        return;
-      }
-      if (!res.ok) throw new Error("bad response");
-      const data = await res.json();
-      setDealDetails(data.records || []);
-      setIsSuperAdmin(true);
-      setSuperAdminPasscode(superAdminInput);
-      setSuperAdminInput("");
-      setShowSuperAdminBox(false);
-      loadFxRates();
-      loadUserAccounts(superAdminInput);
-    } catch (e) {
-      setSuperAdminError("Couldn't reach the server — try again.");
-    } finally {
-      setSuperAdminUnlocking(false);
-    }
-  }
-  const loadUserAccounts = useCallback(async (passcodeOverride) => {
-    const pc = passcodeOverride || superAdminPasscode;
-    try {
-      const res = await fetch(`/api/auth?action=list-users&passcode=${encodeURIComponent(pc)}`);
+      const res = await fetch("/api/auth?action=list-users", {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setUserAccounts(data.users || []);
     } catch (e) {
       // silent — the deal details fetch already surfaces a connection error if relevant
     }
-  }, [superAdminPasscode]);
+  }, [authUser]);
   async function setUserPassword(email) {
     const newPassword = (newPasswordInputs[email] || "").trim();
     if (!newPassword || newPassword.length < 8) {
@@ -850,8 +796,8 @@ function App() {
     try {
       const res = await fetch("/api/auth?action=admin-set-password", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: superAdminPasscode, email, newPassword }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ email, newPassword }),
       });
       const data = await res.json();
       if (!res.ok) { setPwdError(data.error || "Couldn't set the password."); return; }
@@ -865,16 +811,28 @@ function App() {
       setPwdSavingEmail(null);
     }
   }
-  function lockSuperAdmin() {
-    setIsSuperAdmin(false);
-    setSuperAdminPasscode("");
-    setDealDetails([]);
+  async function setUserRoles(email, nextIsAdmin, nextIsSuperAdmin) {
+    setPwdError("");
+    try {
+      const res = await fetch("/api/auth?action=admin-set-roles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ email, isAdmin: nextIsAdmin, isSuperAdmin: nextIsSuperAdmin }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPwdError(data.error || "Couldn't update their access."); return; }
+      loadUserAccounts();
+    } catch (e) {
+      setPwdError("Couldn't reach the server — try again.");
+    }
   }
   const loadDealDetails = useCallback(async () => {
-    if (!isSuperAdmin) return;
+    if (!isSuperAdmin || !authUser) return;
     setDealDetailsLoading(true);
     try {
-      const res = await fetch(`/api/deals?year=${dealsYear}&detail=true&passcode=${encodeURIComponent(superAdminPasscode)}`);
+      const res = await fetch(`/api/deals?year=${dealsYear}&detail=true`, {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setDealDetails(data.records || []);
@@ -883,16 +841,20 @@ function App() {
     } finally {
       setDealDetailsLoading(false);
     }
-  }, [isSuperAdmin, superAdminPasscode, dealsYear]);
+  }, [isSuperAdmin, authUser, dealsYear]);
   useEffect(() => {
-    if (isSuperAdmin) loadDealDetails();
-  }, [isSuperAdmin, dealsYear, loadDealDetails]);
+    if (isSuperAdmin) {
+      loadDealDetails();
+      loadFxRates();
+      loadUserAccounts();
+    }
+  }, [isSuperAdmin, dealsYear]);
   async function markPaid(feeId, splitId, paidVal) {
     try {
       const res = await fetch("/api/deals", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: superAdminPasscode, feeId, splitId, paid: paidVal })
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ feeId, splitId, paid: paidVal })
       });
       if (!res.ok) throw new Error("save failed");
       await loadDealDetails();
@@ -935,9 +897,8 @@ function App() {
       const eur = fxEurInput.trim() === "" ? existing.EUR || 0 : parseFloat(fxEurInput) || 0;
       const res = await fetch("/api/fx-rates", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
         body: JSON.stringify({
-          passcode: superAdminPasscode,
           monthKey,
           rates: { GBP: gbp, EUR: eur, USD: 1 }
         })
@@ -1020,10 +981,10 @@ function App() {
   const fontImport = `
     @import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap');
   `;
-  const tabs = [...(isAdmin ? [{
+  const tabs = [{
     id: "entry",
     label: "Log This Week"
-  }] : []), {
+  }, {
     id: "table",
     label: "League Table"
   }, {
@@ -1087,51 +1048,13 @@ function App() {
       fontSize: 11,
       color: INDIGO_MUTED
     }
-  }, saveState === "saving" && "Saving…", saveState === "saved" && "Saved ✓", saveState === "error" && "Save failed"), isAdmin ? /*#__PURE__*/React.createElement("button", {
-    onClick: lockAdmin,
-    style: ghostStyle
-  }, "🔓 Admin — Log out") : showPasscodeBox ? /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    value: passcodeInput,
-    autoFocus: true,
-    onChange: e => {
-      setPasscodeInput(e.target.value);
-      setPasscodeError("");
-    },
-    onKeyDown: e => e.key === "Enter" && tryUnlock(),
-    placeholder: "Passcode",
-    style: {
-      ...inputStyleSmall,
-      width: 110
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: tryUnlock,
-    disabled: unlocking,
-    style: ghostStyle
-  }, unlocking ? "Checking…" : "Unlock")) : /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowPasscodeBox(true),
-    style: ghostStyle
-  }, "🔒 Admin"), authUser ? /*#__PURE__*/React.createElement("button", {
+  }, saveState === "saving" && "Saving…", saveState === "saved" && "Saved ✓", saveState === "error" && "Save failed"), authUser ? /*#__PURE__*/React.createElement("button", {
     onClick: logout,
     style: ghostStyle
   }, `${authUser.name} · Log out`) : /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowAuthBox(true),
     style: ghostStyle
-  }, "Log In"))), passcodeError && /*#__PURE__*/React.createElement("div", {
-    style: {
-      textAlign: "right",
-      fontSize: 11.5,
-      color: MELON_LINK,
-      marginTop: -12,
-      paddingBottom: 10
-    }
-  }, passcodeError), connectionError && /*#__PURE__*/React.createElement("div", {
+  }, "Log In"))), connectionError && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14,
       padding: "10px 14px",
@@ -1304,7 +1227,7 @@ function App() {
       padding: 60,
       color: INDIGO_MUTED
     }
-  }, "Loading league data…") : /*#__PURE__*/React.createElement(React.Fragment, null, tab === "entry" && isAdmin && /*#__PURE__*/React.createElement("div", {
+  }, "Loading league data…") : /*#__PURE__*/React.createElement(React.Fragment, null, tab === "entry" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -1502,11 +1425,14 @@ function App() {
     style: ghostStyle
   }, atlasPulling ? "Pulling from Atlas…" : "Pull numbers from Atlas"), /*#__PURE__*/React.createElement("button", {
     onClick: saveWeek,
-    disabled: !formMetric.trim() && !existingWeekForDate,
-    style: primaryButtonStyle(!formMetric.trim() && !existingWeekForDate)
+    disabled: !isAdmin || (!formMetric.trim() && !existingWeekForDate),
+    title: !isAdmin ? "Only admins can save manual entries — ask Scott or Lee for access." : undefined,
+    style: primaryButtonStyle(!isAdmin || (!formMetric.trim() && !existingWeekForDate))
   }, /*#__PURE__*/React.createElement(Plus, {
     size: 16
-  }), " ", editingWeekId ? "Save corrections" : `Save ${TEAMS[formTeam].label}'s results`), sortedWeeks.length > 0 && /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
+  }), " ", editingWeekId ? "Save corrections" : `Save ${TEAMS[formTeam].label}'s results`), !isAdmin && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, color: INDIGO_MUTED }
+  }, "Anyone can pull this week's numbers from Atlas. Saving manual corrections needs Admin access — ask Scott or Lee."), sortedWeeks.length > 0 && /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
     eyebrow: "Logged so far",
     title: "Past weeks"
   }), /*#__PURE__*/React.createElement("div", {
@@ -1896,30 +1822,9 @@ function App() {
         "Resets each 1 January. Deals in a currency with no exchange rate set for that month are held back until Scott or Lee set one below."
       )
     ),
-    React.createElement(Panel, null,
-      !isSuperAdmin ? React.createElement(React.Fragment, null,
-        React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
-        showSuperAdminBox ? React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
-          React.createElement("input", {
-            type: "password",
-            value: superAdminInput,
-            autoFocus: true,
-            onChange: e => { setSuperAdminInput(e.target.value); setSuperAdminError(""); },
-            onKeyDown: e => e.key === "Enter" && trySuperAdminUnlock(),
-            placeholder: "Passcode",
-            style: { ...inputStyleSmall, width: 140 }
-          }),
-          React.createElement("button", { onClick: trySuperAdminUnlock, disabled: superAdminUnlocking, style: ghostStyle },
-            superAdminUnlocking ? "Checking…" : "Unlock"
-          )
-        ) : React.createElement("button", { onClick: () => setShowSuperAdminBox(true), style: ghostStyle }, "🔒 Unlock"),
-        superAdminError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, superAdminError)
-      ) : React.createElement(React.Fragment, null,
-        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } },
-          React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
-          React.createElement("button", { onClick: lockSuperAdmin, style: ghostStyle }, "🔓 Log out")
-        ),
-        React.createElement("div", { style: { marginBottom: 20 } },
+    isSuperAdmin && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
+      React.createElement("div", { style: { marginBottom: 20, marginTop: 16 } },
           React.createElement("div", { style: labelStyle }, "This month's exchange rate (→ USD)"),
           React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" } },
             React.createElement("div", null,
@@ -1968,28 +1873,45 @@ function App() {
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
           "Marking a deal Paid starts the 4-month commission payout the following month (commission sheets: coming in the next phase)."
         )
-      )
     ),
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Manage Logins" }),
       pwdError && React.createElement("div", { style: { marginBottom: 10, fontSize: 11.5, color: MELON_LINK } }, pwdError),
       userAccounts.length === 0 ? React.createElement(EmptyState, { text: "Loading…" }) :
       React.createElement(React.Fragment, null,
-        React.createElement(TableHeader, { cols: ["Name", "Email", "Has account", "New password", ""] }),
+        React.createElement(TableHeader, { cols: ["Name", "Email", "Has account", "Admin", "Super Admin", "New password", ""] }),
         userAccounts.map(u => React.createElement(RowLine, { key: u.email },
-          React.createElement(Cell, { width: 130 }, u.name),
+          React.createElement(Cell, { width: 110 }, u.name),
           React.createElement(Cell, { flex: true, color: INDIGO_MUTED }, u.email),
-          React.createElement(Cell, { width: 90, color: u.hasAccount ? VERDIGRIS : INDIGO_MUTED }, u.hasAccount ? "Yes" : "Not yet"),
-          React.createElement(Cell, { width: 150 },
+          React.createElement(Cell, { width: 80, color: u.hasAccount ? VERDIGRIS : INDIGO_MUTED }, u.hasAccount ? "Yes" : "Not yet"),
+          React.createElement(Cell, { width: 70 },
+            u.isPermanentSuperAdmin ? React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, "—") :
+            React.createElement("input", {
+              type: "checkbox",
+              checked: u.isAdmin,
+              disabled: !u.hasAccount,
+              onChange: e => setUserRoles(u.email, e.target.checked, u.isSuperAdmin)
+            })
+          ),
+          React.createElement(Cell, { width: 90 },
+            u.isPermanentSuperAdmin ? React.createElement("span", { style: { fontSize: 11, color: VERDIGRIS } }, "Always") :
+            React.createElement("input", {
+              type: "checkbox",
+              checked: u.isSuperAdmin,
+              disabled: !u.hasAccount,
+              onChange: e => setUserRoles(u.email, u.isAdmin, e.target.checked)
+            })
+          ),
+          React.createElement(Cell, { width: 130 },
             React.createElement("input", {
               type: "text",
               value: newPasswordInputs[u.email] || "",
               onChange: e => setNewPasswordInputs(prev => ({ ...prev, [u.email]: e.target.value })),
               placeholder: "New password",
-              style: { ...inputStyleSmall, width: 130 }
+              style: { ...inputStyleSmall, width: 110 }
             })
           ),
-          React.createElement(Cell, { width: 110 },
+          React.createElement(Cell, { width: 100 },
             pwdNoticeEmail === u.email ? React.createElement("span", { style: { color: VERDIGRIS, fontSize: 12 } }, "Saved ✓") :
             React.createElement("button", {
               onClick: () => setUserPassword(u.email),
@@ -2000,7 +1922,7 @@ function App() {
         ))
       ),
       React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-        "Setting a password here creates the account if it doesn't exist yet, or overwrites it if it does — the consultant can log in with it straight away."
+        "Admin can save manual weekly entries. Super Admin also gets Deal Lead Award's financial details, exchange rates, and this page. A password must be set before roles can be granted."
       )
     )
   ), tab === "commission" && React.createElement("div", {
