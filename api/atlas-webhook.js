@@ -6,9 +6,7 @@ import { Webhook } from "svix";
 // 1. INTERVIEW_STAGES below — confirm with Atlas/your team whether "Candidates
 //    to IV stage" means only "1st Stage Interview", or also "HR call"/"HRX".
 //    If it's more than one stage, add them all to the array.
-// 2. EMAIL_TO_CONSULTANT — fill this in using the real response from
-//    GET /api/v1/users (match each consultant's Atlas email to their id from
-//    public/index.html's INITIAL_CONSULTANTS list).
+// 2. EMAIL_TO_CONSULTANT — already filled in with real Atlas emails.
 // ============================================================================
 const CVS_OUT_STAGE = "CV Sent";
 const INTERVIEW_STAGES = ["1st Stage Interview"]; // add "HR call" / "HRX" here if needed
@@ -86,18 +84,23 @@ export default async function handler(req, res) {
   // Only handle stage-move events; acknowledge (200) everything else so
   // Atlas doesn't keep retrying events we don't care about.
   if (payload.event !== "candidate.stageMoved") {
+    console.log("[atlas-webhook] skipped: not a stage move. event was:", payload.event);
     return res.status(200).json({ ok: true, skipped: true, reason: "not a stage move" });
   }
 
   const { newStage, candidateId, projectId, movedAt } = payload.data || {};
   if (!newStage || !candidateId || !projectId || !movedAt) {
+    console.log("[atlas-webhook] skipped: missing fields. data was:", JSON.stringify(payload.data));
     return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
   }
 
   let metric = null;
   if (newStage.name === CVS_OUT_STAGE) metric = "cvsOut";
   else if (INTERVIEW_STAGES.includes(newStage.name)) metric = "interviews";
-  else return res.status(200).json({ ok: true, skipped: true, reason: "not a tracked stage" });
+  else {
+    console.log("[atlas-webhook] skipped: not a tracked stage. newStage.name was:", JSON.stringify(newStage.name));
+    return res.status(200).json({ ok: true, skipped: true, reason: "not a tracked stage" });
+  }
 
   let consultantId = null;
   try {
@@ -105,13 +108,16 @@ export default async function handler(req, res) {
     // the pipeline stage — so admin/manager moves made on a consultant's
     // behalf still count correctly for that consultant.
     const email = await lookupCandidateOwnerEmail(projectId, candidateId);
+    console.log("[atlas-webhook] candidate owner email:", email);
     if (email) consultantId = EMAIL_TO_CONSULTANT[email] || null;
   } catch (e) {
+    console.error("[atlas-webhook] owner lookup failed:", e.message);
     // Still acknowledge receipt so Atlas doesn't retry indefinitely on our error
     return res.status(200).json({ ok: true, error: "candidate owner lookup failed" });
   }
 
   if (!consultantId) {
+    console.log("[atlas-webhook] skipped: no consultant mapped for this owner email");
     return res.status(200).json({ ok: true, skipped: true, reason: "unmapped candidate owner" });
   }
 
