@@ -1,4 +1,5 @@
 const { kv } = require("@vercel/kv");
+const { getUserFromRequest } = require("./_authHelpers");
 
 // Rates are stored per calendar month, e.g. "2026-08", so historical months
 // keep whatever rate was set at the time rather than being overwritten by
@@ -10,7 +11,7 @@ const KEY = "atlas-fx-rates";
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -22,17 +23,14 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "POST") {
-    // Exchange rates are set by Scott/Lee only — a separate, higher-tier
-    // passcode from the general ADMIN_PASSCODE, since James and Josh are
+    // Exchange rates are set by Scott/Lee only — James and Josh are
     // themselves earners on the Deal Lead Award and shouldn't be the ones
     // setting the conversion rate their own numbers are judged against.
-    const { passcode, monthKey, rates: monthRates } = req.body || {};
-    if (!process.env.SUPER_ADMIN_PASSCODE) {
-      return res.status(500).json({ error: "SUPER_ADMIN_PASSCODE is not set on the server" });
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
     }
-    if (passcode !== process.env.SUPER_ADMIN_PASSCODE) {
-      return res.status(401).json({ error: "Incorrect passcode" });
-    }
+    const { monthKey, rates: monthRates } = req.body || {};
     if (!monthKey || typeof monthRates !== "object") {
       return res.status(400).json({ error: "Malformed rates payload" });
     }
