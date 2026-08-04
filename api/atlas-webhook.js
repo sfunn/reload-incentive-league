@@ -23,6 +23,14 @@ const EMAIL_TO_CONSULTANT = {
   "joshd@reloadsearch.com": "josh-davis",
   "natasha@reloadsearch.com": "natasha-barnard",
 };
+
+// Team leaders — real consultants in Atlas, but excluded from the league
+// table on purpose. Candidates they own are acknowledged and skipped,
+// not treated as an error.
+const TEAM_LEADER_EMAILS = new Set([
+  "james@reloadsearch.com",
+  "josh@reloadsearch.com",
+]);
 // ============================================================================
 
 function getRawBody(req) {
@@ -109,6 +117,12 @@ export default async function handler(req, res) {
     // behalf still count correctly for that consultant.
     const email = await lookupCandidateOwnerEmail(projectId, candidateId);
     console.log("[atlas-webhook] candidate owner email:", email);
+
+    if (email && TEAM_LEADER_EMAILS.has(email)) {
+      console.log("[atlas-webhook] skipped: owner is a team leader, not tracked on leaderboard");
+      return res.status(200).json({ ok: true, skipped: true, reason: "team leader, excluded from leaderboard" });
+    }
+
     if (email) consultantId = EMAIL_TO_CONSULTANT[email] || null;
   } catch (e) {
     console.error("[atlas-webhook] owner lookup failed:", e.message);
