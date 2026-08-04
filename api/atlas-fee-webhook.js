@@ -86,7 +86,7 @@ export default async function handler(req, res) {
   }
 
   const data = payload.data || {};
-  const { id: feeId, feeDate, amount, currency, splits } = data;
+  const { id: feeId, feeDate, amount, currency, splits, placementId } = data;
 
   if (!feeId || !amount || !currency || !Array.isArray(splits) || splits.length === 0) {
     console.log("[atlas-fee-webhook] skipped: missing fields. data was:", JSON.stringify(data));
@@ -100,6 +100,13 @@ export default async function handler(req, res) {
   // add fresh entries — one per split.
   const RECORDS_KEY = "atlas-fee-records";
   const existing = (await kv.get(RECORDS_KEY)) || [];
+  // Preserve any "paid" status already set on a matching split before we
+  // rebuild it below — a financial.feeUpdated re-send shouldn't silently
+  // wipe out a deal Scott/Lee already marked as paid.
+  const priorPaidBySplit = {};
+  existing.forEach((r) => {
+    if (r.feeId === feeId) priorPaidBySplit[r.splitId] = { paid: r.paid, paidMarkedAt: r.paidMarkedAt };
+  });
   const filtered = existing.filter((r) => r.feeId !== feeId);
 
   const newRecords = [];
@@ -108,6 +115,7 @@ export default async function handler(req, res) {
     const consultantId = email ? EMAIL_TO_CONSULTANT[email] || null : null;
     const shareAmount = computeShareAmount(amount, split.share, splits.length);
 
+    const prior = priorPaidBySplit[split.id] || { paid: false, paidMarkedAt: null };
     const record = {
       feeId,
       splitId: split.id,
@@ -120,8 +128,9 @@ export default async function handler(req, res) {
       consultantEmail: email || null,
       consultantId,
       consultantName: (split.feeEarner && split.feeEarner.name) || null,
-      paid: false,
-      paidMarkedAt: null,
+      placementId: placementId || null,
+      paid: prior.paid,
+      paidMarkedAt: prior.paidMarkedAt,
       updatedAt: new Date().toISOString(),
     };
 
