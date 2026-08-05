@@ -164,6 +164,11 @@ function computeWeekRows(week, consultants) {
     const metricValue = isCvsOutWeek ? cvs : Number(entry.metricValue) || 0;
     return {
       ...c,
+      // Prefer the team stamped onto this row when it was originally
+      // logged — so changing someone's team assignment later never
+      // rewrites how past weeks scored. Only falls back to the live
+      // assignment for old rows saved before this existed.
+      team: entry.team || c.team,
       cvs,
       interviews,
       metricValue
@@ -382,7 +387,11 @@ function AlertCircle({
 // the passcode itself never ships to the browser.
 const API_URL = "/api/league";
 function App() {
-  const [consultants] = useState(INITIAL_CONSULTANTS);
+  const [teamOverrides, setTeamOverrides] = useState({});
+  const consultants = useMemo(
+    () => INITIAL_CONSULTANTS.map(c => teamOverrides[c.id] ? { ...c, team: teamOverrides[c.id] } : c),
+    [teamOverrides]
+  );
   const [weeks, setWeeks] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
@@ -430,6 +439,9 @@ function App() {
   const [bandsError, setBandsError] = useState("");
   const [targetInput, setTargetInput] = useState("");
   const [targetSaving, setTargetSaving] = useState(false);
+  const [thisMonthItems, setThisMonthItems] = useState([]);
+  const [thisMonthTotal, setThisMonthTotal] = useState(0);
+  const [thisMonthLoading, setThisMonthLoading] = useState(false);
 
   // --- Auth state (login/signup/reset) ---
   const [authUser, setAuthUser] = useState(() => {
@@ -473,10 +485,21 @@ function App() {
       setConnectionError(true);
     }
   }, []);
+  const refreshTeamOverrides = useCallback(async () => {
+    try {
+      const res = await fetch("/api/consultant-teams");
+      if (!res.ok) return;
+      const data = await res.json();
+      setTeamOverrides(data.teams || {});
+    } catch (e) {
+      // silent — falls back to each consultant's default team
+    }
+  }, []);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await refreshWeeks();
+      await refreshTeamOverrides();
       if (!cancelled) setLoaded(true);
     })();
     const interval = setInterval(() => {
@@ -624,7 +647,8 @@ function App() {
         newRowsPart[c.id] = {
           cvs: Number(r.cvs) || 0,
           metricValue: Number(r.metricValue) || 0,
-          interviews: Number(r.interviews) || 0
+          interviews: Number(r.interviews) || 0,
+          team: c.team
         };
       }
     });
@@ -846,6 +870,21 @@ function App() {
       setPwdError("Couldn't reach the server — try again.");
     }
   }
+  async function setConsultantTeam(consultantId, team) {
+    setPwdError("");
+    try {
+      const res = await fetch("/api/consultant-teams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ consultantId, team }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPwdError(data.error || "Couldn't change their team."); return; }
+      setTeamOverrides(data.teams || {});
+    } catch (e) {
+      setPwdError("Couldn't reach the server — try again.");
+    }
+  }
   const loadDealDetails = useCallback(async () => {
     if (!isSuperAdmin || !authUser) return;
     setDealDetailsLoading(true);
@@ -885,15 +924,18 @@ function App() {
       // no-op — the checkbox will simply not flip if this fails
     }
   }
-  async function setDealExcluded(feeId, splitId, excludedVal) {
+  async function toggleWithheldMonth(feeId, splitId, currentWithheld, monthNumber) {
+    const next = currentWithheld.includes(monthNumber)
+      ? currentWithheld.filter(m => m !== monthNumber)
+      : [...currentWithheld, monthNumber];
     try {
       const res = await fetch("/api/deals", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
-        body: JSON.stringify({ feeId, splitId, excludedFromCommission: excludedVal })
+        body: JSON.stringify({ feeId, splitId, withheldMonths: next })
       });
       if (!res.ok) throw new Error("save failed");
-      await loadDealDetails();
+      await loadCommission();
     } catch (e) {
       // no-op
     }
@@ -1012,6 +1054,40 @@ function App() {
       setTargetSaving(false);
     }
   }
+  // "This month" always means the real current calendar month, regardless
+  // of which year the person happens to be browsing — since a deal paid
+  // late one year can still have instalments landing early the next, we
+  // have to check both years to catch everything actually due right now.
+  const loadThisMonthPayout = useCallback(async () => {
+    if (!authUser || !commissionViewConsultantId) return;
+    setThisMonthLoading(true);
+    try {
+      const realNow = new Date().getUTCFullYear();
+      const [resA, resB] = await Promise.all([
+        fetch(`/api/commission?action=compute&consultantId=${encodeURIComponent(commissionViewConsultantId)}&year=${realNow}`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+        fetch(`/api/commission?action=compute&consultantId=${encodeURIComponent(commissionViewConsultantId)}&year=${realNow - 1}`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+      ]);
+      const [dataA, dataB] = await Promise.all([resA.ok ? resA.json() : { lines: [] }, resB.ok ? resB.json() : { lines: [] }]);
+      const allLines = [...(dataA.lines || []), ...(dataB.lines || [])];
+      const dueItems = [];
+      allLines.forEach(l => {
+        (l.payout || []).forEach(p => {
+          if (p.status === "due") {
+            dueItems.push({ candidateName: l.candidateName, feeDate: l.feeDate, amount: p.amount });
+          }
+        });
+      });
+      setThisMonthItems(dueItems);
+      setThisMonthTotal(dueItems.reduce((s, i) => s + i.amount, 0));
+    } catch (e) {
+      // silent — this is a nice-to-have summary, not core data
+    } finally {
+      setThisMonthLoading(false);
+    }
+  }, [authUser, commissionViewConsultantId]);
+  useEffect(() => {
+    if (tab === "commission") loadThisMonthPayout();
+  }, [tab, commissionViewConsultantId]);
   const loadFxRates = useCallback(async () => {
     try {
       const res = await fetch("/api/fx-rates");
@@ -1125,6 +1201,15 @@ function App() {
     const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
     if (!m) return dateStr;
     return `${m[3]}/${m[2]}/${m[1]}`;
+  }
+  // Colour coding for a payout month chip, matching the Excel convention:
+  // green = already paid, orange = due this real calendar month,
+  // red = withheld (a fine), grey = future / not due yet.
+  function payoutStatusStyle(status) {
+    if (status === "paid") return { background: "rgba(142,185,176,0.25)", color: INDIGO };
+    if (status === "due") return { background: "rgba(255,176,140,0.35)", color: INDIGO };
+    if (status === "withheld") return { background: "rgba(181,116,79,0.20)", color: MELON_LINK };
+    return { background: "rgba(46,64,91,0.05)", color: INDIGO_MUTED };
   }
 
   const fontImport = `
@@ -2037,7 +2122,6 @@ function App() {
             { label: "USD", width: 90 },
             { label: "Source", width: 130 },
             { label: "Paid", width: 50 },
-            { label: "Exclude", width: 60 },
             { label: "", width: 70 }
           ] }),
           dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
@@ -2065,13 +2149,6 @@ function App() {
                 onChange: e => markPaid(r.feeId, r.splitId, e.target.checked)
               })
             ),
-            React.createElement(Cell, { width: 60 },
-              React.createElement("input", {
-                type: "checkbox",
-                checked: !!r.excludedFromCommission,
-                onChange: e => setDealExcluded(r.feeId, r.splitId, e.target.checked)
-              })
-            ),
             React.createElement(Cell, { width: 70 },
               React.createElement("button", {
                 onClick: () => deleteDeal(r.feeId, r.splitId),
@@ -2081,7 +2158,7 @@ function App() {
           ))
         ),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-          "Marking a deal Paid starts the 4-month commission payout the following month. \"Exclude\" keeps a deal off that consultant's commission sheet entirely (e.g. a one-off arrangement) without affecting anyone else's numbers."
+          "Marking a deal Paid starts the 4-month commission payout the following month. Individual monthly instalments can be withheld from that person's Commission page if needed (e.g. a one-off fine) without affecting anyone else's numbers or their total commission earned."
         )
     ),
     isSuperAdmin && React.createElement(Panel, null,
@@ -2091,6 +2168,7 @@ function App() {
       React.createElement(React.Fragment, null,
         React.createElement(TableHeader, { cols: [
           { label: "Name", width: 110 },
+          { label: "Team", width: 90 },
           { label: "Email", flex: true },
           { label: "Has account", width: 80 },
           { label: "Admin", width: 70 },
@@ -2100,6 +2178,19 @@ function App() {
         ] }),
         userAccounts.map(u => React.createElement(RowLine, { key: u.email },
           React.createElement(Cell, { width: 110 }, u.name),
+          React.createElement(Cell, { width: 90 },
+            (() => {
+              const consultant = consultants.find(c => c.id === u.consultantId);
+              if (!consultant) return React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, "—");
+              return React.createElement("select", {
+                value: consultant.team,
+                onChange: e => setConsultantTeam(u.consultantId, e.target.value),
+                style: { ...inputStyleSmall, width: 80, padding: "4px 6px", color: TEAMS[consultant.team].color, fontWeight: 600 }
+              },
+                Object.keys(TEAMS).map(teamId => React.createElement("option", { key: teamId, value: teamId }, TEAMS[teamId].label))
+              );
+            })()
+          ),
           React.createElement(Cell, { flex: true, color: INDIGO_MUTED }, u.email),
           React.createElement(Cell, { width: 80, color: u.hasAccount ? VERDIGRIS : INDIGO_MUTED }, u.hasAccount ? "Yes" : "Not yet"),
           React.createElement(Cell, { width: 70 },
@@ -2140,7 +2231,7 @@ function App() {
         ))
       ),
       React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-        "Admin can save manual weekly entries. Super Admin also gets Deal Lead Award's financial details, exchange rates, and this page. A password must be set before roles can be granted."
+        "Admin can save manual weekly entries. Super Admin also gets Deal Lead Award's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
       )
     ),
     isSuperAdmin && clientBreakdown.length > 0 && React.createElement(Panel, null,
@@ -2189,6 +2280,21 @@ function App() {
             fontWeight: commissionViewConsultantId === c.id ? 700 : 500
           }
         }, c.name))
+      )
+    ),
+    authUser && commissionViewConsultantId && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: new Date().toLocaleString("en-GB", { month: "long", year: "numeric" }), title: "Expected This Month" }),
+      thisMonthLoading ? React.createElement("div", { style: { padding: 12, color: INDIGO_MUTED, fontSize: 13 } }, "Loading…") :
+      thisMonthItems.length === 0 ? React.createElement("div", { style: { padding: 4, color: INDIGO_MUTED, fontSize: 13.5 } }, "Nothing due to be paid this month.") :
+      React.createElement(React.Fragment, null,
+        React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: MELON_LINK, marginBottom: 12 } }, `£${Math.round(thisMonthTotal).toLocaleString()}`),
+        thisMonthItems.map((item, i) => React.createElement("div", {
+          key: i,
+          style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: INDIGO }
+        },
+          React.createElement("span", null, item.candidateName || "—"),
+          React.createElement("span", { style: { fontWeight: 600 } }, `£${Math.round(item.amount).toLocaleString()}`)
+        ))
       )
     ),
     !authUser ? React.createElement(Panel, null, React.createElement(EmptyState, { text: "Log in to see your commission sheet." })) :
@@ -2248,8 +2354,19 @@ function App() {
             React.createElement(Cell, { width: 60 }, `${(l.rate * 100).toFixed(1)}%`),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
-            ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 80, color: p.paidDate ? INDIGO : INDIGO_MUTED },
-              `${p.label}: £${Math.round(p.amount).toLocaleString()}`
+            ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 80 },
+              React.createElement("div", {
+                onClick: isSuperAdmin ? () => toggleWithheldMonth(l.feeId, l.splitId, l.withheldMonths || [], p.monthNumber) : undefined,
+                title: isSuperAdmin ? (p.status === "withheld" ? "Click to un-withhold this instalment" : "Click to withhold this instalment (fine)") : undefined,
+                style: {
+                  ...payoutStatusStyle(p.status),
+                  borderRadius: 5,
+                  padding: "4px 6px",
+                  fontSize: 11.5,
+                  lineHeight: 1.4,
+                  cursor: isSuperAdmin ? "pointer" : "default",
+                }
+              }, `${p.label}${p.status === "withheld" ? " (withheld)" : ""}: £${Math.round(p.amount).toLocaleString()}`)
             ))
           ))
         ),
