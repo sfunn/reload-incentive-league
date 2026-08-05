@@ -100,6 +100,10 @@ const DEAL_CONSULTANTS = [...INITIAL_CONSULTANTS, {
   team: "josh"
 }];
 
+// How a deal came in — set by either Scott/Lee (admin table) or the
+// consultant themselves (their own Commission page).
+const SOURCE_OPTIONS = ["Cold Call", "InMail", "Email Campaigns", "Recommendation", "WhatsApp", "Octopus", "Other"];
+
 // Fixed weekly metric options. The Atlas field name each maps to is kept in
 // brackets so this is ready to line up once the Atlas API feed is connected.
 const METRIC_CVS_OUT = "CV's Out (Candidates presented)";
@@ -411,6 +415,18 @@ function App() {
   const [fxEurInput, setFxEurInput] = useState("");
   const [fxSaving, setFxSaving] = useState(false);
   const [fxError, setFxError] = useState("");
+
+  // --- My Commission ---
+  const [commissionYear, setCommissionYear] = useState(new Date().getUTCFullYear());
+  const [commissionViewConsultantId, setCommissionViewConsultantId] = useState(null);
+  const [commissionData, setCommissionData] = useState(null);
+  const [commissionLoading, setCommissionLoading] = useState(false);
+  const [commissionError, setCommissionError] = useState("");
+  const [bandInputs, setBandInputs] = useState([]);
+  const [bandsSaving, setBandsSaving] = useState(false);
+  const [bandsError, setBandsError] = useState("");
+  const [targetInput, setTargetInput] = useState("");
+  const [targetSaving, setTargetSaving] = useState(false);
 
   // --- Auth state (login/signup/reset) ---
   const [authUser, setAuthUser] = useState(() => {
@@ -861,6 +877,133 @@ function App() {
       await refreshDealsLeaderboard(dealsYear);
     } catch (e) {
       // no-op — the checkbox will simply not flip if this fails
+    }
+  }
+  async function setDealExcluded(feeId, splitId, excludedVal) {
+    try {
+      const res = await fetch("/api/deals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ feeId, splitId, excludedFromCommission: excludedVal })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadDealDetails();
+    } catch (e) {
+      // no-op
+    }
+  }
+  async function setDealSource(feeId, splitId, source) {
+    try {
+      const res = await fetch("/api/deals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ feeId, splitId, source })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadDealDetails();
+      if (commissionData) loadCommission();
+    } catch (e) {
+      // no-op
+    }
+  }
+  async function deleteDeal(feeId, splitId) {
+    if (!window.confirm("Delete this deal permanently? It will disappear from the leaderboard and from that consultant's commission sheet.")) return;
+    try {
+      const res = await fetch("/api/deals", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ feeId, splitId })
+      });
+      if (!res.ok) throw new Error("delete failed");
+      await loadDealDetails();
+      await refreshDealsLeaderboard(dealsYear);
+    } catch (e) {
+      // no-op — deal stays in the list if the delete failed
+    }
+  }
+
+  // --- My Commission ---
+  useEffect(() => {
+    if (!authUser) return;
+    if (isSuperAdmin) {
+      // Super Admins pick who to look at; default to the first consultant
+      // on the list rather than themselves, since they usually have no
+      // consultantId at all.
+      if (!commissionViewConsultantId) setCommissionViewConsultantId(DEAL_CONSULTANTS[0].id);
+    } else {
+      setCommissionViewConsultantId(authUser.consultantId);
+    }
+  }, [authUser, isSuperAdmin]);
+
+  const loadCommission = useCallback(async () => {
+    if (!authUser || !commissionViewConsultantId) return;
+    setCommissionLoading(true);
+    setCommissionError("");
+    try {
+      const res = await fetch(
+        `/api/commission?action=compute&consultantId=${encodeURIComponent(commissionViewConsultantId)}&year=${commissionYear}`,
+        { headers: { Authorization: `Bearer ${authUser.token}` } }
+      );
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setCommissionData(data);
+      setBandInputs(data.bands.map(b => ({ min: String(b.min), max: b.max === null ? "" : String(b.max), rate: String(b.rate * 100) })));
+      setTargetInput(data.target !== null ? String(data.target) : "");
+    } catch (e) {
+      setCommissionError("Couldn't load this commission sheet — try again.");
+    } finally {
+      setCommissionLoading(false);
+    }
+  }, [authUser, commissionViewConsultantId, commissionYear]);
+  useEffect(() => {
+    if (tab === "commission") loadCommission();
+  }, [tab, commissionViewConsultantId, commissionYear]);
+
+  async function saveBands() {
+    setBandsSaving(true);
+    setBandsError("");
+    try {
+      const parsed = bandInputs.map(b => ({
+        min: parseFloat(b.min) || 0,
+        max: b.max.trim() === "" ? null : parseFloat(b.max),
+        rate: (parseFloat(b.rate) || 0) / 100,
+      }));
+      const res = await fetch("/api/commission?action=set-bands", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ consultantId: commissionViewConsultantId, year: commissionYear, bands: parsed })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadCommission();
+    } catch (e) {
+      setBandsError("Couldn't save these brackets — try again.");
+    } finally {
+      setBandsSaving(false);
+    }
+  }
+  function addBandRow() {
+    setBandInputs(prev => [...prev, { min: "", max: "", rate: "" }]);
+  }
+  function removeBandRow(i) {
+    setBandInputs(prev => prev.filter((_, idx) => idx !== i));
+  }
+  function updateBandRow(i, field, value) {
+    setBandInputs(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: value } : b));
+  }
+  async function saveTarget() {
+    setTargetSaving(true);
+    try {
+      const res = await fetch("/api/commission?action=set-target", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ consultantId: commissionViewConsultantId, year: commissionYear, target: parseFloat(targetInput) || null })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadCommission();
+    } catch (e) {
+      // no-op
+    } finally {
+      setTargetSaving(false);
     }
   }
   const loadFxRates = useCallback(async () => {
@@ -1859,33 +2002,59 @@ function App() {
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
             { label: "Date", width: 90 },
-            { label: "Consultant", width: 130 },
-            { label: "Candidate", width: 130 },
-            { label: "Client", width: 120 },
-            { label: "Start", width: 90 },
-            { label: "Amount", width: 110 },
-            { label: "USD", width: 100 },
-            { label: "Paid", width: 60 }
+            { label: "Consultant", width: 120 },
+            { label: "Candidate", width: 110 },
+            { label: "Client", width: 100 },
+            { label: "Start", width: 80 },
+            { label: "Amount", width: 100 },
+            { label: "USD", width: 90 },
+            { label: "Source", width: 130 },
+            { label: "Paid", width: 50 },
+            { label: "Exclude", width: 60 },
+            { label: "", width: 70 }
           ] }),
           dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
             React.createElement(Cell, { width: 90 }, toDayMonthYear(r.feeDate)),
-            React.createElement(Cell, { width: 130 }, r.consultantName || r.consultantEmail || "Unmapped"),
-            React.createElement(Cell, { width: 130, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
-            React.createElement(Cell, { width: 120, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
-            React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
-            React.createElement(Cell, { width: 110 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && r.share !== "100.00" ? ` (${r.share}%)` : ""}`),
-            React.createElement(Cell, { width: 100 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
-            React.createElement(Cell, { width: 60 },
+            React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
+            React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
+            React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
+            React.createElement(Cell, { width: 80, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
+            React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && r.share !== "100.00" ? ` (${r.share}%)` : ""}`),
+            React.createElement(Cell, { width: 90 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
+            React.createElement(Cell, { width: 130 },
+              React.createElement("select", {
+                value: r.source || "",
+                onChange: e => setDealSource(r.feeId, r.splitId, e.target.value || null),
+                style: { ...inputStyleSmall, width: 120, padding: "4px 6px" }
+              },
+                React.createElement("option", { value: "" }, "—"),
+                SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
+              )
+            ),
+            React.createElement(Cell, { width: 50 },
               React.createElement("input", {
                 type: "checkbox",
                 checked: !!r.paid,
                 onChange: e => markPaid(r.feeId, r.splitId, e.target.checked)
               })
+            ),
+            React.createElement(Cell, { width: 60 },
+              React.createElement("input", {
+                type: "checkbox",
+                checked: !!r.excludedFromCommission,
+                onChange: e => setDealExcluded(r.feeId, r.splitId, e.target.checked)
+              })
+            ),
+            React.createElement(Cell, { width: 70 },
+              React.createElement("button", {
+                onClick: () => deleteDeal(r.feeId, r.splitId),
+                style: { ...ghostStyle, color: MELON_LINK, borderColor: MELON_LINK, fontSize: 11, padding: "4px 8px" }
+              }, "Delete")
             )
           ))
         ),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-          "Marking a deal Paid starts the 4-month commission payout the following month (commission sheets: coming in the next phase)."
+          "Marking a deal Paid starts the 4-month commission payout the following month. \"Exclude\" keeps a deal off that consultant's commission sheet entirely (e.g. a one-off arrangement) without affecting anyone else's numbers."
         )
     ),
     isSuperAdmin && React.createElement(Panel, null,
@@ -1951,13 +2120,159 @@ function App() {
     style: { display: "flex", flexDirection: "column", gap: 20 }
   },
     React.createElement(Panel, null,
-      React.createElement(SectionTitle, {
-        eyebrow: authUser ? authUser.name : "",
-        title: "My Commission"
-      }),
-      !authUser ? React.createElement(EmptyState, { text: "Log in to see your commission sheet." }) :
-      React.createElement("div", { style: { color: INDIGO_MUTED, fontSize: 14.5, lineHeight: 1.6 } },
-        `Hi ${authUser.name} — you're logged in. Commission sheets (your bands, running total, and monthly payouts) are being built next and will appear here.`
+      React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
+        React.createElement(SectionTitle, {
+          eyebrow: isSuperAdmin ? "Viewing" : (authUser ? authUser.name : ""),
+          title: "My Commission"
+        }),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          [commissionYear - 1, commissionYear, commissionYear + 1].map(y => React.createElement("button", {
+            key: y,
+            onClick: () => setCommissionYear(y),
+            style: { ...chipStyle, background: commissionYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: commissionYear === y ? 700 : 500 }
+          }, y))
+        )
+      ),
+      isSuperAdmin && React.createElement("div", { style: { marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 } },
+        DEAL_CONSULTANTS.map(c => React.createElement("button", {
+          key: c.id,
+          onClick: () => setCommissionViewConsultantId(c.id),
+          style: {
+            ...chipStyle,
+            background: commissionViewConsultantId === c.id ? TEAMS[c.team].color : "rgba(46,64,91,0.06)",
+            color: commissionViewConsultantId === c.id ? WHITE : INDIGO,
+            fontWeight: commissionViewConsultantId === c.id ? 700 : 500
+          }
+        }, c.name))
+      )
+    ),
+    !authUser ? React.createElement(Panel, null, React.createElement(EmptyState, { text: "Log in to see your commission sheet." })) :
+    commissionLoading ? React.createElement(Panel, null, React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")) :
+    commissionError ? React.createElement(Panel, null, React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, commissionError)) :
+    !commissionData ? null :
+    React.createElement(React.Fragment, null,
+      React.createElement(Panel, null,
+        commissionData.target && React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 20, flexWrap: "wrap" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Target"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, `$${Number(commissionData.target).toLocaleString()}`)
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Done"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: VERDIGRIS } },
+              dealsLeaderboard.find(l => l.consultantId === commissionViewConsultantId)
+                ? `$${Math.round(dealsLeaderboard.find(l => l.consultantId === commissionViewConsultantId).totalUSD).toLocaleString()}`
+                : "$0"
+            )
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Left to do"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO_MUTED } },
+              (() => {
+                const done = dealsLeaderboard.find(l => l.consultantId === commissionViewConsultantId);
+                const doneAmt = done ? done.totalUSD : 0;
+                const left = Math.max(0, commissionData.target - doneAmt);
+                return `$${Math.round(left).toLocaleString()}`;
+              })()
+            )
+          )
+        ),
+        React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 6, marginBottom: 16 } },
+          commissionData.bands.map((b, i) => {
+            const inThisBand = commissionData.totalGBP > b.min;
+            const filled = Math.max(0, Math.min(commissionData.totalGBP, b.max === null ? commissionData.totalGBP : b.max) - b.min);
+            return React.createElement("div", {
+              key: i,
+              style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: inThisBand ? INDIGO : INDIGO_MUTED, fontWeight: inThisBand ? 600 : 400 }
+            },
+              React.createElement("span", null, `£${b.min.toLocaleString()}${b.max === null ? "+" : ` – £${b.max.toLocaleString()}`}`),
+              React.createElement("span", null, `${(b.rate * 100).toFixed(1)}%${filled > 0 ? ` · £${Math.round(filled).toLocaleString()} used` : ""}`)
+            );
+          })
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 16 } },
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Total revenue (GBP)"),
+            React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(commissionData.totalGBP).toLocaleString()}`)
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Commission earned"),
+            React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
+          )
+        ),
+        commissionData.heldBackCount > 0 && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK, marginBottom: 12 } },
+          `${commissionData.heldBackCount} deal(s) held back — no exchange rate set for their month yet.`
+        ),
+        commissionData.lines.length === 0 ? React.createElement(EmptyState, { text: `No commission-eligible deals yet for ${commissionYear}.` }) :
+        React.createElement(React.Fragment, null,
+          React.createElement(TableHeader, { cols: [
+            { label: "Date", width: 80 },
+            { label: "Bracket", width: 130 },
+            { label: "GBP", width: 90 },
+            { label: "Rate", width: 60 },
+            { label: "Commission", width: 90 },
+            { label: "Source", width: 130 },
+            { label: "Month 1", width: 80 },
+            { label: "Month 2", width: 80 },
+            { label: "Month 3", width: 80 },
+            { label: "Month 4", width: 80 }
+          ] }),
+          commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
+            React.createElement(Cell, { width: 80 }, toDayMonthYear(l.feeDate)),
+            React.createElement(Cell, { width: 130, color: INDIGO_MUTED }, `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`}`),
+            React.createElement(Cell, { width: 90 }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
+            React.createElement(Cell, { width: 60 }, `${(l.rate * 100).toFixed(1)}%`),
+            React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
+            React.createElement(Cell, { width: 130 },
+              (isSuperAdmin || (authUser && authUser.consultantId === commissionViewConsultantId))
+                ? React.createElement("select", {
+                    value: l.source || "",
+                    onChange: e => setDealSource(l.feeId, l.splitId, e.target.value || null),
+                    style: { ...inputStyleSmall, width: 120, padding: "4px 6px" }
+                  },
+                    React.createElement("option", { value: "" }, "—"),
+                    SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
+                  )
+                : (l.source || "—")
+            ),
+            ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 80, color: p.paidDate ? INDIGO : INDIGO_MUTED },
+              `${p.label}: £${Math.round(p.amount).toLocaleString()}`
+            ))
+          ))
+        )
+      ),
+      isSuperAdmin && React.createElement(Panel, null,
+        React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: `${commissionYear} brackets & target` }),
+        React.createElement("div", { style: { marginTop: 12, marginBottom: 16 } },
+          React.createElement("div", { style: labelStyle }, "Revenue target (USD, this year)"),
+          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+            React.createElement("input", {
+              type: "number",
+              value: targetInput,
+              onChange: e => setTargetInput(e.target.value),
+              placeholder: "3000000",
+              style: { ...inputStyleSmall, width: 140 }
+            }),
+            React.createElement("button", { onClick: saveTarget, disabled: targetSaving, style: ghostStyle }, targetSaving ? "Saving…" : "Save target")
+          )
+        ),
+        React.createElement("div", { style: labelStyle }, "Bracket schedule (rate %, band in £)"),
+        bandInputs.map((b, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
+          React.createElement("input", { type: "number", value: b.min, onChange: e => updateBandRow(i, "min", e.target.value), placeholder: "Min £", style: { ...inputStyleSmall, width: 100 } }),
+          React.createElement("span", { style: { color: INDIGO_MUTED, fontSize: 12 } }, "to"),
+          React.createElement("input", { type: "number", value: b.max, onChange: e => updateBandRow(i, "max", e.target.value), placeholder: "Max £ (blank = uncapped)", style: { ...inputStyleSmall, width: 160 } }),
+          React.createElement("input", { type: "number", value: b.rate, onChange: e => updateBandRow(i, "rate", e.target.value), placeholder: "Rate %", style: { ...inputStyleSmall, width: 80 } }),
+          React.createElement("button", { onClick: () => removeBandRow(i), style: { ...ghostStyle, color: MELON_LINK, borderColor: MELON_LINK, fontSize: 11, padding: "4px 8px" } }, "Remove")
+        )),
+        React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+          React.createElement("button", { onClick: addBandRow, style: ghostStyle }, "+ Add band"),
+          React.createElement("button", { onClick: saveBands, disabled: bandsSaving, style: primaryButtonStyle(bandsSaving) }, bandsSaving ? "Saving…" : "Save brackets")
+        ),
+        bandsError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, bandsError),
+        React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
+          "These brackets only apply to this person for this specific year — changing them never affects other years or other people."
+        )
       )
     )
   ))));
