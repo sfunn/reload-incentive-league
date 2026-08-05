@@ -919,12 +919,14 @@ function App() {
       loadUserAccounts();
     }
   }, [isSuperAdmin, dealsYear]);
-  async function markPaid(feeId, splitId, paidVal) {
+  async function markPaid(feeId, splitId, paidVal, paidDate) {
     try {
+      const body = { feeId, splitId, paid: paidVal };
+      if (paidDate) body.paidDate = paidDate;
       const res = await fetch("/api/deals", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
-        body: JSON.stringify({ feeId, splitId, paid: paidVal })
+        body: JSON.stringify(body)
       });
       if (!res.ok) throw new Error("save failed");
       await loadDealDetails();
@@ -933,15 +935,30 @@ function App() {
       // no-op — the checkbox will simply not flip if this fails
     }
   }
-  async function toggleWithheldMonth(feeId, splitId, currentWithheld, monthNumber) {
-    const next = currentWithheld.includes(monthNumber)
-      ? currentWithheld.filter(m => m !== monthNumber)
-      : [...currentWithheld, monthNumber];
+  async function setPaidDate(feeId, splitId, paidDate) {
     try {
       const res = await fetch("/api/deals", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
-        body: JSON.stringify({ feeId, splitId, withheldMonths: next })
+        body: JSON.stringify({ feeId, splitId, paidDate })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadDealDetails();
+      await refreshDealsLeaderboard(dealsYear);
+      if (commissionData) loadCommission();
+    } catch (e) {
+      // no-op
+    }
+  }
+  async function setMonthOverride(feeId, splitId, currentOverrides, monthNumber, newStatus) {
+    const next = { ...currentOverrides };
+    if (newStatus === "auto") delete next[monthNumber];
+    else next[monthNumber] = newStatus;
+    try {
+      const res = await fetch("/api/deals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ feeId, splitId, monthOverrides: next })
       });
       if (!res.ok) throw new Error("save failed");
       await loadCommission();
@@ -2165,7 +2182,7 @@ function App() {
             { label: "USD", width: 90 },
             { label: "Source", width: 130 },
             { label: "Coordinator", width: 110 },
-            { label: "Paid", width: 50 },
+            { label: "Paid", width: 130 },
             { label: "", width: 70 }
           ] }),
           dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
@@ -2196,12 +2213,20 @@ function App() {
                 COORDINATORS.map(co => React.createElement("option", { key: co.id, value: co.id }, co.name))
               )
             ),
-            React.createElement(Cell, { width: 50 },
-              React.createElement("input", {
-                type: "checkbox",
-                checked: !!r.paid,
-                onChange: e => markPaid(r.feeId, r.splitId, e.target.checked)
-              })
+            React.createElement(Cell, { width: 130 },
+              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: !!r.paid,
+                  onChange: e => markPaid(r.feeId, r.splitId, e.target.checked, e.target.checked ? todayStr() : undefined)
+                }),
+                r.paid && React.createElement("input", {
+                  type: "date",
+                  value: r.paidMarkedAt ? r.paidMarkedAt.slice(0, 10) : "",
+                  onChange: e => setPaidDate(r.feeId, r.splitId, e.target.value),
+                  style: { ...inputStyleSmall, width: 118, padding: "3px 4px", fontSize: 11.5 }
+                })
+              )
             ),
             React.createElement(Cell, { width: 70 },
               React.createElement("button", {
@@ -2401,20 +2426,26 @@ function App() {
             React.createElement(Cell, { width: 150, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
-            ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 90 },
-              React.createElement("div", {
-                onClick: isSuperAdmin ? () => toggleWithheldMonth(l.feeId, l.splitId, l.withheldMonths || [], p.monthNumber) : undefined,
-                title: isSuperAdmin ? (p.status === "withheld" ? "Click to un-withhold this instalment" : "Click to withhold this instalment (fine)") : undefined,
-                style: {
-                  ...payoutStatusStyle(p.status),
-                  borderRadius: 5,
-                  padding: "4px 6px",
-                  fontSize: 11.5,
-                  lineHeight: 1.4,
-                  cursor: isSuperAdmin ? "pointer" : "default",
-                }
-              }, `${p.label}${p.status === "withheld" ? " (withheld)" : ""}: £${Math.round(p.amount).toLocaleString()}`)
-            ))
+            ...l.payout.map((p, pi) => {
+              const currentOverride = (l.monthOverrides && l.monthOverrides[p.monthNumber]) || "auto";
+              return React.createElement(Cell, { key: pi, width: 90 },
+                React.createElement("div", {
+                  style: { ...payoutStatusStyle(p.status), borderRadius: 5, padding: "4px 6px", fontSize: 11.5, lineHeight: 1.4 }
+                },
+                  `${p.label}${p.status === "withheld" ? " (withheld)" : ""}: £${Math.round(p.amount).toLocaleString()}`,
+                  isSuperAdmin && React.createElement("select", {
+                    value: currentOverride,
+                    onChange: e => setMonthOverride(l.feeId, l.splitId, l.monthOverrides || {}, p.monthNumber, e.target.value),
+                    style: { display: "block", marginTop: 3, width: "100%", fontSize: 10, padding: "1px 2px", border: "none", borderRadius: 3, background: "rgba(255,255,255,0.7)", cursor: "pointer" }
+                  },
+                    React.createElement("option", { value: "auto" }, "Auto"),
+                    React.createElement("option", { value: "paid" }, "Paid"),
+                    React.createElement("option", { value: "due" }, "Due"),
+                    React.createElement("option", { value: "withheld" }, "Withheld")
+                  )
+                )
+              );
+            })
           ))
         )
       ),
@@ -2488,20 +2519,26 @@ function App() {
             React.createElement(Cell, { width: 60 }, `${(l.rate * 100).toFixed(1)}%`),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
-            ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 80 },
-              React.createElement("div", {
-                onClick: isSuperAdmin ? () => toggleWithheldMonth(l.feeId, l.splitId, l.withheldMonths || [], p.monthNumber) : undefined,
-                title: isSuperAdmin ? (p.status === "withheld" ? "Click to un-withhold this instalment" : "Click to withhold this instalment (fine)") : undefined,
-                style: {
-                  ...payoutStatusStyle(p.status),
-                  borderRadius: 5,
-                  padding: "4px 6px",
-                  fontSize: 11.5,
-                  lineHeight: 1.4,
-                  cursor: isSuperAdmin ? "pointer" : "default",
-                }
-              }, `${p.label}${p.status === "withheld" ? " (withheld)" : ""}: £${Math.round(p.amount).toLocaleString()}`)
-            ))
+            ...l.payout.map((p, pi) => {
+              const currentOverride = (l.monthOverrides && l.monthOverrides[p.monthNumber]) || "auto";
+              return React.createElement(Cell, { key: pi, width: 80 },
+                React.createElement("div", {
+                  style: { ...payoutStatusStyle(p.status), borderRadius: 5, padding: "4px 6px", fontSize: 11.5, lineHeight: 1.4 }
+                },
+                  `${p.label}${p.status === "withheld" ? " (withheld)" : ""}: £${Math.round(p.amount).toLocaleString()}`,
+                  isSuperAdmin && React.createElement("select", {
+                    value: currentOverride,
+                    onChange: e => setMonthOverride(l.feeId, l.splitId, l.monthOverrides || {}, p.monthNumber, e.target.value),
+                    style: { display: "block", marginTop: 3, width: "100%", fontSize: 10, padding: "1px 2px", border: "none", borderRadius: 3, background: "rgba(255,255,255,0.7)", cursor: "pointer" }
+                  },
+                    React.createElement("option", { value: "auto" }, "Auto"),
+                    React.createElement("option", { value: "paid" }, "Paid"),
+                    React.createElement("option", { value: "due" }, "Due"),
+                    React.createElement("option", { value: "withheld" }, "Withheld")
+                  )
+                )
+              );
+            })
           ))
         ),
         React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
