@@ -51,6 +51,7 @@ function computeCommissionLines(deals, bands) {
         paid: deal.paid,
         paidMarkedAt: deal.paidMarkedAt,
         source: deal.source || null,
+        candidateName: deal.candidateName || null,
       });
 
       cumulative += portion;
