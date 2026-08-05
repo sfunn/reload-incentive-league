@@ -109,8 +109,9 @@ export default async function handler(req, res) {
       priorPaidBySplit[r.splitId] = {
         paid: r.paid,
         paidMarkedAt: r.paidMarkedAt,
-        excludedFromCommission: r.excludedFromCommission,
+        withheldMonths: r.withheldMonths,
         source: r.source,
+        coordinatorId: r.coordinatorId,
       };
     }
   });
@@ -122,7 +123,7 @@ export default async function handler(req, res) {
     const consultantId = email ? EMAIL_TO_CONSULTANT[email] || null : null;
     const shareAmount = computeShareAmount(amount, split.share, splits.length);
 
-    const prior = priorPaidBySplit[split.id] || { paid: false, paidMarkedAt: null, excludedFromCommission: false, source: null };
+    const prior = priorPaidBySplit[split.id] || { paid: false, paidMarkedAt: null, withheldMonths: [], source: null, coordinatorId: null };
     const record = {
       feeId,
       splitId: split.id,
@@ -138,8 +139,9 @@ export default async function handler(req, res) {
       placementId: placementId || null,
       paid: prior.paid,
       paidMarkedAt: prior.paidMarkedAt,
-      excludedFromCommission: prior.excludedFromCommission || false,
+      withheldMonths: prior.withheldMonths || [],
       source: prior.source || null,
+      coordinatorId: prior.coordinatorId || null,
       updatedAt: new Date().toISOString(),
     };
 
