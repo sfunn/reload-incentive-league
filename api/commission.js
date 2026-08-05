@@ -92,7 +92,7 @@ module.exports = async (req, res) => {
         paidMarkedAt: r.paidMarkedAt,
         source: r.source || null,
         candidateName: r.candidateName,
-        withheldMonths: r.withheldMonths || [],
+        monthOverrides: r.monthOverrides || {},
       }));
       const linesWithSchedule = lines.map((l) => ({ ...l, payout: payoutSchedule(l) }));
       const totalCommission = lines.reduce((sum, l) => sum + l.commission, 0);
@@ -144,7 +144,7 @@ module.exports = async (req, res) => {
       paidMarkedAt: r.paidMarkedAt,
       source: r.source,
       candidateName: r.candidateName,
-      withheldMonths: r.withheldMonths || [],
+      monthOverrides: r.monthOverrides || {},
     }));
 
     const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
