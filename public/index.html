@@ -2222,30 +2222,6 @@ function App() {
             )
           )
         ),
-        React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
-        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 6, marginBottom: 16 } },
-          commissionData.bands.map((b, i) => {
-            const inThisBand = commissionData.totalGBP > b.min;
-            const filled = Math.max(0, Math.min(commissionData.totalGBP, b.max === null ? commissionData.totalGBP : b.max) - b.min);
-            return React.createElement("div", {
-              key: i,
-              style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: inThisBand ? INDIGO : INDIGO_MUTED, fontWeight: inThisBand ? 600 : 400 }
-            },
-              React.createElement("span", null, `£${b.min.toLocaleString()}${b.max === null ? "+" : ` – £${b.max.toLocaleString()}`}`),
-              React.createElement("span", null, `${(b.rate * 100).toFixed(1)}%${filled > 0 ? ` · £${Math.round(filled).toLocaleString()} used` : ""}`)
-            );
-          })
-        ),
-        React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 16 } },
-          React.createElement("div", null,
-            React.createElement("div", { style: labelStyle }, "Total revenue (GBP)"),
-            React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(commissionData.totalGBP).toLocaleString()}`)
-          ),
-          React.createElement("div", null,
-            React.createElement("div", { style: labelStyle }, "Commission earned"),
-            React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
-          )
-        ),
         commissionData.heldBackCount > 0 && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK, marginBottom: 12 } },
           `${commissionData.heldBackCount} deal(s) held back — no exchange rate set for their month yet.`
         ),
@@ -2253,11 +2229,12 @@ function App() {
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
             { label: "Date", width: 80 },
+            { label: "Candidate", width: 120 },
             { label: "Bracket", width: 130 },
             { label: "GBP", width: 90 },
             { label: "Rate", width: 60 },
             { label: "Commission", width: 90 },
-            { label: "Source", width: 130 },
+            { label: "Source", width: 110 },
             { label: "Month 1", width: 80 },
             { label: "Month 2", width: 80 },
             { label: "Month 3", width: 80 },
@@ -2265,26 +2242,42 @@ function App() {
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
             React.createElement(Cell, { width: 80 }, toDayMonthYear(l.feeDate)),
+            React.createElement(Cell, { width: 120, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
             React.createElement(Cell, { width: 130, color: INDIGO_MUTED }, `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`}`),
             React.createElement(Cell, { width: 90 }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
             React.createElement(Cell, { width: 60 }, `${(l.rate * 100).toFixed(1)}%`),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
-            React.createElement(Cell, { width: 130 },
-              (isSuperAdmin || (authUser && authUser.consultantId === commissionViewConsultantId))
-                ? React.createElement("select", {
-                    value: l.source || "",
-                    onChange: e => setDealSource(l.feeId, l.splitId, e.target.value || null),
-                    style: { ...inputStyleSmall, width: 120, padding: "4px 6px" }
-                  },
-                    React.createElement("option", { value: "" }, "—"),
-                    SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
-                  )
-                : (l.source || "—")
-            ),
+            React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
             ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 80, color: p.paidDate ? INDIGO : INDIGO_MUTED },
               `${p.label}: £${Math.round(p.amount).toLocaleString()}`
             ))
           ))
+        ),
+        React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
+          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 6, marginBottom: 16 } },
+            commissionData.bands.map((b, i) => {
+              const inThisBand = commissionData.totalGBP > b.min;
+              const filled = Math.max(0, Math.min(commissionData.totalGBP, b.max === null ? commissionData.totalGBP : b.max) - b.min);
+              return React.createElement("div", {
+                key: i,
+                style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: inThisBand ? INDIGO : INDIGO_MUTED, fontWeight: inThisBand ? 600 : 400 }
+              },
+                React.createElement("span", null, `£${b.min.toLocaleString()}${b.max === null ? "+" : ` – £${b.max.toLocaleString()}`}`),
+                React.createElement("span", null, `${(b.rate * 100).toFixed(1)}%${filled > 0 ? ` · £${Math.round(filled).toLocaleString()} used` : ""}`)
+              );
+            })
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 24 } },
+            React.createElement("div", null,
+              React.createElement("div", { style: labelStyle }, "Total revenue (GBP)"),
+              React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(commissionData.totalGBP).toLocaleString()}`)
+            ),
+            React.createElement("div", null,
+              React.createElement("div", { style: labelStyle }, "Commission earned"),
+              React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
+            )
+          )
         )
       ),
       isSuperAdmin && React.createElement(Panel, null,
