@@ -58,7 +58,25 @@ module.exports = async (req, res) => {
           };
         })
       );
-      return res.status(200).json({ year, records: withUSD });
+
+      // Firm/Client breakdown — Super Admin only. Uses the Client field
+      // captured from Atlas's placement webhook. Deals with no linked
+      // placement yet (or from an unmapped owner) fall into "Unknown" so
+      // the percentages still add up to the full total.
+      const byClient = {};
+      let clientGrandTotal = 0;
+      for (const r of withUSD) {
+        if (r.usdAmount === null || !r.consultantId) continue;
+        const firm = r.clientCompanyName || "Unknown";
+        if (!byClient[firm]) byClient[firm] = { firm, totalUSD: 0 };
+        byClient[firm].totalUSD += r.usdAmount;
+        clientGrandTotal += r.usdAmount;
+      }
+      const clientBreakdown = Object.values(byClient)
+        .map((c) => ({ ...c, percentage: clientGrandTotal > 0 ? (c.totalUSD / clientGrandTotal) * 100 : 0 }))
+        .sort((a, b) => b.totalUSD - a.totalUSD);
+
+      return res.status(200).json({ year, records: withUSD, clientBreakdown, clientGrandTotal });
     }
 
     // Public leaderboard: totals per consultant, in USD, for the given year.
@@ -67,6 +85,7 @@ module.exports = async (req, res) => {
     // that month's rate.
     const yearRecords = records.filter((r) => r.year === year && r.consultantId);
     const totals = {};
+    const bySource = {};
     for (const r of yearRecords) {
       const usd = await convertToUSD(r, allRates);
       if (usd === null) continue;
@@ -74,9 +93,20 @@ module.exports = async (req, res) => {
         totals[r.consultantId] = { consultantId: r.consultantId, consultantName: r.consultantName, totalUSD: 0 };
       }
       totals[r.consultantId].totalUSD += usd;
+
+      // Source breakdown — visible to everyone, same as the leaderboard.
+      // Deals without a source set yet just aren't counted here (rather
+      // than guessing), so this total may be a bit less than the full
+      // leaderboard total until every deal has a source recorded.
+      if (r.source) {
+        if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, valueUSD: 0 };
+        bySource[r.source].deals += 1;
+        bySource[r.source].valueUSD += usd;
+      }
     }
     const leaderboard = Object.values(totals).sort((a, b) => b.totalUSD - a.totalUSD);
-    return res.status(200).json({ year, leaderboard });
+    const sourceBreakdown = Object.values(bySource).sort((a, b) => b.valueUSD - a.valueUSD);
+    return res.status(200).json({ year, leaderboard, sourceBreakdown });
   }
 
   if (req.method === "POST") {
