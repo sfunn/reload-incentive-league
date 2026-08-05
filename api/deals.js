@@ -53,6 +53,8 @@ module.exports = async (req, res) => {
             candidateName: (placement && placement.candidateName) || null,
             clientCompanyName: (placement && placement.clientCompanyName) || null,
             placementStartDate: (placement && placement.startDate) || null,
+            excludedFromCommission: !!r.excludedFromCommission,
+            source: r.source || null,
           };
         })
       );
@@ -78,14 +80,10 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "POST") {
-    // Mark a fee record as paid — Super Admin only. This is the manual
-    // trigger point: the 4-month commission payout clock starts the month
-    // AFTER this is set, computed later in the commission logic (Phase 2).
     const user = await getUserFromRequest(req);
-    if (!user || !user.isSuperAdmin) {
-      return res.status(401).json({ error: "Super Admin access required" });
-    }
-    const { feeId, splitId, paid } = req.body || {};
+    if (!user) return res.status(401).json({ error: "Not authorized" });
+
+    const { feeId, splitId, paid, excludedFromCommission, source } = req.body || {};
     if (!feeId || !splitId) {
       return res.status(400).json({ error: "feeId and splitId are required" });
     }
@@ -94,8 +92,29 @@ module.exports = async (req, res) => {
     if (idx === -1) {
       return res.status(404).json({ error: "Record not found" });
     }
-    records[idx].paid = !!paid;
-    records[idx].paidMarkedAt = paid ? new Date().toISOString() : null;
+
+    // Paid and excludedFromCommission are financial/admin decisions —
+    // Super Admin only. Source is just "how did this deal come in", which
+    // the consultant themselves can also set on their own deals.
+    const changingRestrictedFields = paid !== undefined || excludedFromCommission !== undefined;
+    if (changingRestrictedFields && !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
+    }
+    if (source !== undefined && !user.isSuperAdmin && user.consultantId !== records[idx].consultantId) {
+      return res.status(401).json({ error: "You can only set the source on your own deals" });
+    }
+
+    if (paid !== undefined) {
+      records[idx].paid = !!paid;
+      records[idx].paidMarkedAt = paid ? new Date().toISOString() : null;
+    }
+    if (excludedFromCommission !== undefined) {
+      records[idx].excludedFromCommission = !!excludedFromCommission;
+    }
+    if (source !== undefined) {
+      records[idx].source = source || null;
+    }
+
     await kv.set(RECORDS_KEY, records);
     return res.status(200).json({ ok: true, record: records[idx] });
   }
