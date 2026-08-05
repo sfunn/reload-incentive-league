@@ -52,6 +52,7 @@ function computeCommissionLines(deals, bands) {
         paidMarkedAt: deal.paidMarkedAt,
         source: deal.source || null,
         candidateName: deal.candidateName || null,
+        withheldMonths: deal.withheldMonths || [],
       });
 
       cumulative += portion;
@@ -64,19 +65,44 @@ function computeCommissionLines(deals, bands) {
 }
 
 // Splits a commission line's payout into 4 equal monthly instalments,
-// starting the month AFTER the deal was marked Paid. If not yet paid,
-// returns 4 placeholder "Month N" entries instead of real dates.
+// starting the month AFTER the deal was marked Paid. Withholding a specific
+// instalment (e.g. Josh's "fine" cases) never changes the commission total
+// — it still counts as earned — it just marks that month as not being paid
+// out, so it's visible on the sheet rather than silently missing.
+//
+// Each month gets a `status`:
+//   "future"   — hasn't happened yet (or the deal isn't marked Paid yet)
+//   "due"      — this is the current real calendar month, expected now
+//   "paid"     — an earlier month that's passed and wasn't withheld
+//   "withheld" — marked as a fine/withhold for this specific instalment
 function payoutSchedule(line) {
   const perMonth = line.commission / 4;
+  const withheld = new Set(line.withheldMonths || []);
+
   if (!line.paid || !line.paidMarkedAt) {
-    return [1, 2, 3, 4].map((n) => ({ label: `Month ${n}`, amount: perMonth, paidDate: null }));
+    return [1, 2, 3, 4].map((n) => ({
+      label: `Month ${n}`,
+      monthNumber: n,
+      amount: perMonth,
+      paidDate: null,
+      status: withheld.has(n) ? "withheld" : "future",
+    }));
   }
+
   const base = new Date(line.paidMarkedAt);
+  const now = new Date();
+  const currentMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+
   const months = [];
   for (let i = 1; i <= 4; i++) {
     const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + i, 1));
     const label = d.toLocaleString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
-    months.push({ label, amount: perMonth, paidDate: d.toISOString() });
+    let status;
+    if (withheld.has(i)) status = "withheld";
+    else if (d.getTime() < currentMonthStart) status = "paid";
+    else if (d.getTime() === currentMonthStart) status = "due";
+    else status = "future";
+    months.push({ label, monthNumber: i, amount: perMonth, paidDate: d.toISOString(), status });
   }
   return months;
 }
