@@ -83,7 +83,8 @@ module.exports = async (req, res) => {
     const withOrderDate = yearRecords.map((r) => {
       const placement = r.placementId ? placements[r.placementId] : null;
       const orderDate = (placement && placement.startDate) || r.feeDate;
-      return { ...r, orderDate };
+      const candidateName = (placement && placement.candidateName) || null;
+      return { ...r, orderDate, candidateName };
     });
     withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
 
@@ -95,6 +96,7 @@ module.exports = async (req, res) => {
       paid: r.paid,
       paidMarkedAt: r.paidMarkedAt,
       source: r.source,
+      candidateName: r.candidateName,
     }));
 
     const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
