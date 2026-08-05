@@ -53,7 +53,8 @@ module.exports = async (req, res) => {
             candidateName: (placement && placement.candidateName) || null,
             clientCompanyName: (placement && placement.clientCompanyName) || null,
             placementStartDate: (placement && placement.startDate) || null,
-            excludedFromCommission: !!r.excludedFromCommission,
+            withheldMonths: r.withheldMonths || [],
+            coordinatorId: r.coordinatorId || null,
             source: r.source || null,
           };
         })
@@ -113,7 +114,7 @@ module.exports = async (req, res) => {
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ error: "Not authorized" });
 
-    const { feeId, splitId, paid, excludedFromCommission, source } = req.body || {};
+    const { feeId, splitId, paid, withheldMonths, source, coordinatorId } = req.body || {};
     if (!feeId || !splitId) {
       return res.status(400).json({ error: "feeId and splitId are required" });
     }
@@ -123,10 +124,10 @@ module.exports = async (req, res) => {
       return res.status(404).json({ error: "Record not found" });
     }
 
-    // Paid and excludedFromCommission are financial/admin decisions —
+    // Paid, withheldMonths, and coordinatorId are financial/admin decisions —
     // Super Admin only. Source is just "how did this deal come in", which
     // the consultant themselves can also set on their own deals.
-    const changingRestrictedFields = paid !== undefined || excludedFromCommission !== undefined;
+    const changingRestrictedFields = paid !== undefined || withheldMonths !== undefined || coordinatorId !== undefined;
     if (changingRestrictedFields && !user.isSuperAdmin) {
       return res.status(401).json({ error: "Super Admin access required" });
     }
@@ -138,11 +139,14 @@ module.exports = async (req, res) => {
       records[idx].paid = !!paid;
       records[idx].paidMarkedAt = paid ? new Date().toISOString() : null;
     }
-    if (excludedFromCommission !== undefined) {
-      records[idx].excludedFromCommission = !!excludedFromCommission;
+    if (withheldMonths !== undefined) {
+      records[idx].withheldMonths = Array.isArray(withheldMonths) ? withheldMonths : [];
     }
     if (source !== undefined) {
       records[idx].source = source || null;
+    }
+    if (coordinatorId !== undefined) {
+      records[idx].coordinatorId = coordinatorId || null;
     }
 
     await kv.set(RECORDS_KEY, records);
