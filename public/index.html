@@ -405,6 +405,9 @@ function App() {
   // --- Deal Lead Award state ---
   const [dealsYear, setDealsYear] = useState(new Date().getUTCFullYear());
   const [dealsLeaderboard, setDealsLeaderboard] = useState([]);
+  const [sourceBreakdown, setSourceBreakdown] = useState([]);
+  const [clientBreakdown, setClientBreakdown] = useState([]);
+  const [clientGrandTotal, setClientGrandTotal] = useState(0);
   const [dealsLoading, setDealsLoading] = useState(false);
   const [dealsError, setDealsError] = useState("");
   const [dealDetails, setDealDetails] = useState([]);
@@ -779,6 +782,7 @@ function App() {
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setDealsLeaderboard(data.leaderboard || []);
+      setSourceBreakdown(data.sourceBreakdown || []);
     } catch (e) {
       setDealsError("Couldn't reach deal data.");
     } finally {
@@ -852,6 +856,8 @@ function App() {
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setDealDetails(data.records || []);
+      setClientBreakdown(data.clientBreakdown || []);
+      setClientGrandTotal(data.clientGrandTotal || 0);
     } catch (e) {
       // silent — the leaderboard fetch above already shows a connection error if relevant
     } finally {
@@ -1970,6 +1976,27 @@ function App() {
         "Resets each 1 January. Deals in a currency with no exchange rate set for that month are held back until Scott or Lee set one below."
       )
     ),
+    sourceBreakdown.length > 0 && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: `${dealsYear} deals`, title: "Deal Source Breakdown" }),
+      React.createElement(TableHeader, { cols: [
+        { label: "Source", flex: true },
+        { label: "Deals", width: 70 },
+        { label: "Value", width: 120 }
+      ] }),
+      sourceBreakdown.map(s => React.createElement(RowLine, { key: s.source },
+        React.createElement(Cell, { flex: true }, s.source),
+        React.createElement(Cell, { width: 70 }, s.deals),
+        React.createElement(Cell, { width: 120, bold: true }, `$${Math.round(s.valueUSD).toLocaleString()}`)
+      )),
+      React.createElement(RowLine, { highlighted: true },
+        React.createElement(Cell, { flex: true, bold: true }, "Total"),
+        React.createElement(Cell, { width: 70 }, sourceBreakdown.reduce((s, r) => s + r.deals, 0)),
+        React.createElement(Cell, { width: 120, bold: true }, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`)
+      ),
+      React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+        "Only counts deals that have a Source recorded — set on each deal from the admin table or the consultant's own Commission page."
+      )
+    ),
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
       React.createElement("div", { style: { marginBottom: 20, marginTop: 16 } },
@@ -2114,6 +2141,24 @@ function App() {
       ),
       React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
         "Admin can save manual weekly entries. Super Admin also gets Deal Lead Award's financial details, exchange rates, and this page. A password must be set before roles can be granted."
+      )
+    ),
+    isSuperAdmin && clientBreakdown.length > 0 && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
+      React.createElement(TableHeader, { cols: [
+        { label: "Firm", flex: true },
+        { label: "Total", width: 110 },
+        { label: "Percentage", width: 90 }
+      ] }),
+      clientBreakdown.map(c => React.createElement(RowLine, { key: c.firm },
+        React.createElement(Cell, { flex: true, color: c.firm === "Unknown" ? INDIGO_MUTED : INDIGO }, c.firm),
+        React.createElement(Cell, { width: 110, bold: true }, `$${Math.round(c.totalUSD).toLocaleString()}`),
+        React.createElement(Cell, { width: 90 }, `${c.percentage.toFixed(0)}%`)
+      )),
+      React.createElement(RowLine, { highlighted: true },
+        React.createElement(Cell, { flex: true, bold: true }, "Total"),
+        React.createElement(Cell, { width: 110, bold: true }, `$${Math.round(clientGrandTotal).toLocaleString()}`),
+        React.createElement(Cell, { width: 90 }, "100%")
       )
     )
   ), tab === "commission" && React.createElement("div", {
