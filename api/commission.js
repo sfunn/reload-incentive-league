@@ -60,7 +60,13 @@ module.exports = async (req, res) => {
 
     const allSettings = (await kv.get(SETTINGS_KEY)) || {};
     const personSettings = allSettings[consultantId] || {};
-    const bands = personSettings.bands && personSettings.bands.length ? personSettings.bands : STANDARD_BANDS;
+    // Bands are set PER YEAR — e.g. a promotion at the end of 2026 can give
+    // someone better brackets for 2027 without touching 2026's numbers.
+    // Falls back to the standard ladder if that year has never been set.
+    const bands =
+      (personSettings.bandsByYear && personSettings.bandsByYear[year] && personSettings.bandsByYear[year].length)
+        ? personSettings.bandsByYear[year]
+        : STANDARD_BANDS;
     const target = (personSettings.targets && personSettings.targets[year]) || null;
 
     const allRecords = (await kv.get(RECORDS_KEY)) || [];
@@ -111,16 +117,17 @@ module.exports = async (req, res) => {
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // --- SET BANDS: Super Admin only ---
+  // --- SET BANDS: Super Admin only. Bands are per consultant PER YEAR. ---
   if (action === "set-bands") {
     const caller = await getUserFromRequest(req);
     if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
-    const { consultantId, bands } = req.body || {};
-    if (!consultantId || !Array.isArray(bands)) {
-      return res.status(400).json({ error: "consultantId and bands are required" });
+    const { consultantId, year, bands } = req.body || {};
+    if (!consultantId || !year || !Array.isArray(bands)) {
+      return res.status(400).json({ error: "consultantId, year, and bands are required" });
     }
     const all = (await kv.get(SETTINGS_KEY)) || {};
-    all[consultantId] = { ...(all[consultantId] || {}), bands };
+    const existing = all[consultantId] || {};
+    all[consultantId] = { ...existing, bandsByYear: { ...(existing.bandsByYear || {}), [year]: bands } };
     await kv.set(SETTINGS_KEY, all);
     return res.status(200).json({ ok: true });
   }
