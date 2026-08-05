@@ -25,6 +25,11 @@ const EMAIL_TO_CONSULTANT = {
   // SUPER_ADMIN_EMAILS in _authHelpers.js, not from being in this list.
   "scott@reloadsearch.com": { id: null, name: "Scott Finn" },
   "lee@reloadsearch.com": { id: null, name: "Lee Mamo" },
+  // Coordinators — not fee-earning consultants, no leaderboard entry, but
+  // they get their own Commission page showing a flat fee per deal they're
+  // manually assigned to (rather than the tiered bracket system).
+  "isabelle@reloadsearch.com": { id: "izzy-coordinator", name: "Izzy", isCoordinator: true },
+  "zoe@reloadsearch.com": { id: "zoe-coordinator", name: "Zoe", isCoordinator: true },
 };
 
 function normalizeEmail(email) {
