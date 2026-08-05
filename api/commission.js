@@ -1,6 +1,6 @@
 const { kv } = require("@vercel/kv");
 const { getUserFromRequest } = require("./_authHelpers");
-const { STANDARD_BANDS, computeCommissionLines, payoutSchedule } = require("./_commissionEngine");
+const { STANDARD_BANDS, computeCommissionLines, payoutSchedule, singleMonthPayout } = require("./_commissionEngine");
 
 const SETTINGS_KEY = "commission-settings";
 const RECORDS_KEY = "atlas-fee-records";
@@ -94,7 +94,7 @@ module.exports = async (req, res) => {
         candidateName: r.candidateName,
         monthOverrides: r.monthOverrides || {},
       }));
-      const linesWithSchedule = lines.map((l) => ({ ...l, payout: payoutSchedule(l) }));
+      const linesWithSchedule = lines.map((l) => ({ ...l, payout: singleMonthPayout(l) }));
       const totalCommission = lines.reduce((sum, l) => sum + l.commission, 0);
 
       return res.status(200).json({
