@@ -107,4 +107,35 @@ function payoutSchedule(line) {
   return months;
 }
 
-module.exports = { STANDARD_BANDS, computeCommissionLines, payoutSchedule };
+// Coordinators get their whole flat fee in ONE lump sum, the month after
+// the deal is marked Paid — not spread over 4 months like consultants.
+// Same status logic (auto paid/due/future, with manual override support).
+function singleMonthPayout(line) {
+  const overrides = line.monthOverrides || {};
+
+  if (!line.paid || !line.paidMarkedAt) {
+    return [{
+      label: "Month 1",
+      monthNumber: 1,
+      amount: line.commission,
+      paidDate: null,
+      status: overrides[1] || "future",
+    }];
+  }
+
+  const base = new Date(line.paidMarkedAt);
+  const now = new Date();
+  const currentMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+
+  const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1));
+  const label = d.toLocaleString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+  let status;
+  if (overrides[1]) status = overrides[1];
+  else if (d.getTime() < currentMonthStart) status = "paid";
+  else if (d.getTime() === currentMonthStart) status = "due";
+  else status = "future";
+
+  return [{ label, monthNumber: 1, amount: line.commission, paidDate: d.toISOString(), status }];
+}
+
+module.exports = { STANDARD_BANDS, computeCommissionLines, payoutSchedule, singleMonthPayout };
