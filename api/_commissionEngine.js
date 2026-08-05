@@ -52,7 +52,7 @@ function computeCommissionLines(deals, bands) {
         paidMarkedAt: deal.paidMarkedAt,
         source: deal.source || null,
         candidateName: deal.candidateName || null,
-        withheldMonths: deal.withheldMonths || [],
+        monthOverrides: deal.monthOverrides || {},
       });
 
       cumulative += portion;
@@ -65,19 +65,19 @@ function computeCommissionLines(deals, bands) {
 }
 
 // Splits a commission line's payout into 4 equal monthly instalments,
-// starting the month AFTER the deal was marked Paid. Withholding a specific
-// instalment (e.g. Josh's "fine" cases) never changes the commission total
-// — it still counts as earned — it just marks that month as not being paid
-// out, so it's visible on the sheet rather than silently missing.
+// starting the month AFTER the deal was marked Paid. A month's status is
+// worked out automatically from real dates by default, but Scott/Lee can
+// manually override any single month to Paid/Due/Withheld — useful when
+// backfilling deals that were actually paid months ago, or any other
+// one-off correction — without ever changing the commission total itself.
 //
-// Each month gets a `status`:
 //   "future"   — hasn't happened yet (or the deal isn't marked Paid yet)
 //   "due"      — this is the current real calendar month, expected now
-//   "paid"     — an earlier month that's passed and wasn't withheld
+//   "paid"     — an earlier month that's passed
 //   "withheld" — marked as a fine/withhold for this specific instalment
 function payoutSchedule(line) {
   const perMonth = line.commission / 4;
-  const withheld = new Set(line.withheldMonths || []);
+  const overrides = line.monthOverrides || {};
 
   if (!line.paid || !line.paidMarkedAt) {
     return [1, 2, 3, 4].map((n) => ({
@@ -85,7 +85,7 @@ function payoutSchedule(line) {
       monthNumber: n,
       amount: perMonth,
       paidDate: null,
-      status: withheld.has(n) ? "withheld" : "future",
+      status: overrides[n] || "future",
     }));
   }
 
@@ -98,7 +98,7 @@ function payoutSchedule(line) {
     const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + i, 1));
     const label = d.toLocaleString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
     let status;
-    if (withheld.has(i)) status = "withheld";
+    if (overrides[i]) status = overrides[i];
     else if (d.getTime() < currentMonthStart) status = "paid";
     else if (d.getTime() === currentMonthStart) status = "due";
     else status = "future";
