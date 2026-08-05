@@ -105,7 +105,14 @@ export default async function handler(req, res) {
   // wipe out a deal Scott/Lee already marked as paid.
   const priorPaidBySplit = {};
   existing.forEach((r) => {
-    if (r.feeId === feeId) priorPaidBySplit[r.splitId] = { paid: r.paid, paidMarkedAt: r.paidMarkedAt };
+    if (r.feeId === feeId) {
+      priorPaidBySplit[r.splitId] = {
+        paid: r.paid,
+        paidMarkedAt: r.paidMarkedAt,
+        excludedFromCommission: r.excludedFromCommission,
+        source: r.source,
+      };
+    }
   });
   const filtered = existing.filter((r) => r.feeId !== feeId);
 
@@ -115,7 +122,7 @@ export default async function handler(req, res) {
     const consultantId = email ? EMAIL_TO_CONSULTANT[email] || null : null;
     const shareAmount = computeShareAmount(amount, split.share, splits.length);
 
-    const prior = priorPaidBySplit[split.id] || { paid: false, paidMarkedAt: null };
+    const prior = priorPaidBySplit[split.id] || { paid: false, paidMarkedAt: null, excludedFromCommission: false, source: null };
     const record = {
       feeId,
       splitId: split.id,
@@ -131,6 +138,8 @@ export default async function handler(req, res) {
       placementId: placementId || null,
       paid: prior.paid,
       paidMarkedAt: prior.paidMarkedAt,
+      excludedFromCommission: prior.excludedFromCommission || false,
+      source: prior.source || null,
       updatedAt: new Date().toISOString(),
     };
 
