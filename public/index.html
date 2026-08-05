@@ -100,6 +100,15 @@ const DEAL_CONSULTANTS = [...INITIAL_CONSULTANTS, {
   team: "josh"
 }];
 
+// Coordinators earn a flat fee per deal they're manually assigned to —
+// kept separate from DEAL_CONSULTANTS since they aren't fee-earners and
+// don't appear on the Deal Lead Award revenue leaderboard, only on their
+// own Commission page.
+const COORDINATORS = [
+  { id: "izzy-coordinator", name: "Izzy" },
+  { id: "zoe-coordinator", name: "Zoe" },
+];
+
 // How a deal came in — set by either Scott/Lee (admin table) or the
 // consultant themselves (their own Commission page).
 const SOURCE_OPTIONS = ["Cold Call", "InMail", "Email Campaigns", "Recommendation", "WhatsApp", "Octopus", "Other"];
@@ -954,6 +963,19 @@ function App() {
       // no-op
     }
   }
+  async function setDealCoordinator(feeId, splitId, coordinatorId) {
+    try {
+      const res = await fetch("/api/deals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ feeId, splitId, coordinatorId })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadDealDetails();
+    } catch (e) {
+      // no-op
+    }
+  }
   async function deleteDeal(feeId, splitId) {
     if (!window.confirm("Delete this deal permanently? It will disappear from the leaderboard and from that consultant's commission sheet.")) return;
     try {
@@ -995,8 +1017,13 @@ function App() {
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setCommissionData(data);
-      setBandInputs(data.bands.map(b => ({ min: String(b.min), max: b.max === null ? "" : String(b.max), rate: String(b.rate * 100) })));
-      setTargetInput(data.target !== null ? String(data.target) : "");
+      if (data.isCoordinator) {
+        setBandInputs([]);
+        setTargetInput(data.flatRate !== null && data.flatRate !== undefined ? String(data.flatRate) : "");
+      } else {
+        setBandInputs((data.bands || []).map(b => ({ min: String(b.min), max: b.max === null ? "" : String(b.max), rate: String(b.rate * 100) })));
+        setTargetInput(data.target !== null ? String(data.target) : "");
+      }
     } catch (e) {
       setCommissionError("Couldn't load this commission sheet — try again.");
     } finally {
@@ -1045,6 +1072,22 @@ function App() {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
         body: JSON.stringify({ consultantId: commissionViewConsultantId, year: commissionYear, target: parseFloat(targetInput) || null })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadCommission();
+    } catch (e) {
+      // no-op
+    } finally {
+      setTargetSaving(false);
+    }
+  }
+  async function saveFlatRate() {
+    setTargetSaving(true);
+    try {
+      const res = await fetch("/api/commission?action=set-flat-rate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ consultantId: commissionViewConsultantId, year: commissionYear, rate: parseFloat(targetInput) || 0 })
       });
       if (!res.ok) throw new Error("save failed");
       await loadCommission();
@@ -2121,6 +2164,7 @@ function App() {
             { label: "Amount", width: 100 },
             { label: "USD", width: 90 },
             { label: "Source", width: 130 },
+            { label: "Coordinator", width: 110 },
             { label: "Paid", width: 50 },
             { label: "", width: 70 }
           ] }),
@@ -2142,6 +2186,16 @@ function App() {
                 SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
               )
             ),
+            React.createElement(Cell, { width: 110 },
+              React.createElement("select", {
+                value: r.coordinatorId || "",
+                onChange: e => setDealCoordinator(r.feeId, r.splitId, e.target.value || null),
+                style: { ...inputStyleSmall, width: 100, padding: "4px 6px" }
+              },
+                React.createElement("option", { value: "" }, "—"),
+                COORDINATORS.map(co => React.createElement("option", { key: co.id, value: co.id }, co.name))
+              )
+            ),
             React.createElement(Cell, { width: 50 },
               React.createElement("input", {
                 type: "checkbox",
@@ -2158,7 +2212,7 @@ function App() {
           ))
         ),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-          "Marking a deal Paid starts the 4-month commission payout the following month. Individual monthly instalments can be withheld from that person's Commission page if needed (e.g. a one-off fine) without affecting anyone else's numbers or their total commission earned."
+          "Marking a deal Paid starts the 4-month commission payout the following month. Individual monthly instalments can be withheld from that person's Commission page if needed (e.g. a one-off fine) without affecting anyone else's numbers or their total commission earned. Assigning a Coordinator gives them a flat fee for that deal, independent of the consultant's own commission."
         )
     ),
     isSuperAdmin && React.createElement(Panel, null,
@@ -2280,6 +2334,19 @@ function App() {
             fontWeight: commissionViewConsultantId === c.id ? 700 : 500
           }
         }, c.name))
+      ),
+      isSuperAdmin && React.createElement("div", { style: { marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
+        React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, marginRight: 4 } }, "Coordinators:"),
+        COORDINATORS.map(c => React.createElement("button", {
+          key: c.id,
+          onClick: () => setCommissionViewConsultantId(c.id),
+          style: {
+            ...chipStyle,
+            background: commissionViewConsultantId === c.id ? INDIGO : "rgba(46,64,91,0.06)",
+            color: commissionViewConsultantId === c.id ? WHITE : INDIGO,
+            fontWeight: commissionViewConsultantId === c.id ? 700 : 500
+          }
+        }, c.name))
       )
     ),
     authUser && commissionViewConsultantId && React.createElement(Panel, null,
@@ -2301,6 +2368,73 @@ function App() {
     commissionLoading ? React.createElement(Panel, null, React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")) :
     commissionError ? React.createElement(Panel, null, React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, commissionError)) :
     !commissionData ? null :
+    commissionData.isCoordinator ? React.createElement(React.Fragment, null,
+      React.createElement(Panel, null,
+        React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 16 } },
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Deals coordinated"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, commissionData.dealCount)
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Flat fee per deal"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, `£${Number(commissionData.flatRate).toLocaleString()}`)
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Total commission earned"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
+          )
+        ),
+        commissionData.lines.length === 0 ? React.createElement(EmptyState, { text: `No deals coordinated yet for ${commissionYear}.` }) :
+        React.createElement(React.Fragment, null,
+          React.createElement(TableHeader, { cols: [
+            { label: "Date", width: 90 },
+            { label: "Candidate", width: 150 },
+            { label: "Fee", width: 90 },
+            { label: "Source", width: 110 },
+            { label: "Month 1", width: 90 },
+            { label: "Month 2", width: 90 },
+            { label: "Month 3", width: 90 },
+            { label: "Month 4", width: 90 }
+          ] }),
+          commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
+            React.createElement(Cell, { width: 90 }, toDayMonthYear(l.feeDate)),
+            React.createElement(Cell, { width: 150, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
+            React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
+            React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
+            ...l.payout.map((p, pi) => React.createElement(Cell, { key: pi, width: 90 },
+              React.createElement("div", {
+                onClick: isSuperAdmin ? () => toggleWithheldMonth(l.feeId, l.splitId, l.withheldMonths || [], p.monthNumber) : undefined,
+                title: isSuperAdmin ? (p.status === "withheld" ? "Click to un-withhold this instalment" : "Click to withhold this instalment (fine)") : undefined,
+                style: {
+                  ...payoutStatusStyle(p.status),
+                  borderRadius: 5,
+                  padding: "4px 6px",
+                  fontSize: 11.5,
+                  lineHeight: 1.4,
+                  cursor: isSuperAdmin ? "pointer" : "default",
+                }
+              }, `${p.label}${p.status === "withheld" ? " (withheld)" : ""}: £${Math.round(p.amount).toLocaleString()}`)
+            ))
+          ))
+        )
+      ),
+      isSuperAdmin && React.createElement(Panel, null,
+        React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: `${commissionYear} flat rate` }),
+        React.createElement("div", { style: { marginTop: 12, display: "flex", gap: 8, alignItems: "center" } },
+          React.createElement("input", {
+            type: "number",
+            value: targetInput,
+            onChange: e => setTargetInput(e.target.value),
+            placeholder: "500",
+            style: { ...inputStyleSmall, width: 120 }
+          }),
+          React.createElement("button", { onClick: saveFlatRate, disabled: targetSaving, style: primaryButtonStyle(targetSaving) }, targetSaving ? "Saving…" : "Save flat rate")
+        ),
+        React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
+          "This rate only applies to this year — other years keep whatever rate they were set to."
+        )
+      )
+    ) :
     React.createElement(React.Fragment, null,
       React.createElement(Panel, null,
         commissionData.target && React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 20, flexWrap: "wrap" } },
