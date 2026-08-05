@@ -6,6 +6,11 @@ const SETTINGS_KEY = "commission-settings";
 const RECORDS_KEY = "atlas-fee-records";
 const FX_KEY = "atlas-fx-rates";
 const PLACEMENTS_KEY = "atlas-placements";
+const DEFAULT_FLAT_RATE = 500;
+
+// Coordinators earn a flat fee per deal they're manually assigned to,
+// rather than the tiered bracket system consultants use.
+const COORDINATOR_IDS = new Set(["izzy-coordinator", "zoe-coordinator"]);
 
 function monthKeyFromDateStr(dateStr) {
   const d = dateStr ? new Date(dateStr) : new Date();
@@ -58,8 +63,54 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: "Not authorized to view this person's commission" });
     }
 
+    const allRecords = (await kv.get(RECORDS_KEY)) || [];
+    const allRates = (await kv.get(FX_KEY)) || {};
+    const placements = (await kv.get(PLACEMENTS_KEY)) || {};
     const allSettings = (await kv.get(SETTINGS_KEY)) || {};
     const personSettings = allSettings[consultantId] || {};
+
+    // --- COORDINATOR: flat fee per deal they're manually assigned to ---
+    if (COORDINATOR_IDS.has(consultantId)) {
+      const flatRate =
+        (personSettings.flatRateByYear && personSettings.flatRateByYear[year]) || DEFAULT_FLAT_RATE;
+
+      const yearRecords = allRecords.filter((r) => r.year === year && r.coordinatorId === consultantId);
+      const withOrderDate = yearRecords.map((r) => {
+        const placement = r.placementId ? placements[r.placementId] : null;
+        const orderDate = (placement && placement.startDate) || r.feeDate;
+        const candidateName = (placement && placement.candidateName) || null;
+        return { ...r, orderDate, candidateName };
+      });
+      withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+
+      const lines = withOrderDate.map((r) => ({
+        feeId: r.feeId,
+        splitId: r.splitId,
+        feeDate: r.feeDate,
+        commission: flatRate,
+        paid: r.paid,
+        paidMarkedAt: r.paidMarkedAt,
+        source: r.source || null,
+        candidateName: r.candidateName,
+        withheldMonths: r.withheldMonths || [],
+      }));
+      const linesWithSchedule = lines.map((l) => ({ ...l, payout: payoutSchedule(l) }));
+      const totalCommission = lines.reduce((sum, l) => sum + l.commission, 0);
+
+      return res.status(200).json({
+        consultantId,
+        year,
+        isCoordinator: true,
+        flatRate,
+        dealCount: lines.length,
+        totalCommission,
+        target: (personSettings.targets && personSettings.targets[year]) || null,
+        lines: linesWithSchedule,
+        heldBackCount: 0,
+      });
+    }
+
+    // --- CONSULTANT: tiered brackets, cumulative through the year ---
     // Bands are set PER YEAR — e.g. a promotion at the end of 2026 can give
     // someone better brackets for 2027 without touching 2026's numbers.
     // Falls back to the standard ladder if that year has never been set.
@@ -69,12 +120,8 @@ module.exports = async (req, res) => {
         : STANDARD_BANDS;
     const target = (personSettings.targets && personSettings.targets[year]) || null;
 
-    const allRecords = (await kv.get(RECORDS_KEY)) || [];
-    const allRates = (await kv.get(FX_KEY)) || {};
-    const placements = (await kv.get(PLACEMENTS_KEY)) || {};
-
     const yearRecords = allRecords.filter(
-      (r) => r.year === year && r.consultantId === consultantId && !r.excludedFromCommission
+      (r) => r.year === year && r.consultantId === consultantId
     );
 
     // Order by placement start date where we have it; fall back to the
@@ -97,6 +144,7 @@ module.exports = async (req, res) => {
       paidMarkedAt: r.paidMarkedAt,
       source: r.source,
       candidateName: r.candidateName,
+      withheldMonths: r.withheldMonths || [],
     }));
 
     const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
@@ -108,6 +156,7 @@ module.exports = async (req, res) => {
     return res.status(200).json({
       consultantId,
       year,
+      isCoordinator: false,
       bands,
       target,
       totalGBP,
@@ -145,6 +194,21 @@ module.exports = async (req, res) => {
     const all = (await kv.get(SETTINGS_KEY)) || {};
     const existing = all[consultantId] || {};
     all[consultantId] = { ...existing, targets: { ...(existing.targets || {}), [year]: target } };
+    await kv.set(SETTINGS_KEY, all);
+    return res.status(200).json({ ok: true });
+  }
+
+  // --- SET FLAT RATE: Super Admin only. For coordinators, per year. ---
+  if (action === "set-flat-rate") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    const { consultantId, year, rate } = req.body || {};
+    if (!consultantId || !year || rate === undefined) {
+      return res.status(400).json({ error: "consultantId, year, and rate are required" });
+    }
+    const all = (await kv.get(SETTINGS_KEY)) || {};
+    const existing = all[consultantId] || {};
+    all[consultantId] = { ...existing, flatRateByYear: { ...(existing.flatRateByYear || {}), [year]: parseFloat(rate) || 0 } };
     await kv.set(SETTINGS_KEY, all);
     return res.status(200).json({ ok: true });
   }
