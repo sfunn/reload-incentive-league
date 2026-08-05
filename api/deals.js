@@ -23,7 +23,7 @@ async function convertToUSD(record, allRates) {
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -117,6 +117,29 @@ module.exports = async (req, res) => {
 
     await kv.set(RECORDS_KEY, records);
     return res.status(200).json({ ok: true, record: records[idx] });
+  }
+
+  if (req.method === "DELETE") {
+    // Super Admin only. Removes the record entirely — since commission and
+    // the leaderboard are both calculated live from this data, the deleted
+    // deal disappears from that person's commission sheet and the Deal Lead
+    // Award total the moment it's gone, with nothing else to update.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
+    }
+    const { feeId, splitId } = req.body || {};
+    if (!feeId || !splitId) {
+      return res.status(400).json({ error: "feeId and splitId are required" });
+    }
+    const records = (await kv.get(RECORDS_KEY)) || [];
+    const idx = records.findIndex((r) => r.feeId === feeId && r.splitId === splitId);
+    if (idx === -1) {
+      return res.status(404).json({ error: "Record not found" });
+    }
+    records.splice(idx, 1);
+    await kv.set(RECORDS_KEY, records);
+    return res.status(200).json({ ok: true });
   }
 
   return res.status(405).json({ error: "Method not allowed" });
