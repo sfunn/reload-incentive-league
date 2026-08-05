@@ -53,7 +53,7 @@ module.exports = async (req, res) => {
             candidateName: (placement && placement.candidateName) || null,
             clientCompanyName: (placement && placement.clientCompanyName) || null,
             placementStartDate: (placement && placement.startDate) || null,
-            withheldMonths: r.withheldMonths || [],
+            monthOverrides: r.monthOverrides || {},
             coordinatorId: r.coordinatorId || null,
             source: r.source || null,
           };
@@ -114,7 +114,7 @@ module.exports = async (req, res) => {
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ error: "Not authorized" });
 
-    const { feeId, splitId, paid, withheldMonths, source, coordinatorId } = req.body || {};
+    const { feeId, splitId, paid, paidDate, monthOverrides, source, coordinatorId } = req.body || {};
     if (!feeId || !splitId) {
       return res.status(400).json({ error: "feeId and splitId are required" });
     }
@@ -124,10 +124,11 @@ module.exports = async (req, res) => {
       return res.status(404).json({ error: "Record not found" });
     }
 
-    // Paid, withheldMonths, and coordinatorId are financial/admin decisions —
-    // Super Admin only. Source is just "how did this deal come in", which
-    // the consultant themselves can also set on their own deals.
-    const changingRestrictedFields = paid !== undefined || withheldMonths !== undefined || coordinatorId !== undefined;
+    // Paid, paidDate, monthOverrides, and coordinatorId are financial/admin
+    // decisions — Super Admin only. Source is just "how did this deal come
+    // in", which the consultant themselves can also set on their own deals.
+    const changingRestrictedFields =
+      paid !== undefined || paidDate !== undefined || monthOverrides !== undefined || coordinatorId !== undefined;
     if (changingRestrictedFields && !user.isSuperAdmin) {
       return res.status(401).json({ error: "Super Admin access required" });
     }
@@ -137,10 +138,24 @@ module.exports = async (req, res) => {
 
     if (paid !== undefined) {
       records[idx].paid = !!paid;
-      records[idx].paidMarkedAt = paid ? new Date().toISOString() : null;
+      if (!paid) {
+        records[idx].paidMarkedAt = null;
+      } else if (!records[idx].paidMarkedAt) {
+        // Only default to "right now" the first time it's marked Paid —
+        // if it's already paid and just the date is being edited (see
+        // paidDate below), this won't stomp on that.
+        records[idx].paidMarkedAt = new Date().toISOString();
+      }
     }
-    if (withheldMonths !== undefined) {
-      records[idx].withheldMonths = Array.isArray(withheldMonths) ? withheldMonths : [];
+    // A separate, explicit date lets Scott/Lee backfill deals that were
+    // genuinely paid months ago, so the 4-month clock starts from the real
+    // payment date rather than from whenever they happened to tick the box.
+    if (paidDate !== undefined && records[idx].paid) {
+      const d = new Date(paidDate);
+      if (!isNaN(d.getTime())) records[idx].paidMarkedAt = d.toISOString();
+    }
+    if (monthOverrides !== undefined) {
+      records[idx].monthOverrides = (monthOverrides && typeof monthOverrides === "object") ? monthOverrides : {};
     }
     if (source !== undefined) {
       records[idx].source = source || null;
