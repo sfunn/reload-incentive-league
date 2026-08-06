@@ -77,11 +77,11 @@ function computeCommissionLines(deals, bands) {
 //   "withheld" — marked as a fine/withhold for this specific instalment
 //
 // Manually marking a month "Due" is treated as "this is genuinely being
-// paid right now" — so that month's own label snaps to today's real
-// calendar month (rather than whatever the original fixed schedule
-// predicted), and any later still-"Auto" months shift forward in step,
-// staying sequential after the corrected point rather than drifting out
-// of sync with reality.
+// paid right now" — so once that anchor exists, EVERY month in the row
+// (not just the ones after it) is recomputed as a consecutive run of
+// calendar months relative to today, rather than the original fixed
+// paidMarkedAt math. That keeps the whole row reading as a clean sequence
+// instead of two boxes colliding on the same month name.
 function payoutSchedule(line) {
   const perMonth = line.commission / 4;
   const overrides = line.monthOverrides || {};
@@ -100,9 +100,9 @@ function payoutSchedule(line) {
   const now = new Date();
   const currentMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
 
-  // Anchor = the highest-numbered month manually marked "due". Everything
-  // from that point onward re-bases off "today" instead of the original
-  // fixed paidMarkedAt math.
+  // Anchor = the highest-numbered month manually marked "due". Once set,
+  // ALL 4 months re-base off today as a consecutive sequence, not just
+  // the ones after the anchor.
   let anchorIndex = null;
   for (let i = 1; i <= 4; i++) {
     if (overrides[i] === "due") anchorIndex = i;
@@ -111,7 +111,7 @@ function payoutSchedule(line) {
   const months = [];
   for (let i = 1; i <= 4; i++) {
     let d;
-    if (anchorIndex && i >= anchorIndex) {
+    if (anchorIndex) {
       const offset = i - anchorIndex;
       d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
     } else {
@@ -121,7 +121,6 @@ function payoutSchedule(line) {
 
     let status;
     if (overrides[i]) status = overrides[i];
-    else if (anchorIndex && i > anchorIndex) status = "future"; // shifted-forward auto months aren't due yet
     else if (d.getTime() < currentMonthStart) status = "paid";
     else if (d.getTime() === currentMonthStart) status = "due";
     else status = "future";
