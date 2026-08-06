@@ -2775,17 +2775,18 @@ function App() {
     React.createElement(Panel, null,
       React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
         React.createElement(SectionTitle, { eyebrow: "Admin & Super Admin only", title: "Team Lead Bonus" }),
-        React.createElement("div", { style: { display: "flex", gap: 6 } },
+        React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+          [2026, 2027, 2028].map(y => React.createElement("button", {
+            key: y,
+            onClick: () => setTeamLeadPeriod(`${teamLeadPeriod.split("-")[0]}-${y}`),
+            style: { ...chipStyle, background: Number(teamLeadPeriod.split("-")[1]) === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: Number(teamLeadPeriod.split("-")[1]) === y ? 700 : 500 }
+          }, y)),
+          React.createElement("span", { style: { width: 1, height: 20, background: INDIGO_HAIRLINE, margin: "0 4px" } }),
           ["H1", "H2"].map(half => React.createElement("button", {
             key: half,
             onClick: () => setTeamLeadPeriod(`${half}-${teamLeadPeriod.split("-")[1]}`),
             style: { ...chipStyle, background: teamLeadPeriod.startsWith(half) ? MELON : "rgba(255,176,140,0.14)", fontWeight: teamLeadPeriod.startsWith(half) ? 700 : 500 }
-          }, half === "H1" ? "Jan–Jun" : "Jul–Dec")),
-          [teamLeadPeriod.split("-")[1] - 1, teamLeadPeriod.split("-")[1], Number(teamLeadPeriod.split("-")[1]) + 1].map(y => React.createElement("button", {
-            key: y,
-            onClick: () => setTeamLeadPeriod(`${teamLeadPeriod.split("-")[0]}-${y}`),
-            style: { ...chipStyle, background: Number(teamLeadPeriod.split("-")[1]) === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: Number(teamLeadPeriod.split("-")[1]) === y ? 700 : 500 }
-          }, y))
+          }, half === "H1" ? "Jan–Jun" : "Jul–Dec"))
         )
       ),
       isSuperAdmin && React.createElement("div", { style: { marginTop: 12, display: "flex", gap: 6 } },
@@ -2817,9 +2818,26 @@ function App() {
           React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar2.actual} / ${teamLeadData.pillar2.target} interviews (${teamLeadData.pillar2.percent.toFixed(1)}%)`)
         ),
         React.createElement("div", { style: labelStyle }, "Pillar 3 — CV to Interview Ratio"),
-        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, marginTop: 4 } },
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12, marginTop: 4 } },
           React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(teamLeadData.pillar3.bonus).toLocaleString()}`),
-          React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar3.actualRatioPercent.toFixed(1)}% ratio`)
+          React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar3.actualRatioPercent.toFixed(1)}% ratio (average of the 6 months)`)
+        ),
+        teamLeadData.monthlyBreakdown && React.createElement("div", { style: { marginBottom: 16 } },
+          React.createElement("div", { style: labelStyle }, "Month by month (each pillar is averaged across these 6 months)"),
+          React.createElement(TableHeader, { cols: [
+            { label: "Month", width: 90 },
+            { label: "Roster", width: 60 },
+            { label: "CVs", width: 100 },
+            { label: "Interviews", width: 100 },
+            { label: "Ratio", width: 70 }
+          ] }),
+          teamLeadData.monthlyBreakdown.map(m => React.createElement(RowLine, { key: m.month },
+            React.createElement(Cell, { width: 90 }, toDisplayMonth(m.month)),
+            React.createElement(Cell, { width: 60, color: INDIGO_MUTED }, m.roster),
+            React.createElement(Cell, { width: 100 }, `${m.cvs}/${m.targetCVs} (${m.cvPercent.toFixed(0)}%)`),
+            React.createElement(Cell, { width: 100 }, `${m.interviews}/${m.targetInterviews} (${m.interviewPercent.toFixed(0)}%)`),
+            React.createElement(Cell, { width: 70 }, `${m.ratioPercent.toFixed(0)}%`)
+          ))
         ),
         React.createElement("div", { style: labelStyle }, "Pillar 4 — Desk Deals (target: 12 in the period, Team Lead capped at 4 of their own)"),
         React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 } },
