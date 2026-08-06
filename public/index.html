@@ -484,6 +484,22 @@ function App() {
   const [pwdError, setPwdError] = useState("");
   const [pwdNoticeEmail, setPwdNoticeEmail] = useState(null);
   const [paidDateDrafts, setPaidDateDrafts] = useState({});
+
+  // --- Team Lead Bonus ---
+  const TEAM_LEADS = [
+    { id: "james-lancer", name: "James Lancer", team: "james" },
+    { id: "josh-stark", name: "Josh Stark", team: "josh" },
+  ];
+  const defaultHalf = new Date().getUTCMonth() < 6 ? "H1" : "H2";
+  const [teamLeadPeriod, setTeamLeadPeriod] = useState(`${defaultHalf}-${new Date().getUTCFullYear()}`);
+  const [teamLeadViewId, setTeamLeadViewId] = useState(null);
+  const [teamLeadData, setTeamLeadData] = useState(null);
+  const [teamLeadLoading, setTeamLeadLoading] = useState(false);
+  const [teamLeadError, setTeamLeadError] = useState("");
+  const [newPromotionId, setNewPromotionId] = useState("");
+  const [finalizeDateDraft, setFinalizeDateDraft] = useState("");
+  const [finalizeSaving, setFinalizeSaving] = useState(false);
+
   const refreshWeeks = useCallback(async () => {
     try {
       const res = await fetch(API_URL);
@@ -1047,6 +1063,85 @@ function App() {
     }
   }, [authUser, isSuperAdmin]);
 
+  useEffect(() => {
+    if (!authUser || !isAdmin) return;
+    if (isSuperAdmin) {
+      if (!teamLeadViewId) setTeamLeadViewId(TEAM_LEADS[0].id);
+    } else {
+      // James/Josh only ever see their own team — locked to their own id.
+      setTeamLeadViewId(authUser.consultantId);
+    }
+  }, [authUser, isAdmin, isSuperAdmin]);
+
+  const loadTeamLeadData = useCallback(async () => {
+    if (!authUser || !teamLeadViewId) return;
+    setTeamLeadLoading(true);
+    setTeamLeadError("");
+    try {
+      const res = await fetch(
+        `/api/team-lead-bonus?action=compute&teamLeadId=${encodeURIComponent(teamLeadViewId)}&period=${teamLeadPeriod}`,
+        { headers: { Authorization: `Bearer ${authUser.token}` } }
+      );
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setTeamLeadData(data);
+      setFinalizeDateDraft(data.finalizedAt ? data.finalizedAt.slice(0, 10) : todayStr());
+    } catch (e) {
+      setTeamLeadError("Couldn't load this team's bonus data — try again.");
+    } finally {
+      setTeamLeadLoading(false);
+    }
+  }, [authUser, teamLeadViewId, teamLeadPeriod]);
+  useEffect(() => {
+    if (tab === "teamlead") loadTeamLeadData();
+  }, [tab, teamLeadViewId, teamLeadPeriod]);
+
+  async function addPromotion(consultantId) {
+    if (!consultantId) return;
+    const consultant = INITIAL_CONSULTANTS.find(c => c.id === consultantId);
+    try {
+      const res = await fetch("/api/team-lead-bonus?action=add-promotion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ teamLeadId: teamLeadViewId, period: teamLeadPeriod, consultantId, consultantName: consultant ? consultant.name : consultantId })
+      });
+      if (!res.ok) throw new Error("save failed");
+      setNewPromotionId("");
+      await loadTeamLeadData();
+    } catch (e) {
+      // no-op
+    }
+  }
+  async function removePromotion(promotionId) {
+    try {
+      const res = await fetch("/api/team-lead-bonus?action=remove-promotion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ teamLeadId: teamLeadViewId, period: teamLeadPeriod, promotionId })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadTeamLeadData();
+    } catch (e) {
+      // no-op
+    }
+  }
+  async function finalizeTeamLeadBonus(finalized) {
+    setFinalizeSaving(true);
+    try {
+      const res = await fetch("/api/team-lead-bonus?action=finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ teamLeadId: teamLeadViewId, period: teamLeadPeriod, finalized, finalizedAt: finalized ? finalizeDateDraft : null })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadTeamLeadData();
+    } catch (e) {
+      // no-op
+    } finally {
+      setFinalizeSaving(false);
+    }
+  }
+
   const loadCommission = useCallback(async () => {
     if (!authUser || !commissionViewConsultantId) return;
     setCommissionLoading(true);
@@ -1321,6 +1416,9 @@ function App() {
   }, ...(authUser ? [{
     id: "commission",
     label: "My Commission"
+  }] : []), ...(authUser && isAdmin ? [{
+    id: "teamlead",
+    label: "Team Lead Bonus"
   }] : []), {
     id: "ask",
     label: "Ask The Table"
@@ -2668,6 +2766,140 @@ function App() {
         bandsError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, bandsError),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
           "These brackets only apply to this person for this specific year — changing them never affects other years or other people."
+        )
+      )
+    )
+  ), tab === "teamlead" && React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 20 }
+  },
+    React.createElement(Panel, null,
+      React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
+        React.createElement(SectionTitle, { eyebrow: "Admin & Super Admin only", title: "Team Lead Bonus" }),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          ["H1", "H2"].map(half => React.createElement("button", {
+            key: half,
+            onClick: () => setTeamLeadPeriod(`${half}-${teamLeadPeriod.split("-")[1]}`),
+            style: { ...chipStyle, background: teamLeadPeriod.startsWith(half) ? MELON : "rgba(255,176,140,0.14)", fontWeight: teamLeadPeriod.startsWith(half) ? 700 : 500 }
+          }, half === "H1" ? "Jan–Jun" : "Jul–Dec")),
+          [teamLeadPeriod.split("-")[1] - 1, teamLeadPeriod.split("-")[1], Number(teamLeadPeriod.split("-")[1]) + 1].map(y => React.createElement("button", {
+            key: y,
+            onClick: () => setTeamLeadPeriod(`${teamLeadPeriod.split("-")[0]}-${y}`),
+            style: { ...chipStyle, background: Number(teamLeadPeriod.split("-")[1]) === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: Number(teamLeadPeriod.split("-")[1]) === y ? 700 : 500 }
+          }, y))
+        )
+      ),
+      isSuperAdmin && React.createElement("div", { style: { marginTop: 12, display: "flex", gap: 6 } },
+        TEAM_LEADS.map(tl => React.createElement("button", {
+          key: tl.id,
+          onClick: () => setTeamLeadViewId(tl.id),
+          style: {
+            ...chipStyle,
+            background: teamLeadViewId === tl.id ? TEAMS[tl.team].color : "rgba(46,64,91,0.06)",
+            color: teamLeadViewId === tl.id ? WHITE : INDIGO,
+            fontWeight: teamLeadViewId === tl.id ? 700 : 500
+          }
+        }, tl.name))
+      )
+    ),
+    teamLeadLoading ? React.createElement(Panel, null, React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")) :
+    teamLeadError ? React.createElement(Panel, null, React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, teamLeadError)) :
+    !teamLeadData ? null :
+    React.createElement(React.Fragment, null,
+      React.createElement(Panel, null,
+        React.createElement("div", { style: labelStyle }, "Pillar 1 — Desk CV Volume (target: 30/consultant/month)"),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, marginTop: 4 } },
+          React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(teamLeadData.pillar1.bonus).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar1.actual} / ${teamLeadData.pillar1.target} CVs (${teamLeadData.pillar1.percent.toFixed(1)}%)`)
+        ),
+        React.createElement("div", { style: labelStyle }, "Pillar 2 — Desk Interview Volume (target: 30/consultant/month)"),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, marginTop: 4 } },
+          React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(teamLeadData.pillar2.bonus).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar2.actual} / ${teamLeadData.pillar2.target} interviews (${teamLeadData.pillar2.percent.toFixed(1)}%)`)
+        ),
+        React.createElement("div", { style: labelStyle }, "Pillar 3 — CV to Interview Ratio"),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, marginTop: 4 } },
+          React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(teamLeadData.pillar3.bonus).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar3.actualRatioPercent.toFixed(1)}% ratio`)
+        ),
+        React.createElement("div", { style: labelStyle }, "Pillar 4 — Desk Deals (target: 12 in the period, Team Lead capped at 4 of their own)"),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 } },
+          React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(teamLeadData.pillar4.bonus).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } },
+            `${teamLeadData.pillar4.totalCountedDeals} / ${teamLeadData.pillar4.target} deals (${teamLeadData.pillar4.teamMemberDeals} team + ${teamLeadData.pillar4.teamLeadCountedDeals} own, capped from ${teamLeadData.pillar4.teamLeadOwnDeals})`
+          )
+        )
+      ),
+      React.createElement(Panel, null,
+        React.createElement(SectionTitle, { title: "Development Bonus" }),
+        teamLeadData.developmentBonus.milestoneCrossings.length === 0 && teamLeadData.developmentBonus.promotions.length === 0
+          ? React.createElement("div", { style: { marginTop: 10, fontSize: 13, color: INDIGO_MUTED } }, "Nothing this period.")
+          : React.createElement("div", { style: { marginTop: 10 } },
+              teamLeadData.developmentBonus.milestoneCrossings.map((m, i) => React.createElement("div", {
+                key: i, style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+              },
+                React.createElement("span", null, `${m.consultantId} — first $${m.threshold.toLocaleString()} year`),
+                React.createElement("span", { style: { fontWeight: 600 } }, `£${m.bonus.toLocaleString()}`)
+              )),
+              teamLeadData.developmentBonus.promotions.map(p => React.createElement("div", {
+                key: p.id, style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+              },
+                React.createElement("span", null, `${p.consultantName} — promoted`),
+                React.createElement("span", { style: { fontWeight: 600 } }, "£2,500"),
+                isSuperAdmin && React.createElement("button", {
+                  onClick: () => removePromotion(p.id),
+                  style: { ...ghostStyle, color: MELON_LINK, borderColor: MELON_LINK, fontSize: 11, padding: "2px 8px" }
+                }, "Remove")
+              ))
+            ),
+        isSuperAdmin && React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, alignItems: "center" } },
+          React.createElement("select", {
+            value: newPromotionId,
+            onChange: e => setNewPromotionId(e.target.value),
+            style: { ...inputStyleSmall, width: 200 }
+          },
+            React.createElement("option", { value: "" }, "Mark a promotion…"),
+            INITIAL_CONSULTANTS.filter(c => (consultantTeamOverrides => (consultantTeamOverrides[c.id] || c.team))(teamOverrides || {}) === (TEAM_LEADS.find(tl => tl.id === teamLeadViewId) || {}).team)
+              .map(c => React.createElement("option", { key: c.id, value: c.id }, c.name))
+          ),
+          React.createElement("button", { onClick: () => addPromotion(newPromotionId), style: ghostStyle }, "Add")
+        )
+      ),
+      React.createElement(Panel, null,
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16 } },
+          React.createElement("div", { style: labelStyle }, "Total bonus this period"),
+          React.createElement("span", { style: { fontSize: 22, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(teamLeadData.totalBonus).toLocaleString()}`)
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" } },
+          React.createElement("div", {
+            style: { ...payoutStatusStyle(teamLeadData.payout.lumpSum.status), borderRadius: 5, padding: "6px 10px", fontSize: 12.5 }
+          }, `${teamLeadData.payout.lumpSum.label}: £${Math.round(teamLeadData.payout.lumpSum.amount).toLocaleString()} (50% at period end)`),
+          teamLeadData.payout.instalments.map((inst, i) => React.createElement("div", {
+            key: i,
+            style: { ...payoutStatusStyle(inst.status), borderRadius: 5, padding: "6px 10px", fontSize: 12.5 }
+          }, `${inst.label}: £${Math.round(inst.amount).toLocaleString()}`))
+        ),
+        isSuperAdmin && React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", gap: 8, alignItems: "center" } },
+          !teamLeadData.finalized
+            ? React.createElement(React.Fragment, null,
+                React.createElement("input", {
+                  type: "date", value: finalizeDateDraft, onChange: e => setFinalizeDateDraft(e.target.value),
+                  style: { ...inputStyleSmall, width: 140 }
+                }),
+                React.createElement("button", {
+                  onClick: () => finalizeTeamLeadBonus(true), disabled: finalizeSaving,
+                  style: primaryButtonStyle(finalizeSaving)
+                }, finalizeSaving ? "Saving…" : "Finalize & start payout")
+              )
+            : React.createElement(React.Fragment, null,
+                React.createElement("span", { style: { fontSize: 13, color: INDIGO_MUTED } }, `Finalized ${toDayMonthYear(teamLeadData.finalizedAt)}`),
+                React.createElement("button", {
+                  onClick: () => finalizeTeamLeadBonus(false), disabled: finalizeSaving,
+                  style: { ...ghostStyle, color: MELON_LINK, borderColor: MELON_LINK }
+                }, "Un-finalize")
+              )
+        ),
+        React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
+          "All incentive payments remain discretionary per the Team Lead Incentive Agreement. Finalizing locks in the total and starts the 50% now / 4-month payout — Super Admin only."
         )
       )
     )
