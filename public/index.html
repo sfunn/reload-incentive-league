@@ -2127,7 +2127,7 @@ function App() {
       )
     ),
     sourceBreakdown.length > 0 && React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: `${dealsYear} deals`, title: "Deal Source Breakdown" }),
+      React.createElement(SectionTitle, { eyebrow: `'${String(dealsYear).slice(2)} deals`, title: "Deal Source Breakdown" }),
       React.createElement(TableHeader, { cols: [
         { label: "Source", flex: true },
         { label: "Deals", width: 70 },
@@ -2173,9 +2173,10 @@ function App() {
             ).join("   ·   ")
           )
         ),
-        React.createElement("div", { style: labelStyle }, `${dealsYear} deals`),
+        React.createElement("div", { style: labelStyle }, `'${String(dealsYear).slice(2)} deals`),
         dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
         dealDetails.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
+        React.createElement("div", { style: { overflowX: "auto" } },
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
             { label: "Date", width: 90 },
@@ -2250,6 +2251,7 @@ function App() {
               }, "Delete")
             )
           ))
+        )
         ),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
           "Marking a deal Paid starts the 4-month commission payout the following month. Individual monthly instalments can be withheld from that person's Commission page if needed (e.g. a one-off fine) without affecting anyone else's numbers or their total commission earned. Assigning a Coordinator gives them a flat fee for that deal, independent of the consultant's own commission."
@@ -2658,6 +2660,8 @@ function TableHeader({
       key: i,
       style: {
         width: flex ? undefined : width,
+        minWidth: flex ? undefined : width,
+        flexShrink: flex ? undefined : 0,
         flex: flex ? 1 : undefined
       }
     }, label);
@@ -2688,6 +2692,8 @@ function Cell({
   return /*#__PURE__*/React.createElement("div", {
     style: {
       width: flex ? undefined : width,
+      minWidth: flex ? undefined : width,
+      flexShrink: flex ? undefined : 0,
       flex: flex ? 1 : undefined,
       fontFamily: "'Work Sans', sans-serif",
       fontWeight: bold ? 700 : 400,
