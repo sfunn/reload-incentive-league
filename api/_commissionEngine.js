@@ -43,6 +43,7 @@ function computeCommissionLines(deals, bands) {
         feeId: deal.feeId,
         splitId: deal.splitId,
         feeDate: deal.feeDate,
+        startDate: deal.startDate || null,
         gbpPortion: portion,
         rate: band.rate,
         bandMin: band.min,
