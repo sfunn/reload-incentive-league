@@ -826,6 +826,13 @@ function App() {
   useEffect(() => {
     if (tab === "deals") refreshDealsLeaderboard(dealsYear);
   }, [tab, dealsYear, refreshDealsLeaderboard]);
+  useEffect(() => {
+    // "Done" and "Total revenue" on the Commission page both need the
+    // leaderboard's USD totals too — fetch it for whichever year the
+    // Commission tab is actually showing, not just when Deal Lead Award
+    // itself has been visited this session.
+    if (tab === "commission") refreshDealsLeaderboard(commissionYear);
+  }, [tab, commissionYear, refreshDealsLeaderboard]);
   const loadUserAccounts = useCallback(async () => {
     if (!authUser) return;
     try {
@@ -2587,15 +2594,28 @@ function App() {
               );
             })
           ),
-          React.createElement("div", { style: { display: "flex", gap: 24 } },
-            React.createElement("div", null,
-              React.createElement("div", { style: labelStyle }, "Total revenue (GBP)"),
-              React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(commissionData.totalGBP).toLocaleString()}`)
-            ),
-            React.createElement("div", null,
-              React.createElement("div", { style: labelStyle }, "Commission earned"),
-              React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
-            )
+          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+            (() => {
+              const usdTotal = dealsLeaderboard.find(l => l.consultantId === commissionViewConsultantId);
+              const withheldTotal = commissionData.lines.reduce(
+                (sum, l) => sum + (l.payout || []).filter(p => p.status === "withheld").reduce((s, p) => s + p.amount, 0),
+                0
+              );
+              const netCommission = commissionData.totalCommission - withheldTotal;
+              return React.createElement(React.Fragment, null,
+                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 15 } },
+                  React.createElement("span", { style: labelStyle }, "Total revenue"),
+                  React.createElement("span", { style: { fontWeight: 700, color: INDIGO } },
+                    `${usdTotal ? `$${Math.round(usdTotal.totalUSD).toLocaleString()} · ` : ""}£${Math.round(commissionData.totalGBP).toLocaleString()}`
+                  )
+                ),
+                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 15 } },
+                  React.createElement("span", { style: labelStyle }, "Commission earned"),
+                  React.createElement("span", { style: { fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(netCommission).toLocaleString()}`),
+                  withheldTotal > 0 && React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(£${Math.round(withheldTotal).toLocaleString()} withheld)`)
+                )
+              );
+            })()
           )
         )
       ),
