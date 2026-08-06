@@ -171,46 +171,68 @@ module.exports = async (req, res) => {
       kv.get(BONUS_KEY).then((v) => v || {}),
     ]);
 
-    // --- Pillars 1 & 2: CV / Interview volume, from weekly league data ---
-    // Each week's OWN stamped team (set when it was logged) is used when
-    // present — so a mid-period team change never rewrites history — with
-    // a fallback to current assignment only for older weeks that predate
-    // team stamping.
-    let totalCVs = 0;
-    let totalInterviews = 0;
-    const monthsWithActivity = new Set();
-    const teamMembersSeen = new Set();
+    // --- Pillars 1, 2 & 3: assessed month by month, then averaged over
+    // the 6-month review period — not as one aggregate total. Each month's
+    // target uses the roster who ACTUALLY reported that team that month
+    // (not just a static headcount), so a team that grew or shrank
+    // mid-period is judged fairly for each individual month.
+    const monthKeys = [];
+    {
+      const [sy, sm] = start.split("-").map(Number);
+      for (let i = 0; i < 6; i++) {
+        const mi = sm - 1 + i;
+        const y = sy + Math.floor(mi / 12);
+        const m = (mi % 12) + 1;
+        monthKeys.push(`${y}-${String(m).padStart(2, "0")}`);
+      }
+    }
+    const perMonth = {};
+    for (const mk of monthKeys) perMonth[mk] = { cvs: 0, interviews: 0, activeConsultants: new Set() };
 
     for (const week of weeks) {
       if (!inRange(week.date, start, end)) continue;
+      const mk = week.date.slice(0, 7);
+      if (!perMonth[mk]) continue;
       for (const [consultantId, row] of Object.entries(week.rows || {})) {
         const rowTeam = row.team || (await getTeamForConsultant(consultantId, teamOverrides));
         if (rowTeam !== team) continue;
-        totalCVs += Number(row.cvs) || 0;
-        totalInterviews += Number(row.interviews) || 0;
-        teamMembersSeen.add(consultantId);
-        monthsWithActivity.add(week.date.slice(0, 7));
+        perMonth[mk].cvs += Number(row.cvs) || 0;
+        perMonth[mk].interviews += Number(row.interviews) || 0;
+        perMonth[mk].activeConsultants.add(consultantId);
       }
     }
 
-    // Target uses the CURRENT roster size — the simplest defensible basis
-    // when a team's membership can change mid-period. 6 months, 30/consultant/month.
     const currentRoster = Object.keys(DEFAULT_TEAM_BY_CONSULTANT)
       .concat(Object.keys(teamOverrides))
       .filter((v, i, a) => a.indexOf(v) === i)
       .filter((cid) => (teamOverrides[cid] || DEFAULT_TEAM_BY_CONSULTANT[cid]) === team);
-    const rosterSize = currentRoster.length || 1;
-    const monthsInPeriod = 6;
 
-    const targetCVs = 30 * rosterSize * monthsInPeriod;
-    const targetInterviews = 30 * rosterSize * monthsInPeriod;
-    const pillar1Percent = targetCVs > 0 ? (totalCVs / targetCVs) * 100 : 0;
-    const pillar2Percent = targetInterviews > 0 ? (totalInterviews / targetInterviews) * 100 : 0;
+    const monthlyBreakdown = monthKeys.map((mk) => {
+      const m = perMonth[mk];
+      const roster = m.activeConsultants.size || 0;
+      const targetCVs = 30 * roster;
+      const targetInterviews = 30 * roster;
+      const cvPercent = targetCVs > 0 ? (m.cvs / targetCVs) * 100 : 0;
+      const interviewPercent = targetInterviews > 0 ? (m.interviews / targetInterviews) * 100 : 0;
+      const ratioPercent = m.cvs > 0 ? (m.interviews / m.cvs) * 100 : 0;
+      return {
+        month: mk, roster, cvs: m.cvs, interviews: m.interviews,
+        targetCVs, targetInterviews, cvPercent, interviewPercent, ratioPercent,
+      };
+    });
+
+    const avg = (arr, key) => (arr.length ? arr.reduce((s, x) => s + x[key], 0) / arr.length : 0);
+    const totalCVs = monthlyBreakdown.reduce((s, m) => s + m.cvs, 0);
+    const totalInterviews = monthlyBreakdown.reduce((s, m) => s + m.interviews, 0);
+    const targetCVsTotal = monthlyBreakdown.reduce((s, m) => s + m.targetCVs, 0);
+    const targetInterviewsTotal = monthlyBreakdown.reduce((s, m) => s + m.targetInterviews, 0);
+
+    const pillar1Percent = avg(monthlyBreakdown, "cvPercent");
+    const pillar2Percent = avg(monthlyBreakdown, "interviewPercent");
+    const ratioPercent = avg(monthlyBreakdown, "ratioPercent");
+
     const pillar1Bonus = interpolate(PILLAR_1_CV_VOLUME, pillar1Percent);
     const pillar2Bonus = interpolate(PILLAR_2_INTERVIEW_VOLUME, pillar2Percent);
-
-    // --- Pillar 3: CV to Interview ratio ---
-    const ratioPercent = totalCVs > 0 ? (totalInterviews / totalCVs) * 100 : 0;
     const pillar3Bonus = interpolate(PILLAR_3_CV_TO_INTERVIEW_RATIO, ratioPercent);
 
     // --- Pillar 4: desk deals, team lead's own contribution capped at 4 ---
@@ -273,10 +295,11 @@ module.exports = async (req, res) => {
       period,
       periodStart: start,
       periodEnd: end,
-      rosterSize,
-      pillar1: { actual: totalCVs, target: targetCVs, percent: pillar1Percent, bonus: pillar1Bonus },
-      pillar2: { actual: totalInterviews, target: targetInterviews, percent: pillar2Percent, bonus: pillar2Bonus },
+      rosterSize: currentRoster.length,
+      pillar1: { actual: totalCVs, target: targetCVsTotal, percent: pillar1Percent, bonus: pillar1Bonus },
+      pillar2: { actual: totalInterviews, target: targetInterviewsTotal, percent: pillar2Percent, bonus: pillar2Bonus },
       pillar3: { actualRatioPercent: ratioPercent, bonus: pillar3Bonus },
+      monthlyBreakdown,
       pillar4: {
         teamMemberDeals, teamLeadOwnDeals, teamLeadCountedDeals, totalCountedDeals,
         target: PILLAR_4_TARGET_DEALS, bonus: pillar4Bonus,
