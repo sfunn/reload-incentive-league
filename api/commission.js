@@ -71,6 +71,25 @@ function effectiveYear(record, placements) {
   return d && !isNaN(d.getTime()) ? d.getUTCFullYear() : record.year;
 }
 
+// Bands (and flat rates) set for a given year carry forward to every later
+// year automatically, until a NEW value is explicitly saved for some later
+// year — at which point that becomes the new carried-forward value from
+// then on. So setting 2026's brackets applies to 2027, 2028... forever,
+// unless 2027 gets its own explicit change, in which case 2026 is
+// untouched and 2027+ uses the new value instead.
+function carryForwardValue(byYear, year) {
+  if (!byYear) return null;
+  if (byYear[year] !== undefined && byYear[year] !== null) {
+    const v = byYear[year];
+    if (Array.isArray(v) ? v.length > 0 : true) return v;
+  }
+  const priorYears = Object.keys(byYear)
+    .map(Number)
+    .filter((y) => y <= year && byYear[y] !== undefined && byYear[y] !== null && (!Array.isArray(byYear[y]) || byYear[y].length > 0))
+    .sort((a, b) => b - a);
+  return priorYears.length ? byYear[priorYears[0]] : null;
+}
+
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -107,7 +126,7 @@ module.exports = async (req, res) => {
     // --- COORDINATOR: flat fee per deal they're manually assigned to ---
     if (COORDINATOR_IDS.has(consultantId)) {
       const flatRate =
-        (personSettings.flatRateByYear && personSettings.flatRateByYear[year]) || DEFAULT_FLAT_RATE;
+        carryForwardValue(personSettings.flatRateByYear, year) || DEFAULT_FLAT_RATE;
 
       const yearRecords = allRecords.filter((r) => effectiveYear(r, placements) === year && r.coordinatorId === consultantId);
       const withOrderDate = yearRecords.map((r) => {
@@ -148,13 +167,12 @@ module.exports = async (req, res) => {
     }
 
     // --- CONSULTANT: tiered brackets, cumulative through the year ---
-    // Bands are set PER YEAR — e.g. a promotion at the end of 2026 can give
-    // someone better brackets for 2027 without touching 2026's numbers.
-    // Falls back to the standard ladder if that year has never been set.
-    const bands =
-      (personSettings.bandsByYear && personSettings.bandsByYear[year] && personSettings.bandsByYear[year].length)
-        ? personSettings.bandsByYear[year]
-        : STANDARD_BANDS;
+    // A bracket schedule set for a year carries forward to every later
+    // year automatically, until a new one is explicitly saved for some
+    // later year — e.g. a promotion at the end of 2026 that changes 2027
+    // onward, without touching 2026's own numbers. Falls back to the
+    // standard ladder only if this person has never had any year set.
+    const bands = carryForwardValue(personSettings.bandsByYear, year) || STANDARD_BANDS;
     const target = (personSettings.targets && personSettings.targets[year]) || null;
 
     const yearRecords = allRecords.filter(
