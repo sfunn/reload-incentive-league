@@ -1130,14 +1130,17 @@ function App() {
       ]);
       const [dataA, dataB] = await Promise.all([resA.ok ? resA.json() : { lines: [] }, resB.ok ? resB.json() : { lines: [] }]);
       const allLines = [...(dataA.lines || []), ...(dataB.lines || [])];
-      const dueItems = [];
+      const byName = {};
       allLines.forEach(l => {
         (l.payout || []).forEach(p => {
           if (p.status === "due") {
-            dueItems.push({ candidateName: l.candidateName, feeDate: l.feeDate, amount: p.amount });
+            const key = l.candidateName || "—";
+            if (!byName[key]) byName[key] = { candidateName: key, amount: 0 };
+            byName[key].amount += p.amount;
           }
         });
       });
+      const dueItems = Object.values(byName).sort((a, b) => b.amount - a.amount);
       setThisMonthItems(dueItems);
       setThisMonthTotal(dueItems.reduce((s, i) => s + i.amount, 0));
     } catch (e) {
@@ -2399,7 +2402,7 @@ function App() {
         React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: MELON_LINK, marginBottom: 12 } }, `£${Math.round(thisMonthTotal).toLocaleString()}`),
         thisMonthItems.map((item, i) => React.createElement("div", {
           key: i,
-          style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: INDIGO }
+          style: { display: "flex", justifyContent: "flex-start", gap: 10, fontSize: 13, padding: "4px 0", color: INDIGO }
         },
           React.createElement("span", null, item.candidateName || "—"),
           React.createElement("span", { style: { fontWeight: 600 } }, `£${Math.round(item.amount).toLocaleString()}`)
