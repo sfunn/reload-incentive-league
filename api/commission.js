@@ -19,12 +19,35 @@ function monthKeyFromDateStr(dateStr) {
   return `${y}-${m}`;
 }
 
+// "YYYY-MM" keys sort correctly as plain strings, so the last one after
+// sorting is simply the most recent month Scott/Lee have actually entered
+// a rate for.
+function latestSetMonthKey(allRates) {
+  const keys = Object.keys(allRates).sort();
+  return keys.length ? keys[keys.length - 1] : null;
+}
+
+// Prefers the REAL rate from the month a deal was actually paid, once
+// Scott/Lee have set one for that specific month. Otherwise — not paid
+// yet, or paid but that exact month has no rate entered — falls back to
+// whichever month they most recently set a rate for. This is deliberately
+// NEVER tied to today's literal calendar date: rates are set manually,
+// so "today" might not have one yet, and using it would either wrongly
+// show "held back" or silently disagree with what's already on screen.
+function applicableMonthRates(record, allRates) {
+  if (record.paid && record.paidMarkedAt) {
+    const paidMonthKey = monthKeyFromDateStr(record.paidMarkedAt);
+    if (allRates[paidMonthKey]) return allRates[paidMonthKey];
+  }
+  const latestKey = latestSetMonthKey(allRates);
+  return latestKey ? allRates[latestKey] : null;
+}
+
 // Converts a deal's share amount into GBP, using the SAME monthly rates
 // already set in Deal Lead Award (stored as "1 unit of that currency = X
 // USD") — just run in reverse for GBP/EUR, and via USD as a bridge for EUR.
 function convertToGBP(record, allRates) {
-  const monthKey = monthKeyFromDateStr(record.feeDate);
-  const monthRates = allRates[monthKey];
+  const monthRates = applicableMonthRates(record, allRates);
   if (record.currency === "GBP") return record.shareAmount;
   if (!monthRates || !monthRates.GBP) return null; // no GBP rate for that month yet
   if (record.currency === "USD") return record.shareAmount / monthRates.GBP;
