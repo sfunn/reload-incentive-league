@@ -2129,25 +2129,45 @@ function App() {
         "Resets each 1 January. Deals in a currency with no exchange rate set for that month are held back until Scott or Lee set one below."
       )
     ),
-    sourceBreakdown.length > 0 && React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: `'${String(dealsYear).slice(2)} deals`, title: "Deal Source Breakdown" }),
-      React.createElement(TableHeader, { cols: [
-        { label: "Source", flex: true },
-        { label: "Deals", width: 70 },
-        { label: "Value", width: 120 }
-      ] }),
-      sourceBreakdown.map(s => React.createElement(RowLine, { key: s.source },
-        React.createElement(Cell, { flex: true }, s.source),
-        React.createElement(Cell, { width: 70 }, s.deals),
-        React.createElement(Cell, { width: 120, bold: true }, `$${Math.round(s.valueUSD).toLocaleString()}`)
-      )),
-      React.createElement(RowLine, { highlighted: true },
-        React.createElement(Cell, { flex: true, bold: true }, "Total"),
-        React.createElement(Cell, { width: 70 }, sourceBreakdown.reduce((s, r) => s + r.deals, 0)),
-        React.createElement(Cell, { width: 120, bold: true }, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`)
+    React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
+      sourceBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320 } },
+        React.createElement(SectionTitle, { title: "Deal Source Breakdown" }),
+        sourceBreakdown.map(s => React.createElement("div", {
+          key: s.source,
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+        },
+          React.createElement("span", null, s.source),
+          React.createElement("span", { style: { fontWeight: 600 } }, `$${Math.round(s.valueUSD).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(${s.deals} deal${s.deals !== 1 ? "s" : ""})`)
+        )),
+        React.createElement("div", {
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+        },
+          React.createElement("span", null, "Total"),
+          React.createElement("span", null, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, fontWeight: 400 } }, `(${sourceBreakdown.reduce((s, r) => s + r.deals, 0)} deals)`)
+        ),
+        React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+          "Only counts deals that have a Source recorded — set on each deal from the admin table or the consultant's own Commission page."
+        )
       ),
-      React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
-        "Only counts deals that have a Source recorded — set on each deal from the admin table or the consultant's own Commission page."
+      isSuperAdmin && clientBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320 } },
+        React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
+        clientBreakdown.map(c => React.createElement("div", {
+          key: c.firm,
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: c.firm === "Unknown" ? INDIGO_MUTED : INDIGO }
+        },
+          React.createElement("span", null, c.firm),
+          React.createElement("span", { style: { fontWeight: 600 } }, `$${Math.round(c.totalUSD).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(${c.percentage.toFixed(0)}%)`)
+        )),
+        React.createElement("div", {
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+        },
+          React.createElement("span", null, "Total"),
+          React.createElement("span", null, `$${Math.round(clientGrandTotal).toLocaleString()}`),
+          React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, fontWeight: 400 } }, "(100%)")
+        )
       )
     ),
     isSuperAdmin && React.createElement(Panel, null,
@@ -2176,17 +2196,17 @@ function App() {
             ).join("   ·   ")
           )
         ),
-        React.createElement("div", { style: labelStyle }, `'${String(dealsYear).slice(2)} deals`),
+
         dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
         dealDetails.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
         React.createElement("div", { style: { overflowX: "auto" } },
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
-            { label: "Signed Date", width: 100 },
+            { label: "Date Signed", width: 100 },
             { label: "Consultant", width: 120 },
             { label: "Candidate", width: 110 },
             { label: "Client", width: 100 },
-            { label: "Start", width: 80 },
+            { label: "Start Date", width: 90 },
             { label: "Amount", width: 100 },
             { label: "USD", width: 90 },
             { label: "Source", width: 130 },
@@ -2199,7 +2219,7 @@ function App() {
             React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
             React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
             React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
-            React.createElement(Cell, { width: 80, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
+            React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
             React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && r.share !== "100.00" ? ` (${r.share}%)` : ""}`),
             React.createElement(Cell, { width: 90 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
             React.createElement(Cell, { width: 130 },
@@ -2332,24 +2352,6 @@ function App() {
       React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
         "Admin can save manual weekly entries. Super Admin also gets Deal Lead Award's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
       )
-    ),
-    isSuperAdmin && clientBreakdown.length > 0 && React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
-      React.createElement(TableHeader, { cols: [
-        { label: "Firm", flex: true },
-        { label: "Total", width: 110 },
-        { label: "Percentage", width: 90 }
-      ] }),
-      clientBreakdown.map(c => React.createElement(RowLine, { key: c.firm },
-        React.createElement(Cell, { flex: true, color: c.firm === "Unknown" ? INDIGO_MUTED : INDIGO }, c.firm),
-        React.createElement(Cell, { width: 110, bold: true }, `$${Math.round(c.totalUSD).toLocaleString()}`),
-        React.createElement(Cell, { width: 90 }, `${c.percentage.toFixed(0)}%`)
-      )),
-      React.createElement(RowLine, { highlighted: true },
-        React.createElement(Cell, { flex: true, bold: true }, "Total"),
-        React.createElement(Cell, { width: 110, bold: true }, `$${Math.round(clientGrandTotal).toLocaleString()}`),
-        React.createElement(Cell, { width: 90 }, "100%")
-      )
     )
   ), tab === "commission" && React.createElement("div", {
     style: { display: "flex", flexDirection: "column", gap: 20 }
@@ -2432,7 +2434,7 @@ function App() {
         commissionData.lines.length === 0 ? React.createElement(EmptyState, { text: `No deals coordinated yet for ${commissionYear}.` }) :
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
-            { label: "Signed Date", width: 100 },
+            { label: "Date Signed", width: 100 },
             { label: "Candidate", width: 200 },
             { label: "Fee", width: 90 },
             { label: "Source", width: 130 },
@@ -2522,7 +2524,7 @@ function App() {
         React.createElement("div", { style: { overflowX: "auto" } },
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
-            { label: "Signed Date", width: 100 },
+            { label: "Date Signed", width: 100 },
             { label: "Candidate", width: 120 },
             { label: "Bracket", width: 130 },
             { label: "GBP", width: 90 },
