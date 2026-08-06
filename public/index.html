@@ -2553,25 +2553,25 @@ function App() {
             { label: "Date Signed", width: 100 },
             { label: "Candidate", width: 120 },
             { label: "Start Date", width: 90 },
-            { label: "Bracket", width: 130 },
-            { label: "GBP", width: 90 },
-            { label: "Rate", width: 60 },
+            { label: "Bracket · GBP", width: 170 },
+            { label: "Rate", width: 55 },
             { label: "Commission", width: 90 },
-            { label: "Source", width: 110 },
-            { label: "Month 1", width: 80 },
-            { label: "Month 2", width: 80 },
-            { label: "Month 3", width: 80 },
-            { label: "Month 4", width: 80 }
+            { label: "Source", width: 105 },
+            { label: "Month 1", width: 70 },
+            { label: "Month 2", width: 70 },
+            { label: "Month 3", width: 70 },
+            { label: "Month 4", width: 70 }
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
             React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
             React.createElement(Cell, { width: 120, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
             React.createElement(Cell, { width: 90, color: l.startDate ? INDIGO : INDIGO_MUTED }, l.startDate ? toDayMonthYear(l.startDate) : "—"),
-            React.createElement(Cell, { width: 130, color: INDIGO_MUTED }, `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`}`),
-            React.createElement(Cell, { width: 90 }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
-            React.createElement(Cell, { width: 60 }, `${(l.rate * 100).toFixed(1)}%`),
+            React.createElement(Cell, { width: 170, color: INDIGO_MUTED },
+              `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`} · £${Math.round(l.gbpPortion).toLocaleString()}`
+            ),
+            React.createElement(Cell, { width: 55 }, `${(l.rate * 100).toFixed(1)}%`),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
-            React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
+            React.createElement(Cell, { width: 105, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
             ...l.payout.map((p, pi) => {
               const rawOverride = l.monthOverrides && l.monthOverrides[p.monthNumber];
               // A stored "due" is always stale leftover from before Due became
@@ -2579,7 +2579,7 @@ function App() {
               // show it as a real selection, same as the engine now ignores
               // it for the actual status/colour.
               const currentOverride = (rawOverride && rawOverride !== "due") ? rawOverride : "auto";
-              return React.createElement(Cell, { key: pi, width: 80 },
+              return React.createElement(Cell, { key: pi, width: 70 },
                 React.createElement("div", {
                   style: { ...payoutStatusStyle(p.status), borderRadius: 5, padding: "4px 6px", fontSize: 11.5, lineHeight: 1.4 }
                 },
