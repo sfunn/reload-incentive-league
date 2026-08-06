@@ -114,7 +114,7 @@ module.exports = async (req, res) => {
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ error: "Not authorized" });
 
-    const { feeId, splitId, paid, paidDate, monthOverrides, source, coordinatorId } = req.body || {};
+    const { feeId, splitId, paid, paidDate, monthOverrides, source, coordinatorId, recalibrateToMonth } = req.body || {};
     if (!feeId || !splitId) {
       return res.status(400).json({ error: "feeId and splitId are required" });
     }
@@ -124,11 +124,13 @@ module.exports = async (req, res) => {
       return res.status(404).json({ error: "Record not found" });
     }
 
-    // Paid, paidDate, monthOverrides, and coordinatorId are financial/admin
-    // decisions — Super Admin only. Source is just "how did this deal come
-    // in", which the consultant themselves can also set on their own deals.
+    // Paid, paidDate, monthOverrides, coordinatorId, and recalibrateToMonth
+    // are financial/admin decisions — Super Admin only. Source is just
+    // "how did this deal come in", which the consultant themselves can
+    // also set on their own deals.
     const changingRestrictedFields =
-      paid !== undefined || paidDate !== undefined || monthOverrides !== undefined || coordinatorId !== undefined;
+      paid !== undefined || paidDate !== undefined || monthOverrides !== undefined ||
+      coordinatorId !== undefined || recalibrateToMonth !== undefined;
     if (changingRestrictedFields && !user.isSuperAdmin) {
       return res.status(401).json({ error: "Super Admin access required" });
     }
@@ -153,6 +155,19 @@ module.exports = async (req, res) => {
     if (paidDate !== undefined && records[idx].paid) {
       const d = new Date(paidDate);
       if (!isNaN(d.getTime())) records[idx].paidMarkedAt = d.toISOString();
+    }
+    // Marking a specific month "Due" from the Commission page doesn't set
+    // a sticky flag — it corrects paidMarkedAt itself, so that month
+    // naturally computes as due THIS real month, and everything before
+    // and after it keeps auto-advancing correctly forever with no further
+    // manual upkeep. Clears any existing overrides since the whole row's
+    // timeline has just been resynced to reality.
+    if (recalibrateToMonth !== undefined) {
+      const now = new Date();
+      const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - recalibrateToMonth, 1));
+      records[idx].paid = true;
+      records[idx].paidMarkedAt = target.toISOString();
+      records[idx].monthOverrides = {};
     }
     if (monthOverrides !== undefined) {
       records[idx].monthOverrides = (monthOverrides && typeof monthOverrides === "object") ? monthOverrides : {};
