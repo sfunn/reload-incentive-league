@@ -483,6 +483,7 @@ function App() {
   const [pwdSavingEmail, setPwdSavingEmail] = useState(null);
   const [pwdError, setPwdError] = useState("");
   const [pwdNoticeEmail, setPwdNoticeEmail] = useState(null);
+  const [paidDateDrafts, setPaidDateDrafts] = useState({});
   const refreshWeeks = useCallback(async () => {
     try {
       const res = await fetch(API_URL);
@@ -1358,13 +1359,15 @@ function App() {
       fontSize: 12.5,
       color: INDIGO
     }
-  }, "Couldn't reach the shared league data. Check that this is deployed on Vercel with the KV integration connected, or try refreshing."), showAuthBox && /*#__PURE__*/React.createElement("div", {
+  }, "Couldn't reach the shared league data. Check that this is deployed on Vercel with the KV integration connected, or try refreshing."), showAuthBox && /*#__PURE__*/React.createElement("form", {
+    onSubmit: e => { e.preventDefault(); authMode === "login" ? doLogin() : doSignup(); },
     style: { marginTop: 14, padding: "18px 20px", background: WHITE, borderRadius: 12, maxWidth: 380 }
   },
     React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
       React.createElement("div", { style: { display: "flex", gap: 14 } },
         ["login", "signup"].map(m => React.createElement("button", {
           key: m,
+          type: "button",
           onClick: () => { setAuthMode(m); setAuthError(""); setAuthNotice(""); },
           style: {
             border: "none", background: "none", cursor: "pointer",
@@ -1374,24 +1377,26 @@ function App() {
         }, m === "login" ? "Log In" : "Sign Up"))
       ),
       React.createElement("button", {
+        type: "button",
         onClick: () => { setShowAuthBox(false); setAuthError(""); setAuthNotice(""); },
         style: { border: "none", background: "none", cursor: "pointer", color: INDIGO_MUTED, fontSize: 16 }
       }, "✕")
     ),
     React.createElement("input", {
-      type: "email", placeholder: "you@reloadsearch.com", value: authEmail,
+      type: "email", name: "email", autoComplete: "username", placeholder: "you@reloadsearch.com", value: authEmail,
       onChange: e => setAuthEmail(e.target.value),
       style: { ...inputStyleSmall, width: "100%", marginBottom: 8, boxSizing: "border-box" }
     }),
     React.createElement("input", {
-      type: "password", placeholder: "Password", value: authPassword,
+      type: "password", name: "password", autoComplete: authMode === "signup" ? "new-password" : "current-password",
+      placeholder: "Password", value: authPassword,
       onChange: e => setAuthPassword(e.target.value),
       style: { ...inputStyleSmall, width: "100%", marginBottom: 8, boxSizing: "border-box" }
     }),
     authError && React.createElement("div", { style: { fontSize: 11.5, color: MELON_LINK, marginBottom: 8 } }, authError),
     authNotice && React.createElement("div", { style: { fontSize: 11.5, color: INDIGO_MUTED, marginBottom: 8 } }, authNotice),
     React.createElement("button", {
-      onClick: authMode === "login" ? doLogin : doSignup,
+      type: "submit",
       disabled: authLoading,
       style: primaryButtonStyle(authLoading)
     }, authLoading ? "…" : authMode === "login" ? "Log In" : "Create account"),
@@ -2222,8 +2227,18 @@ function App() {
                 }),
                 r.paid && React.createElement("input", {
                   type: "date",
-                  value: r.paidMarkedAt ? r.paidMarkedAt.slice(0, 10) : "",
-                  onChange: e => setPaidDate(r.feeId, r.splitId, e.target.value),
+                  value: paidDateDrafts[`${r.feeId}-${r.splitId}`] !== undefined
+                    ? paidDateDrafts[`${r.feeId}-${r.splitId}`]
+                    : (r.paidMarkedAt ? r.paidMarkedAt.slice(0, 10) : ""),
+                  onChange: e => {
+                    const key = `${r.feeId}-${r.splitId}`;
+                    setPaidDateDrafts(prev => ({ ...prev, [key]: e.target.value }));
+                  },
+                  onBlur: e => {
+                    const key = `${r.feeId}-${r.splitId}`;
+                    if (e.target.value) setPaidDate(r.feeId, r.splitId, e.target.value);
+                    setPaidDateDrafts(prev => { const next = { ...prev }; delete next[key]; return next; });
+                  },
                   style: { ...inputStyleSmall, width: 118, padding: "3px 4px", fontSize: 11.5 }
                 })
               )
