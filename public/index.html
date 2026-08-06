@@ -2141,17 +2141,17 @@ function App() {
         React.createElement(SectionTitle, { title: "Deal Source Breakdown" }),
         sourceBreakdown.map(s => React.createElement("div", {
           key: s.source,
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "4px 0", color: INDIGO }
         },
-          React.createElement("span", null, s.source),
-          React.createElement("span", { style: { fontWeight: 600 } }, `$${Math.round(s.valueUSD).toLocaleString()}`),
+          React.createElement("span", { style: { width: 140, flexShrink: 0 } }, s.source),
+          React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `$${Math.round(s.valueUSD).toLocaleString()}`),
           React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(${s.deals} deal${s.deals !== 1 ? "s" : ""})`)
         )),
         React.createElement("div", {
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
         },
-          React.createElement("span", null, "Total"),
-          React.createElement("span", null, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`),
+          React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
+          React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`),
           React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, fontWeight: 400 } }, `(${sourceBreakdown.reduce((s, r) => s + r.deals, 0)} deals)`)
         ),
         React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
@@ -2162,17 +2162,17 @@ function App() {
         React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
         clientBreakdown.map(c => React.createElement("div", {
           key: c.firm,
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: c.firm === "Unknown" ? INDIGO_MUTED : INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "4px 0", color: c.firm === "Unknown" ? INDIGO_MUTED : INDIGO }
         },
-          React.createElement("span", null, c.firm),
-          React.createElement("span", { style: { fontWeight: 600 } }, `$${Math.round(c.totalUSD).toLocaleString()}`),
+          React.createElement("span", { style: { width: 150, flexShrink: 0 } }, c.firm),
+          React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `$${Math.round(c.totalUSD).toLocaleString()}`),
           React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(${c.percentage.toFixed(0)}%)`)
         )),
         React.createElement("div", {
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
         },
-          React.createElement("span", null, "Total"),
-          React.createElement("span", null, `$${Math.round(clientGrandTotal).toLocaleString()}`),
+          React.createElement("span", { style: { width: 150, flexShrink: 0 } }, "Total"),
+          React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `$${Math.round(clientGrandTotal).toLocaleString()}`),
           React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, fontWeight: 400 } }, "(100%)")
         )
       )
@@ -2603,16 +2603,16 @@ function App() {
               );
               const netCommission = commissionData.totalCommission - withheldTotal;
               return React.createElement(React.Fragment, null,
-                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 15 } },
-                  React.createElement("span", { style: labelStyle }, "Total revenue"),
+                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
+                  React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Total revenue"),
                   React.createElement("span", { style: { fontWeight: 700, color: INDIGO } },
                     `${usdTotal ? `$${Math.round(usdTotal.totalUSD).toLocaleString()} · ` : ""}£${Math.round(commissionData.totalGBP).toLocaleString()}`
                   )
                 ),
-                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 15 } },
-                  React.createElement("span", { style: labelStyle }, "Commission earned"),
+                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
+                  React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Commission earned"),
                   React.createElement("span", { style: { fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(netCommission).toLocaleString()}`),
-                  withheldTotal > 0 && React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(£${Math.round(withheldTotal).toLocaleString()} withheld)`)
+                  withheldTotal > 0 && React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, marginLeft: 6 } }, `(£${Math.round(withheldTotal).toLocaleString()} withheld)`)
                 )
               );
             })()
