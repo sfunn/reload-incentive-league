@@ -236,12 +236,15 @@ module.exports = async (req, res) => {
     const pillar3Bonus = interpolate(PILLAR_3_CV_TO_INTERVIEW_RATIO, ratioPercent);
 
     // --- Pillar 4: desk deals, team lead's own contribution capped at 4 ---
+    // Uses the SIGNED date, not the placement start date (unlike commission,
+    // which deliberately uses start date) — the Team Lead's performance is
+    // about deals they actually closed during this window, not when the
+    // candidate eventually starts.
     let teamMemberDeals = 0;
     let teamLeadOwnDeals = 0;
     for (const r of records) {
       if (!r.consultantId) continue;
-      const placement = r.placementId ? placements[r.placementId] : null;
-      const dealDate = (placement && placement.startDate) || r.feeDate;
+      const dealDate = r.feeDate;
       if (!inRange(dealDate, start, end)) continue;
       const consultantTeam = teamOverrides[r.consultantId] || DEFAULT_TEAM_BY_CONSULTANT[r.consultantId] || null;
       if (r.consultantId === teamLeadId) {
@@ -255,27 +258,37 @@ module.exports = async (req, res) => {
     const pillar4Bonus = interpolate(PILLAR_4_DESK_DEALS_BY_COUNT, totalCountedDeals);
 
     // --- Development bonus: billing milestones (auto) + promotions (manual) ---
-    // A milestone only counts the FIRST year a team member ever crosses it,
-    // so we need every prior year's total too, not just this period's year.
-    const usdByConsultantYear = {}; // { consultantId: { year: totalUSD } }
+    // A milestone should only ever show up in the ONE specific period during
+    // which it was actually crossed — never again in a later period of the
+    // same year just because the year-to-date total still exceeds it, and
+    // never in a year they'd already crossed it in before. Uses the SIGNED
+    // date, same as Pillar 4, not the placement start date.
+    const usdByConsultantYear = {}; // { consultantId: { year: totalUSD } } — for the "prior years ever" check
+    const dealsThisYearByConsultant = {}; // { consultantId: [{date, usd}] } — for within-year, before/through-period checks
     for (const r of records) {
       if (!r.consultantId || !currentRoster.includes(r.consultantId)) continue;
-      const placement = r.placementId ? placements[r.placementId] : null;
-      const dealDate = (placement && placement.startDate) || r.feeDate;
+      const dealDate = r.feeDate;
       const dealYear = dealDate ? new Date(dealDate).getUTCFullYear() : r.year;
       const usd = await convertToUSD(r, allRates);
       if (usd === null) continue;
       usdByConsultantYear[r.consultantId] = usdByConsultantYear[r.consultantId] || {};
       usdByConsultantYear[r.consultantId][dealYear] = (usdByConsultantYear[r.consultantId][dealYear] || 0) + usd;
+      if (dealYear === year) {
+        dealsThisYearByConsultant[r.consultantId] = dealsThisYearByConsultant[r.consultantId] || [];
+        dealsThisYearByConsultant[r.consultantId].push({ date: dealDate, usd });
+      }
     }
     const milestoneCrossings = [];
     for (const consultantId of currentRoster) {
       const byYear = usdByConsultantYear[consultantId] || {};
+      const dealsThisYear = dealsThisYearByConsultant[consultantId] || [];
+      const priorToPeriodTotal = dealsThisYear.filter((d) => d.date < start).reduce((s, d) => s + d.usd, 0);
+      const throughPeriodTotal = dealsThisYear.filter((d) => d.date <= end).reduce((s, d) => s + d.usd, 0);
       for (const m of DEVELOPMENT_MILESTONES_USD) {
-        const thisYearTotal = byYear[year] || 0;
-        if (thisYearTotal < m.threshold) continue;
-        const everCrossedBefore = Object.entries(byYear).some(([y, total]) => Number(y) < year && total >= m.threshold);
-        if (!everCrossedBefore) {
+        if (throughPeriodTotal < m.threshold) continue; // not reached by the end of THIS period
+        if (priorToPeriodTotal >= m.threshold) continue; // already crossed before this period started
+        const everCrossedInEarlierYear = Object.entries(byYear).some(([y, total]) => Number(y) < year && total >= m.threshold);
+        if (!everCrossedInEarlierYear) {
           milestoneCrossings.push({ consultantId, threshold: m.threshold, bonus: m.bonus });
         }
       }
