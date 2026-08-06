@@ -101,7 +101,13 @@ function payoutSchedule(line) {
     const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + i, 1));
     const label = d.toLocaleString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
     let status;
-    if (overrides[i]) status = overrides[i];
+    // "due" should never be trusted as a stored override — only "paid" and
+    // "withheld" are genuine sticky decisions under the current design.
+    // Any leftover "due" from before Due became a recalibration action
+    // (rather than a frozen flag) is ignored here, so those old records
+    // self-heal back to auto-computing correctly rather than staying
+    // stuck on whatever they happened to compute to at the time.
+    if (overrides[i] && overrides[i] !== "due") status = overrides[i];
     else if (d.getTime() < currentMonthStart) status = "paid";
     else if (d.getTime() === currentMonthStart) status = "due";
     else status = "future";
@@ -122,7 +128,7 @@ function singleMonthPayout(line) {
       monthNumber: 1,
       amount: line.commission,
       paidDate: null,
-      status: overrides[1] || "future",
+      status: overrides[1] && overrides[1] !== "due" ? overrides[1] : "future",
     }];
   }
 
@@ -133,7 +139,7 @@ function singleMonthPayout(line) {
   const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1));
   const label = d.toLocaleString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
   let status;
-  if (overrides[1]) status = overrides[1];
+  if (overrides[1] && overrides[1] !== "due") status = overrides[1];
   else if (d.getTime() < currentMonthStart) status = "paid";
   else if (d.getTime() === currentMonthStart) status = "due";
   else status = "future";
