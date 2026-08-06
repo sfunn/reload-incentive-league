@@ -21,6 +21,27 @@ async function convertToUSD(record, allRates) {
   return record.shareAmount * rate;
 }
 
+// Which year a deal counts toward — for the leaderboard, the admin table,
+// and commission — is based on the candidate's START DATE, not the
+// signed/fee date. That way editing a fee's recorded date in Atlas (e.g.
+// correcting it to the real signed date) never shifts which year's page a
+// deal lives on. Falls back to the fee's own date only when there's no
+// linked placement start date yet (e.g. the placement webhook hasn't
+// fired), so a deal is never simply dropped for lacking data.
+function effectiveYear(record, placements) {
+  const placement = record.placementId ? placements[record.placementId] : null;
+  const dateStr = (placement && placement.startDate) || record.feeDate;
+  const d = dateStr ? new Date(dateStr) : null;
+  return d && !isNaN(d.getTime()) ? d.getUTCFullYear() : record.year;
+}
+
+// Same start-date-first ordering as the commission engine uses, so the
+// admin table and commission sheets always read as the same sequence.
+function orderDateOf(record, placements) {
+  const placement = record.placementId ? placements[record.placementId] : null;
+  return (placement && placement.startDate) || record.feeDate || "";
+}
+
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -33,6 +54,7 @@ module.exports = async (req, res) => {
   if (req.method === "GET") {
     const records = (await kv.get(RECORDS_KEY)) || [];
     const allRates = (await kv.get(FX_KEY)) || {};
+    const placements = (await kv.get(PLACEMENTS_KEY)) || {};
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
 
     // Super Admin only: full detail view, including unconverted deals
@@ -42,8 +64,9 @@ module.exports = async (req, res) => {
       if (!user || !user.isSuperAdmin) {
         return res.status(401).json({ error: "Super Admin access required" });
       }
-      const yearRecords = records.filter((r) => r.year === year);
-      const placements = (await kv.get(PLACEMENTS_KEY)) || {};
+      const yearRecords = records
+        .filter((r) => effectiveYear(r, placements) === year)
+        .sort((a, b) => orderDateOf(a, placements).localeCompare(orderDateOf(b, placements)));
       const withUSD = await Promise.all(
         yearRecords.map(async (r) => {
           const placement = r.placementId ? placements[r.placementId] : null;
@@ -84,7 +107,7 @@ module.exports = async (req, res) => {
     // Deals missing an FX rate for their month are silently excluded from
     // the total (rather than guessing) — they'll appear once Scott/Lee set
     // that month's rate.
-    const yearRecords = records.filter((r) => r.year === year && r.consultantId);
+    const yearRecords = records.filter((r) => effectiveYear(r, placements) === year && r.consultantId);
     const totals = {};
     const bySource = {};
     for (const r of yearRecords) {
