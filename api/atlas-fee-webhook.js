@@ -127,20 +127,20 @@ export default async function handler(req, res) {
       consultantEmail: null, consultantId: null, consultantName: null,
     };
 
-    // Some financial.feeUpdated re-sends (e.g. triggered by saving the
-    // linked placement, not the fee itself) arrive WITHOUT feeEarner
-    // details at all. Trusting that blindly would silently wipe out
-    // correct attribution we already had — so we only ever overwrite the
-    // owner when THIS event actually supplies a usable email; otherwise
-    // we keep whatever we already knew.
-    const incomingEmail = split.feeEarner && split.feeEarner.email;
+    // Atlas uses TWO DIFFERENT shapes for fee-earner info depending on the
+    // event type: financial.feeCreated nests it as split.feeEarner.email,
+    // while financial.feeUpdated flattens it to split.feeEarnerEmail. Not
+    // handling both meant every single feeUpdated event silently read as
+    // "no owner" — this line fixes that at the source, with the "keep
+    // whatever we already knew" fallback below as a safety net for any
+    // future case where an event genuinely has neither.
+    const incomingEmail = (split.feeEarner && split.feeEarner.email) || split.feeEarnerEmail || null;
+    const incomingName = (split.feeEarner && split.feeEarner.name) || split.feeEarnerName || null;
     const email = incomingEmail || prior.consultantEmail;
     const consultantId = incomingEmail
       ? (EMAIL_TO_CONSULTANT[incomingEmail] || null)
       : prior.consultantId;
-    const consultantName = incomingEmail
-      ? ((split.feeEarner && split.feeEarner.name) || null)
-      : prior.consultantName;
+    const consultantName = incomingEmail ? incomingName : prior.consultantName;
     const shareAmount = computeShareAmount(amount, split.share, splits.length);
 
     const record = {
