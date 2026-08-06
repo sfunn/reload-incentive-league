@@ -2112,7 +2112,7 @@ function App() {
       },
         React.createElement(SectionTitle, {
           eyebrow: "Total revenue, converted to USD",
-          title: "Deal Lead Award"
+          title: "Yearly Deal Table"
         }),
         React.createElement("div", { style: { display: "flex", gap: 6 } },
           dealsYearOptions.map(y => React.createElement("button", {
@@ -2133,8 +2133,6 @@ function App() {
       dealsLeaderboard.length === 0 ? React.createElement(EmptyState, { text: `No deals recorded yet for ${dealsYear}.` }) :
       React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
         dealsLeaderboard.map((r, i) => {
-          const consultant = DEAL_CONSULTANTS.find(c => c.id === r.consultantId);
-          const team = consultant ? consultant.team : null;
           return React.createElement("div", {
             key: r.consultantId,
             style: {
@@ -2144,8 +2142,7 @@ function App() {
             }
           },
             React.createElement("span", { style: { width: 24, flexShrink: 0, color: INDIGO_MUTED } }, i + 1),
-            React.createElement("span", { style: { width: 170, flexShrink: 0 } }, r.consultantName || r.consultantId),
-            React.createElement("span", { style: { width: 50, flexShrink: 0, fontSize: 12, color: team ? TEAMS[team].color : INDIGO_MUTED } }, team ? TEAMS[team].short : "—"),
+            React.createElement("span", { style: { width: 200, flexShrink: 0 } }, r.consultantName || r.consultantId),
             React.createElement("span", { style: { fontWeight: 700 } }, `$${Math.round(r.totalUSD).toLocaleString()}`)
           );
         })
@@ -2375,7 +2372,7 @@ function App() {
         ))
       ),
       React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-        "Admin can save manual weekly entries. Super Admin also gets Deal Lead Award's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
+        "Admin can save manual weekly entries. Super Admin also gets Yearly Deal Table's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
       )
     )
   ), tab === "commission" && React.createElement("div", {
