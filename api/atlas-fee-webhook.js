@@ -112,6 +112,9 @@ export default async function handler(req, res) {
         monthOverrides: r.monthOverrides,
         source: r.source,
         coordinatorId: r.coordinatorId,
+        consultantEmail: r.consultantEmail,
+        consultantId: r.consultantId,
+        consultantName: r.consultantName,
       };
     }
   });
@@ -119,11 +122,27 @@ export default async function handler(req, res) {
 
   const newRecords = [];
   for (const split of splits) {
-    const email = split.feeEarner && split.feeEarner.email;
-    const consultantId = email ? EMAIL_TO_CONSULTANT[email] || null : null;
+    const prior = priorPaidBySplit[split.id] || {
+      paid: false, paidMarkedAt: null, monthOverrides: {}, source: null, coordinatorId: null,
+      consultantEmail: null, consultantId: null, consultantName: null,
+    };
+
+    // Some financial.feeUpdated re-sends (e.g. triggered by saving the
+    // linked placement, not the fee itself) arrive WITHOUT feeEarner
+    // details at all. Trusting that blindly would silently wipe out
+    // correct attribution we already had — so we only ever overwrite the
+    // owner when THIS event actually supplies a usable email; otherwise
+    // we keep whatever we already knew.
+    const incomingEmail = split.feeEarner && split.feeEarner.email;
+    const email = incomingEmail || prior.consultantEmail;
+    const consultantId = incomingEmail
+      ? (EMAIL_TO_CONSULTANT[incomingEmail] || null)
+      : prior.consultantId;
+    const consultantName = incomingEmail
+      ? ((split.feeEarner && split.feeEarner.name) || null)
+      : prior.consultantName;
     const shareAmount = computeShareAmount(amount, split.share, splits.length);
 
-    const prior = priorPaidBySplit[split.id] || { paid: false, paidMarkedAt: null, monthOverrides: {}, source: null, coordinatorId: null };
     const record = {
       feeId,
       splitId: split.id,
@@ -135,7 +154,7 @@ export default async function handler(req, res) {
       shareAmount,
       consultantEmail: email || null,
       consultantId,
-      consultantName: (split.feeEarner && split.feeEarner.name) || null,
+      consultantName,
       placementId: placementId || null,
       paid: prior.paid,
       paidMarkedAt: prior.paidMarkedAt,
@@ -147,7 +166,7 @@ export default async function handler(req, res) {
 
     console.log(
       "[atlas-fee-webhook] recorded split:",
-      JSON.stringify({ feeId, email, consultantId, shareAmount, currency })
+      JSON.stringify({ feeId, email, consultantId, shareAmount, currency, keptFromPrior: !incomingEmail })
     );
 
     if (!consultantId) {
