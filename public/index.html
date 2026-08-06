@@ -2444,7 +2444,12 @@ function App() {
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 130, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
             ...l.payout.map((p, pi) => {
-              const currentOverride = (l.monthOverrides && l.monthOverrides[p.monthNumber]) || "auto";
+              const rawOverride = l.monthOverrides && l.monthOverrides[p.monthNumber];
+              // A stored "due" is always stale leftover from before Due became
+              // a one-time date correction rather than a sticky flag — never
+              // show it as a real selection, same as the engine now ignores
+              // it for the actual status/colour.
+              const currentOverride = (rawOverride && rawOverride !== "due") ? rawOverride : "auto";
               return React.createElement(Cell, { key: pi, width: 140 },
                 React.createElement("div", {
                   style: { ...payoutStatusStyle(p.status), borderRadius: 5, padding: "4px 6px", fontSize: 11.5, lineHeight: 1.4 }
@@ -2538,7 +2543,12 @@ function App() {
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 110, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
             ...l.payout.map((p, pi) => {
-              const currentOverride = (l.monthOverrides && l.monthOverrides[p.monthNumber]) || "auto";
+              const rawOverride = l.monthOverrides && l.monthOverrides[p.monthNumber];
+              // A stored "due" is always stale leftover from before Due became
+              // a one-time date correction rather than a sticky flag — never
+              // show it as a real selection, same as the engine now ignores
+              // it for the actual status/colour.
+              const currentOverride = (rawOverride && rawOverride !== "due") ? rawOverride : "auto";
               return React.createElement(Cell, { key: pi, width: 80 },
                 React.createElement("div", {
                   style: { ...payoutStatusStyle(p.status), borderRadius: 5, padding: "4px 6px", fontSize: 11.5, lineHeight: 1.4 }
