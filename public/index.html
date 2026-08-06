@@ -2459,14 +2459,16 @@ function App() {
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
             { label: "Date Signed", width: 100 },
-            { label: "Candidate", width: 200 },
+            { label: "Candidate", width: 170 },
+            { label: "Start Date", width: 90 },
             { label: "Fee", width: 90 },
             { label: "Source", width: 130 },
             { label: "Payment", width: 140 }
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
             React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
-            React.createElement(Cell, { width: 200, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
+            React.createElement(Cell, { width: 170, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
+            React.createElement(Cell, { width: 90, color: l.startDate ? INDIGO : INDIGO_MUTED }, l.startDate ? toDayMonthYear(l.startDate) : "—"),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 130, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
             ...l.payout.map((p, pi) => {
@@ -2550,6 +2552,7 @@ function App() {
           React.createElement(TableHeader, { cols: [
             { label: "Date Signed", width: 100 },
             { label: "Candidate", width: 120 },
+            { label: "Start Date", width: 90 },
             { label: "Bracket", width: 130 },
             { label: "GBP", width: 90 },
             { label: "Rate", width: 60 },
@@ -2563,6 +2566,7 @@ function App() {
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
             React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
             React.createElement(Cell, { width: 120, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
+            React.createElement(Cell, { width: 90, color: l.startDate ? INDIGO : INDIGO_MUTED }, l.startDate ? toDayMonthYear(l.startDate) : "—"),
             React.createElement(Cell, { width: 130, color: INDIGO_MUTED }, `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`}`),
             React.createElement(Cell, { width: 90 }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
             React.createElement(Cell, { width: 60 }, `${(l.rate * 100).toFixed(1)}%`),
