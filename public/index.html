@@ -2227,7 +2227,7 @@ function App() {
             React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
             React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
             React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
-            React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && r.share !== "100.00" ? ` (${r.share}%)` : ""}`),
+            React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && parseFloat(r.share) !== 100 ? ` (${r.share}%)` : ""}`),
             React.createElement(Cell, { width: 90 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
             React.createElement(Cell, { width: 130 },
               React.createElement("select", {
