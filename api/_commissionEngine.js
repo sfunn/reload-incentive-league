@@ -75,6 +75,13 @@ function computeCommissionLines(deals, bands) {
 //   "due"      — this is the current real calendar month, expected now
 //   "paid"     — an earlier month that's passed
 //   "withheld" — marked as a fine/withhold for this specific instalment
+//
+// Manually marking a month "Due" is treated as "this is genuinely being
+// paid right now" — so that month's own label snaps to today's real
+// calendar month (rather than whatever the original fixed schedule
+// predicted), and any later still-"Auto" months shift forward in step,
+// staying sequential after the corrected point rather than drifting out
+// of sync with reality.
 function payoutSchedule(line) {
   const perMonth = line.commission / 4;
   const overrides = line.monthOverrides || {};
@@ -93,15 +100,32 @@ function payoutSchedule(line) {
   const now = new Date();
   const currentMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
 
+  // Anchor = the highest-numbered month manually marked "due". Everything
+  // from that point onward re-bases off "today" instead of the original
+  // fixed paidMarkedAt math.
+  let anchorIndex = null;
+  for (let i = 1; i <= 4; i++) {
+    if (overrides[i] === "due") anchorIndex = i;
+  }
+
   const months = [];
   for (let i = 1; i <= 4; i++) {
-    const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + i, 1));
+    let d;
+    if (anchorIndex && i >= anchorIndex) {
+      const offset = i - anchorIndex;
+      d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+    } else {
+      d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + i, 1));
+    }
     const label = d.toLocaleString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+
     let status;
     if (overrides[i]) status = overrides[i];
+    else if (anchorIndex && i > anchorIndex) status = "future"; // shifted-forward auto months aren't due yet
     else if (d.getTime() < currentMonthStart) status = "paid";
     else if (d.getTime() === currentMonthStart) status = "due";
     else status = "future";
+
     months.push({ label, monthNumber: i, amount: perMonth, paidDate: d.toISOString(), status });
   }
   return months;
