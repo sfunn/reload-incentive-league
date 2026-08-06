@@ -2182,7 +2182,7 @@ function App() {
         React.createElement("div", { style: { overflowX: "auto" } },
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
-            { label: "Date", width: 90 },
+            { label: "Signed Date", width: 100 },
             { label: "Consultant", width: 120 },
             { label: "Candidate", width: 110 },
             { label: "Client", width: 100 },
@@ -2195,7 +2195,7 @@ function App() {
             { label: "", width: 70 }
           ] }),
           dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
-            React.createElement(Cell, { width: 90 }, toDayMonthYear(r.feeDate)),
+            React.createElement(Cell, { width: 100 }, toDayMonthYear(r.feeDate)),
             React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
             React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
             React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
@@ -2432,14 +2432,14 @@ function App() {
         commissionData.lines.length === 0 ? React.createElement(EmptyState, { text: `No deals coordinated yet for ${commissionYear}.` }) :
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
-            { label: "Date", width: 90 },
+            { label: "Signed Date", width: 100 },
             { label: "Candidate", width: 200 },
             { label: "Fee", width: 90 },
             { label: "Source", width: 130 },
             { label: "Payment", width: 140 }
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
-            React.createElement(Cell, { width: 90 }, toDayMonthYear(l.feeDate)),
+            React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
             React.createElement(Cell, { width: 200, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 130, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
@@ -2522,7 +2522,7 @@ function App() {
         React.createElement("div", { style: { overflowX: "auto" } },
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
-            { label: "Date", width: 80 },
+            { label: "Signed Date", width: 100 },
             { label: "Candidate", width: 120 },
             { label: "Bracket", width: 130 },
             { label: "GBP", width: 90 },
@@ -2535,7 +2535,7 @@ function App() {
             { label: "Month 4", width: 80 }
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
-            React.createElement(Cell, { width: 80 }, toDayMonthYear(l.feeDate)),
+            React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
             React.createElement(Cell, { width: 120, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
             React.createElement(Cell, { width: 130, color: INDIGO_MUTED }, `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`}`),
             React.createElement(Cell, { width: 90 }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
