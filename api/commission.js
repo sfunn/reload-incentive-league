@@ -91,7 +91,8 @@ module.exports = async (req, res) => {
         const placement = r.placementId ? placements[r.placementId] : null;
         const orderDate = (placement && placement.startDate) || r.feeDate;
         const candidateName = (placement && placement.candidateName) || null;
-        return { ...r, orderDate, candidateName };
+        const startDate = (placement && placement.startDate) || null;
+        return { ...r, orderDate, candidateName, startDate };
       });
       withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
 
@@ -99,6 +100,7 @@ module.exports = async (req, res) => {
         feeId: r.feeId,
         splitId: r.splitId,
         feeDate: r.feeDate,
+        startDate: r.startDate,
         commission: flatRate,
         paid: r.paid,
         paidMarkedAt: r.paidMarkedAt,
@@ -143,7 +145,8 @@ module.exports = async (req, res) => {
       const placement = r.placementId ? placements[r.placementId] : null;
       const orderDate = (placement && placement.startDate) || r.feeDate;
       const candidateName = (placement && placement.candidateName) || null;
-      return { ...r, orderDate, candidateName };
+      const startDate = (placement && placement.startDate) || null;
+      return { ...r, orderDate, candidateName, startDate };
     });
     withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
 
@@ -152,6 +155,7 @@ module.exports = async (req, res) => {
       splitId: r.splitId,
       gbpAmount: convertToGBP(r, allRates),
       feeDate: r.feeDate,
+      startDate: r.startDate,
       paid: r.paid,
       paidMarkedAt: r.paidMarkedAt,
       source: r.source,
