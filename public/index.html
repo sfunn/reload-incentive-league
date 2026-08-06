@@ -959,6 +959,23 @@ function App() {
     }
   }
   async function setMonthOverride(feeId, splitId, currentOverrides, monthNumber, newStatus) {
+    // "Due" isn't a sticky flag — it corrects the deal's real paid date so
+    // this month (and everything before/after it) auto-advances correctly
+    // forever, with no manual upkeep needed each month going forward.
+    if (newStatus === "due") {
+      try {
+        const res = await fetch("/api/deals", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+          body: JSON.stringify({ feeId, splitId, recalibrateToMonth: monthNumber })
+        });
+        if (!res.ok) throw new Error("save failed");
+        await loadCommission();
+      } catch (e) {
+        // no-op
+      }
+      return;
+    }
     const next = { ...currentOverrides };
     if (newStatus === "auto") delete next[monthNumber];
     else next[monthNumber] = newStatus;
