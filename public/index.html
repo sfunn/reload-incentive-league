@@ -1313,7 +1313,7 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      maxWidth: 920,
+      maxWidth: 1300,
       margin: "0 auto"
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -1413,7 +1413,7 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      maxWidth: 920,
+      maxWidth: 1300,
       margin: "0 auto"
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -1516,7 +1516,7 @@ function App() {
     }
   }, t.label))), /*#__PURE__*/React.createElement("div", {
     style: {
-      maxWidth: 920,
+      maxWidth: 1300,
       margin: "0 auto",
       padding: "26px 20px 60px"
     }
@@ -2511,6 +2511,7 @@ function App() {
           `${commissionData.heldBackCount} deal(s) held back — no exchange rate set for their month yet.`
         ),
         commissionData.lines.length === 0 ? React.createElement(EmptyState, { text: `No commission-eligible deals yet for ${commissionYear}.` }) :
+        React.createElement("div", { style: { overflowX: "auto" } },
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
             { label: "Date", width: 80 },
@@ -2554,6 +2555,7 @@ function App() {
               );
             })
           ))
+        )
         ),
         React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
           React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
