@@ -1305,19 +1305,19 @@ function App() {
   `;
   const tabs = [{
     id: "entry",
-    label: "Log This Week"
+    label: "Weekly Incentive"
   }, {
     id: "table",
-    label: "League Table"
+    label: "Weekly Table"
   }, {
     id: "monthly",
-    label: "Monthly"
+    label: "Monthly Team Score"
   }, {
     id: "quarterly",
-    label: "Quarterly"
+    label: "Quarterly Table"
   }, {
     id: "deals",
-    label: "Deal Lead Award"
+    label: "Yearly Deal Table"
   }, ...(authUser ? [{
     id: "commission",
     label: "My Commission"
@@ -2131,21 +2131,22 @@ function App() {
       }, dealsError),
       dealsLoading ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
       dealsLeaderboard.length === 0 ? React.createElement(EmptyState, { text: `No deals recorded yet for ${dealsYear}.` }) :
-      React.createElement(React.Fragment, null,
-        React.createElement(TableHeader, { cols: [
-          { label: "Pos", width: 50 },
-          { label: "Consultant", flex: true },
-          { label: "Team", width: 90 },
-          { label: "Total (USD)", width: 120 }
-        ] }),
+      React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
         dealsLeaderboard.map((r, i) => {
           const consultant = DEAL_CONSULTANTS.find(c => c.id === r.consultantId);
           const team = consultant ? consultant.team : null;
-          return React.createElement(RowLine, { key: r.consultantId, highlighted: i < 3 },
-            React.createElement(Cell, { width: 50 }, i + 1),
-            React.createElement(Cell, { flex: true }, r.consultantName || r.consultantId),
-            React.createElement(Cell, { width: 90, color: team ? TEAMS[team].color : INDIGO_MUTED }, team ? TEAMS[team].short : "—"),
-            React.createElement(Cell, { width: 120, bold: true }, `$${Math.round(r.totalUSD).toLocaleString()}`)
+          return React.createElement("div", {
+            key: r.consultantId,
+            style: {
+              display: "flex", alignItems: "baseline", gap: 4, fontSize: 14, padding: "9px 0",
+              borderBottom: `1px solid ${INDIGO_HAIRLINE}`,
+              background: i < 3 ? "rgba(255,176,140,0.08)" : "transparent"
+            }
+          },
+            React.createElement("span", { style: { width: 24, flexShrink: 0, color: INDIGO_MUTED } }, i + 1),
+            React.createElement("span", { style: { width: 170, flexShrink: 0 } }, r.consultantName || r.consultantId),
+            React.createElement("span", { style: { width: 50, flexShrink: 0, fontSize: 12, color: team ? TEAMS[team].color : INDIGO_MUTED } }, team ? TEAMS[team].short : "—"),
+            React.createElement("span", { style: { fontWeight: 700 } }, `$${Math.round(r.totalUSD).toLocaleString()}`)
           );
         })
       ),
