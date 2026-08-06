@@ -36,6 +36,18 @@ function convertToGBP(record, allRates) {
   return null;
 }
 
+// Which year a deal counts toward is based on the candidate's START DATE,
+// not the signed/fee date — matching deals.js, so a deal never lands on a
+// different year's commission sheet than it does on the leaderboard.
+// Falls back to the fee's own date only when there's no linked placement
+// start date yet.
+function effectiveYear(record, placements) {
+  const placement = record.placementId ? placements[record.placementId] : null;
+  const dateStr = (placement && placement.startDate) || record.feeDate;
+  const d = dateStr ? new Date(dateStr) : null;
+  return d && !isNaN(d.getTime()) ? d.getUTCFullYear() : record.year;
+}
+
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -74,7 +86,7 @@ module.exports = async (req, res) => {
       const flatRate =
         (personSettings.flatRateByYear && personSettings.flatRateByYear[year]) || DEFAULT_FLAT_RATE;
 
-      const yearRecords = allRecords.filter((r) => r.year === year && r.coordinatorId === consultantId);
+      const yearRecords = allRecords.filter((r) => effectiveYear(r, placements) === year && r.coordinatorId === consultantId);
       const withOrderDate = yearRecords.map((r) => {
         const placement = r.placementId ? placements[r.placementId] : null;
         const orderDate = (placement && placement.startDate) || r.feeDate;
@@ -121,7 +133,7 @@ module.exports = async (req, res) => {
     const target = (personSettings.targets && personSettings.targets[year]) || null;
 
     const yearRecords = allRecords.filter(
-      (r) => r.year === year && r.consultantId === consultantId
+      (r) => effectiveYear(r, placements) === year && r.consultantId === consultantId
     );
 
     // Order by placement start date where we have it; fall back to the
