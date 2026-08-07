@@ -2786,7 +2786,7 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
           React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, `${teamLeadData.pillar3.actualRatioPercent.toFixed(1)}% ratio (average of the 6 months)`)
         ),
         teamLeadData.monthlyBreakdown && React.createElement("div", { style: { marginBottom: 16 } },
-          React.createElement("div", { style: labelStyle }, "Month by month (each pillar is averaged across these 6 months)"),
+          React.createElement("div", { style: labelStyle }, "Month by month — each pillar is the average of only the months that have actually happened so far"),
           React.createElement(TableHeader, { cols: [
             { label: "Month", width: 90 },
             { label: "Roster", width: 60 },
@@ -2803,11 +2803,29 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
           ))
         ),
         React.createElement("div", { style: labelStyle }, "Pillar 4 — Desk Deals (target: 12 in the period, Team Lead capped at 4 of their own)"),
-        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 } },
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginTop: 4, marginBottom: 10 } },
           React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: INDIGO } }, `£${Math.round(teamLeadData.pillar4.bonus).toLocaleString()}`),
           React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } },
             `${teamLeadData.pillar4.totalCountedDeals} / ${teamLeadData.pillar4.target} deals (${teamLeadData.pillar4.teamMemberDeals} team + ${teamLeadData.pillar4.teamLeadCountedDeals} own, capped from ${teamLeadData.pillar4.teamLeadOwnDeals})`
           )
+        ),
+        (teamLeadData.pillar4.teamDealsList && teamLeadData.pillar4.teamDealsList.length > 0) && React.createElement("div", { style: { marginBottom: 8 } },
+          teamLeadData.pillar4.teamDealsList.map((d, i) => React.createElement("div", {
+            key: i, style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 12.5, padding: "2px 0", color: INDIGO }
+          },
+            React.createElement("span", { style: { width: 150, flexShrink: 0 } }, d.candidateName || "—"),
+            React.createElement("span", { style: { width: 120, flexShrink: 0, color: INDIGO_MUTED } }, d.consultantName),
+            React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, toDayMonthYear(d.date))
+          ))
+        ),
+        (teamLeadData.pillar4.ownDealsList && teamLeadData.pillar4.ownDealsList.length > 0) && React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED, marginBottom: 2 } }, "Team Lead's own:"),
+          teamLeadData.pillar4.ownDealsList.map((d, i) => React.createElement("div", {
+            key: i, style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 12.5, padding: "2px 0", color: i < 4 ? INDIGO : INDIGO_MUTED }
+          },
+            React.createElement("span", { style: { width: 150, flexShrink: 0 } }, d.candidateName || "—"),
+            React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, toDayMonthYear(d.date))
+          ))
         )
       ),
       React.createElement(Panel, null,
@@ -2818,7 +2836,7 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
               teamLeadData.developmentBonus.milestoneCrossings.map((m, i) => React.createElement("div", {
                 key: i, style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "4px 0", color: INDIGO }
               },
-                React.createElement("span", null, `${m.consultantId} — first $${m.threshold.toLocaleString()} year`),
+                React.createElement("span", null, `${m.consultantName || m.consultantId} — first $${m.threshold.toLocaleString()} year`),
                 React.createElement("span", { style: { fontWeight: 600 } }, `£${m.bonus.toLocaleString()}`)
               )),
               teamLeadData.developmentBonus.promotions.map(p => React.createElement("div", {
