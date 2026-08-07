@@ -287,46 +287,32 @@ module.exports = async (req, res) => {
     const pillar4Bonus = interpolate(PILLAR_4_DESK_DEALS_BY_COUNT, totalCountedDeals);
 
     // --- Development bonus: billing milestones (auto) + promotions (manual) ---
-    // A milestone should only ever show up in the ONE specific period during
-    // which it was actually crossed — never again in a later period of the
-    // same year just because the year-to-date total still exceeds it, and
-    // never in a year they'd already crossed it in before. Uses the SIGNED
-    // date, same as Pillar 4, not the placement start date.
-    const usdByConsultantYear = {}; // { consultantId: { year: totalUSD } } — for the "prior years ever" check
-    const dealsThisYearByConsultant = {}; // { consultantId: [{date, usd}] } — for within-year, before/through-period checks
+    // Based purely on what was signed WITHIN this specific 6-month period —
+    // not a cumulative year-to-date total. So a £150k deal this period
+    // never triggers the £250k milestone just because an EARLIER period's
+    // deals would push the yearly total over it — only this period's own
+    // revenue counts toward it. Uses the SIGNED date, same as Pillar 4.
+    const periodTotalByConsultant = {};
     for (const r of records) {
       if (!r.consultantId || !currentRoster.includes(r.consultantId)) continue;
       const dealDate = r.feeDate;
-      const dealYear = dealDate ? new Date(dealDate).getUTCFullYear() : r.year;
+      if (!inRange(dealDate, start, end)) continue;
       const usd = await convertToUSD(r, allRates);
       if (usd === null) continue;
-      usdByConsultantYear[r.consultantId] = usdByConsultantYear[r.consultantId] || {};
-      usdByConsultantYear[r.consultantId][dealYear] = (usdByConsultantYear[r.consultantId][dealYear] || 0) + usd;
-      if (dealYear === year) {
-        dealsThisYearByConsultant[r.consultantId] = dealsThisYearByConsultant[r.consultantId] || [];
-        dealsThisYearByConsultant[r.consultantId].push({ date: dealDate, usd });
-      }
+      periodTotalByConsultant[r.consultantId] = (periodTotalByConsultant[r.consultantId] || 0) + usd;
     }
     const milestoneCrossings = [];
     for (const consultantId of currentRoster) {
-      const byYear = usdByConsultantYear[consultantId] || {};
-      const dealsThisYear = dealsThisYearByConsultant[consultantId] || [];
-      const priorToPeriodTotal = dealsThisYear.filter((d) => d.date < start).reduce((s, d) => s + d.usd, 0);
-      const throughPeriodTotal = dealsThisYear.filter((d) => d.date <= end).reduce((s, d) => s + d.usd, 0);
+      const periodTotal = periodTotalByConsultant[consultantId] || 0;
       for (const m of DEVELOPMENT_MILESTONES_USD) {
-        if (throughPeriodTotal < m.threshold) continue; // not reached by the end of THIS period
-        if (priorToPeriodTotal >= m.threshold) continue; // already crossed before this period started
-        const everCrossedInEarlierYear = Object.entries(byYear).some(([y, total]) => Number(y) < year && total >= m.threshold);
-        if (!everCrossedInEarlierYear) {
-          milestoneCrossings.push({
-            consultantId,
-            consultantName: CONSULTANT_NAMES[consultantId] || consultantId,
-            threshold: m.threshold,
-            bonus: m.bonus,
-            priorToPeriodTotal: Math.round(priorToPeriodTotal),
-            throughPeriodTotal: Math.round(throughPeriodTotal),
-          });
-        }
+        if (periodTotal < m.threshold) continue;
+        milestoneCrossings.push({
+          consultantId,
+          consultantName: CONSULTANT_NAMES[consultantId] || consultantId,
+          threshold: m.threshold,
+          bonus: m.bonus,
+          periodTotal: Math.round(periodTotal),
+        });
       }
     }
 
