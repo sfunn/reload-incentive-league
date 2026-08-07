@@ -413,6 +413,9 @@ function App() {
   const [formRows, setFormRows] = useState({});
   const [formTeam, setFormTeam] = useState("james");
   const [editingWeekId, setEditingWeekId] = useState(null);
+  const [liveWeekData, setLiveWeekData] = useState(null);
+  const [liveWeekLoading, setLiveWeekLoading] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
   const [saveState, setSaveState] = useState("idle");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
@@ -521,15 +524,48 @@ function App() {
       // silent — falls back to each consultant's default team
     }
   }, []);
+  const loadLiveWeek = useCallback(async () => {
+    setLiveWeekLoading(true);
+    try {
+      const res = await fetch("/api/league?action=live-week");
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setLiveWeekData(data);
+    } catch (e) {
+      // silent — the live tally is a nice-to-have; the rest of the page still works
+    } finally {
+      setLiveWeekLoading(false);
+    }
+  }, []);
+  async function setCurrentWeekConfig(metric, threshold) {
+    setConfigSaving(true);
+    try {
+      const res = await fetch("/api/league?action=set-current-week-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
+        body: JSON.stringify({ metric, threshold })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadLiveWeek();
+    } catch (e) {
+      // no-op
+    } finally {
+      setConfigSaving(false);
+    }
+  }
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await refreshWeeks();
       await refreshTeamOverrides();
+      await loadLiveWeek();
       if (!cancelled) setLoaded(true);
     })();
     const interval = setInterval(() => {
-      if (!cancelled) refreshWeeks();
+      if (!cancelled) {
+        refreshWeeks();
+        loadLiveWeek();
+      }
     }, 20000);
     return () => {
       cancelled = true;
@@ -1657,260 +1693,161 @@ function App() {
       flexDirection: "column",
       gap: 20
     }
-  }, editingWeekId && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      background: "rgba(255,176,140,0.16)",
-      border: `1px solid ${MELON}`,
-      borderRadius: 8,
-      padding: "10px 14px"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontFamily: "'Work Sans', sans-serif",
-      fontSize: 12.5,
-      color: INDIGO
-    }
-  }, "Editing week ending ", formDate, " — correcting entered results"), /*#__PURE__*/React.createElement("button", {
-    onClick: cancelEdit,
-    style: ghostDangerStyle
-  }, "Cancel edit")), /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
-    eyebrow: "Matchday setup",
-    title: "This week's metric"
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr 1fr",
-      gap: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: labelStyle
-  }, "Week ending"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: formDate,
-    disabled: !!editingWeekId,
-    onChange: e => setFormDate(e.target.value),
-    style: inputStyle
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: labelStyle
-  }, "Metric"), /*#__PURE__*/React.createElement("select", {
-    value: existingWeekForDate ? existingWeekForDate.metric : formMetric,
-    disabled: !!existingWeekForDate && !editingWeekId,
-    onChange: e => setFormMetric(e.target.value),
-    style: inputStyle
-  }, /*#__PURE__*/React.createElement("option", {
-    value: "",
-    disabled: true
-  }, "Select this week's metric…"), METRIC_OPTIONS.map(m => /*#__PURE__*/React.createElement("option", {
-    key: m,
-    value: m
-  }, m)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: labelStyle
-  }, (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_CVS_OUT ? "Ratio requirement" : (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_RATIO ? "Threshold (%, optional)" : "Threshold (optional)"), (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_CVS_OUT ? /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...inputStyle,
-      display: "flex",
-      alignItems: "center",
-      color: INDIGO_MUTED
-    }
-  }, "Fixed at 65%") : /*#__PURE__*/React.createElement("input", {
-    type: "number",
-    value: existingWeekForDate ? existingWeekForDate.threshold ?? "" : formThreshold,
-    disabled: !!existingWeekForDate && !editingWeekId,
-    onChange: e => setFormThreshold(e.target.value),
-    placeholder: (existingWeekForDate ? existingWeekForDate.metric : formMetric) === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
-    style: inputStyle
-  }))), existingWeekForDate && !editingWeekId && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 10,
-      fontSize: 12,
-      color: INDIGO_MUTED
-    }
-  }, "This week's metric was already set by the other team — locked to keep both teams on the same fixture. Use Edit on the past-weeks list below if it needs correcting.")), !editingWeekId && /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
-    eyebrow: "Who's entering",
-    title: "Enter results for"
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 10
-    }
-  }, Object.entries(TEAMS).map(([teamId, t]) => /*#__PURE__*/React.createElement("button", {
-    key: teamId,
-    onClick: () => setFormTeam(teamId),
-    style: {
-      flex: 1,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 10,
-      padding: "12px 14px",
-      borderRadius: 8,
-      cursor: "pointer",
-      background: formTeam === teamId ? `${t.color}22` : "transparent",
-      border: formTeam === teamId ? `1px solid ${t.color}` : `1px solid ${INDIGO_HAIRLINE}`
-    }
-  }, /*#__PURE__*/React.createElement(Badge, {
-    teamId: teamId,
-    size: 24
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontFamily: "'Work Sans', sans-serif",
-      fontWeight: 600,
-      fontSize: 14,
-      color: formTeam === teamId ? t.color : INDIGO_MUTED
-    }
-  }, t.label))))), (editingWeekId ? Object.keys(TEAMS) : [formTeam]).map(teamId => {
-    const teamInfo = TEAMS[teamId];
-    const effectiveMetric = existingWeekForDate ? existingWeekForDate.metric : formMetric;
-    const col1Label = "CVs Out";
-    const col2Label = effectiveMetric === METRIC_CVS_OUT ? "Interviews" : effectiveMetric === METRIC_RATIO ? "Ratio (%)" : "Interviews";
-    const col2Field = effectiveMetric === METRIC_CVS_OUT ? "interviews" : "metricValue";
-    return /*#__PURE__*/React.createElement(Panel, {
-      key: teamId
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        marginBottom: 14
-      }
-    }, /*#__PURE__*/React.createElement(Badge, {
-      teamId: teamId
-    }), /*#__PURE__*/React.createElement("h3", {
-      style: {
-        fontFamily: "Georgia, serif",
-        fontSize: 17,
-        color: teamInfo.color,
-        margin: 0
-      }
-    }, teamInfo.label)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "grid",
-        gridTemplateColumns: "1fr 120px 140px",
-        gap: 10,
-        marginBottom: 6
-      }
-    }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("span", {
-      style: {
-        ...labelStyle,
-        marginBottom: 0
-      }
-    }, col1Label), /*#__PURE__*/React.createElement("span", {
-      style: {
-        ...labelStyle,
-        marginBottom: 0
-      }
-    }, col2Label)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 10
-      }
-    }, consultants.filter(c => c.team === teamId).map(c => /*#__PURE__*/React.createElement("div", {
-      key: c.id,
-      style: {
-        display: "grid",
-        gridTemplateColumns: "1fr 120px 140px",
-        gap: 10,
-        alignItems: "center"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontFamily: "'Work Sans', sans-serif",
-        fontSize: 14
-      }
-    }, c.name), /*#__PURE__*/React.createElement("input", {
-      type: "number",
-      min: "0",
-      placeholder: col1Label,
-      value: formRows[c.id]?.cvs ?? "",
-      onChange: e => updateFormRow(c.id, "cvs", e.target.value),
-      style: inputStyleSmall
-    }), /*#__PURE__*/React.createElement("input", {
-      type: "number",
-      min: "0",
-      max: effectiveMetric === METRIC_RATIO ? 100 : undefined,
-      placeholder: col2Label,
-      value: formRows[c.id]?.[col2Field] ?? "",
-      onChange: e => updateFormRow(c.id, col2Field, e.target.value),
-      style: inputStyleSmall
-    })))));
-  }), atlasError && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: MELON_LINK
-    }
-  }, atlasError), /*#__PURE__*/React.createElement("button", {
-    type: "button",
-    onClick: pullFromAtlas,
-    disabled: atlasPulling,
-    style: ghostStyle
-  }, atlasPulling ? "Pulling from Atlas…" : "Pull numbers from Atlas"), /*#__PURE__*/React.createElement("button", {
-    onClick: saveWeek,
-    disabled: !isAdmin || (!formMetric.trim() && !existingWeekForDate),
-    title: !isAdmin ? "Only admins can save manual entries — ask Scott or Lee for access." : undefined,
-    style: primaryButtonStyle(!isAdmin || (!formMetric.trim() && !existingWeekForDate))
-  }, /*#__PURE__*/React.createElement(Plus, {
-    size: 16
-  }), " ", editingWeekId ? "Save corrections" : `Save ${TEAMS[formTeam].label}'s results`), !isAdmin && /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 12, color: INDIGO_MUTED }
-  }, "Anyone can pull this week's numbers from Atlas. Saving manual corrections needs Admin access — ask Scott or Lee."), sortedWeeks.length > 0 && /*#__PURE__*/React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
-    eyebrow: "Logged so far",
-    title: "Past weeks"
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 8
-    }
-  }, [...sortedWeeks].reverse().map(w => {
-    const {
-      missing
-    } = computeWeekRows(w, consultants);
-    const missingLabels = teamMissingLabel(missing);
-    return /*#__PURE__*/React.createElement("div", {
-      key: w.id,
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        padding: "8px 0",
-        borderBottom: `1px solid ${INDIGO_HAIRLINE}`
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontFamily: "'Work Sans', sans-serif",
-        fontSize: 13,
-        color: INDIGO
-      }
-    }, w.date, " — ", w.metric, w.threshold !== null ? ` (min ${w.threshold})` : ""), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 8
-      }
-    }, /*#__PURE__*/React.createElement("button", {
-      onClick: () => loadWeekForEdit(w),
-      style: ghostStyle
-    }, "Edit"), /*#__PURE__*/React.createElement("button", {
-      onClick: () => deleteWeek(w.id),
-      style: ghostDangerStyle
-    }, "Remove"))), missingLabels.length > 0 && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11.5,
-        color: MELON,
-        fontFamily: "'Work Sans', sans-serif",
-        fontWeight: 600
-      }
-    }, "Awaiting: ", missingLabels.join(" · ")));
-  })))), tab === "table" && /*#__PURE__*/React.createElement("div", {
+  },
+    editingWeekId && React.createElement("div", {
+      style: { display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,176,140,0.16)", border: `1px solid ${MELON}`, borderRadius: 8, padding: "10px 14px" }
+    },
+      React.createElement("span", { style: { fontFamily: "'Work Sans', sans-serif", fontSize: 12.5, color: INDIGO } }, "Editing week ending ", formDate, " — correcting entered results"),
+      React.createElement("button", { onClick: cancelEdit, style: ghostDangerStyle }, "Cancel edit")
+    ),
+    React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Matchday setup", title: "This week's metric" }),
+      React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 } },
+        React.createElement("div", null,
+          React.createElement("label", { style: labelStyle }, "Week"),
+          React.createElement("div", { style: { ...inputStyle, display: "flex", alignItems: "center", color: INDIGO_MUTED } },
+            editingWeekId ? formDate : (liveWeekData ? `${toDayMonthYear(liveWeekData.weekStart)} – ${toDayMonthYear(liveWeekData.weekEnd)}` : "…")
+          )
+        ),
+        React.createElement("div", null,
+          React.createElement("label", { style: labelStyle }, "Metric"),
+          React.createElement("select", {
+            value: editingWeekId ? formMetric : (liveWeekData ? liveWeekData.metric : ""),
+            disabled: editingWeekId ? false : (!isAdmin || configSaving),
+            onChange: e => editingWeekId ? setFormMetric(e.target.value) : setCurrentWeekConfig(e.target.value, liveWeekData ? liveWeekData.threshold : null),
+            style: inputStyle
+          },
+            React.createElement("option", { value: "", disabled: true }, "Select this week's metric…"),
+            METRIC_OPTIONS.map(m => React.createElement("option", { key: m, value: m }, m))
+          )
+        ),
+        React.createElement("div", null,
+          React.createElement("label", { style: labelStyle },
+            (editingWeekId ? formMetric : (liveWeekData ? liveWeekData.metric : "")) === METRIC_RATIO ? "Threshold (%, optional)" : "Threshold (optional)"
+          ),
+          React.createElement("input", {
+            type: "number",
+            value: editingWeekId ? formThreshold : (liveWeekData && liveWeekData.threshold !== null && liveWeekData.threshold !== undefined ? liveWeekData.threshold : ""),
+            disabled: editingWeekId ? false : (!isAdmin || configSaving),
+            onChange: e => editingWeekId ? setFormThreshold(e.target.value) : setCurrentWeekConfig(liveWeekData ? liveWeekData.metric : METRIC_CVS_OUT, e.target.value === "" ? null : Number(e.target.value)),
+            placeholder: (editingWeekId ? formMetric : (liveWeekData ? liveWeekData.metric : "")) === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
+            style: inputStyle
+          })
+        )
+      ),
+      !isAdmin && !editingWeekId && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+        "Only Admins can change this week's metric or threshold — ask Scott or Lee."
+      )
+    ),
+    editingWeekId ? React.createElement(React.Fragment, null,
+      Object.keys(TEAMS).map(teamId => {
+        const teamInfo = TEAMS[teamId];
+        const effectiveMetric = formMetric;
+        const col1Label = "CVs Out";
+        const col2Label = effectiveMetric === METRIC_CVS_OUT ? "Interviews" : effectiveMetric === METRIC_RATIO ? "Ratio (%)" : "Interviews";
+        const col2Field = effectiveMetric === METRIC_CVS_OUT ? "interviews" : "metricValue";
+        return React.createElement(Panel, { key: teamId },
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14 } },
+            React.createElement(Badge, { teamId: teamId }),
+            React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 17, color: teamInfo.color, margin: 0 } }, teamInfo.label)
+          ),
+          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 10, marginBottom: 6 } },
+            React.createElement("span", null),
+            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col1Label),
+            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col2Label)
+          ),
+          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+            consultants.filter(c => c.team === teamId).map(c => React.createElement("div", {
+              key: c.id,
+              style: { display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 10, alignItems: "center" }
+            },
+              React.createElement("span", { style: { fontFamily: "'Work Sans', sans-serif", fontSize: 14 } }, c.name),
+              React.createElement("input", {
+                type: "number", min: "0", placeholder: col1Label,
+                value: formRows[c.id]?.cvs ?? "",
+                onChange: e => updateFormRow(c.id, "cvs", e.target.value),
+                style: inputStyleSmall
+              }),
+              React.createElement("input", {
+                type: "number", min: "0", max: effectiveMetric === METRIC_RATIO ? 100 : undefined,
+                placeholder: col2Label,
+                value: formRows[c.id]?.[col2Field] ?? "",
+                onChange: e => updateFormRow(c.id, col2Field, e.target.value),
+                style: inputStyleSmall
+              })
+            ))
+          )
+        );
+      }),
+      atlasError && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK } }, atlasError),
+      React.createElement("button", { type: "button", onClick: pullFromAtlas, disabled: atlasPulling, style: ghostStyle },
+        atlasPulling ? "Pulling from Atlas…" : "Pull numbers from Atlas"
+      ),
+      React.createElement("button", {
+        onClick: saveWeek,
+        disabled: !isAdmin,
+        title: !isAdmin ? "Only admins can save manual entries — ask Scott or Lee for access." : undefined,
+        style: primaryButtonStyle(!isAdmin)
+      }, React.createElement(Plus, { size: 16 }), " ", "Save corrections")
+    ) : React.createElement(Panel, null,
+        React.createElement(SectionTitle, { eyebrow: liveWeekData ? `${toDayMonthYear(liveWeekData.weekStart)} – ${toDayMonthYear(liveWeekData.weekEnd)}` : "This week", title: "Live tally" }),
+        liveWeekLoading && !liveWeekData ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+        !liveWeekData ? null :
+        React.createElement("div", { style: { display: "flex", gap: 30, flexWrap: "wrap" } },
+          Object.keys(TEAMS).map(teamId => {
+            const teamInfo = TEAMS[teamId];
+            const rows = liveWeekData.consultants.filter(c => c.team === teamId);
+            return React.createElement("div", { key: teamId, style: { flex: 1, minWidth: 260 } },
+              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                React.createElement(Badge, { teamId: teamId }),
+                React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 16, color: teamInfo.color, margin: 0 } }, teamInfo.label)
+              ),
+              rows.map(r => {
+                const consultant = consultants.find(c => c.id === r.consultantId);
+                return React.createElement("div", {
+                  key: r.consultantId,
+                  style: { display: "flex", alignItems: "baseline", gap: 8, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+                },
+                  React.createElement("span", { style: { width: 130, flexShrink: 0 } }, consultant ? consultant.name : r.consultantId),
+                  React.createElement("span", { style: { fontWeight: 600, width: 40, flexShrink: 0 } }, r.cvsOut),
+                  React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `${r.interviews} interviews`)
+                );
+              })
+            );
+          })
+        ),
+        React.createElement("div", { style: { marginTop: 14, fontSize: 12, color: INDIGO_MUTED } },
+          "Pulled live from Atlas as candidates move stage — no manual entry needed. This week locks in automatically once Sunday ends."
+        )
+      ),
+    sortedWeeks.length > 0 && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Logged so far", title: "Past weeks" }),
+      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        [...sortedWeeks].reverse().map(w => {
+          const { missing } = computeWeekRows(w, consultants);
+          const missingLabels = teamMissingLabel(missing);
+          return React.createElement("div", {
+            key: w.id,
+            style: { display: "flex", flexDirection: "column", gap: 4, padding: "8px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}` }
+          },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+              React.createElement("span", { style: { fontFamily: "'Work Sans', sans-serif", fontSize: 13, color: INDIGO } },
+                w.date, " — ", w.metric, w.threshold !== null ? ` (min ${w.threshold})` : ""
+              ),
+              React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("button", { onClick: () => loadWeekForEdit(w), style: ghostStyle }, "Edit"),
+                React.createElement("button", { onClick: () => deleteWeek(w.id), style: ghostDangerStyle }, "Remove")
+              )
+            ),
+            missingLabels.length > 0 && React.createElement("div", {
+              style: { fontSize: 11.5, color: MELON, fontFamily: "'Work Sans', sans-serif", fontWeight: 600 }
+            }, "Awaiting: ", missingLabels.join(" · "))
+          );
+        })
+      )
+    )
+  ),
+tab === "table" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
