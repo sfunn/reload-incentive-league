@@ -1377,8 +1377,15 @@ function App() {
       const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase(), isAdmin: data.isAdmin, isSuperAdmin: data.isSuperAdmin };
       localStorage.setItem("reload-auth", JSON.stringify(user));
       setAuthUser(user);
-      setShowAuthBox(false);
-      setAuthPassword("");
+      // Deliberately delayed — Chrome (and other browsers) need the form to
+      // stay in the DOM for a brief moment after a successful submission to
+      // register it as "this login worked" and offer to save the password.
+      // Hiding it in the same instant as success (as we used to) meant it
+      // vanished before the browser ever got the chance to notice.
+      setTimeout(() => {
+        setShowAuthBox(false);
+        setAuthPassword("");
+      }, 300);
     } catch (e) {
       setAuthError("Couldn't reach the server — try again.");
     } finally {
@@ -1399,8 +1406,10 @@ function App() {
       const user = { token: data.token, consultantId: data.consultantId, name: data.name, email: authEmail.trim().toLowerCase(), isAdmin: data.isAdmin, isSuperAdmin: data.isSuperAdmin };
       localStorage.setItem("reload-auth", JSON.stringify(user));
       setAuthUser(user);
-      setShowAuthBox(false);
-      setAuthPassword("");
+      setTimeout(() => {
+        setShowAuthBox(false);
+        setAuthPassword("");
+      }, 300);
     } catch (e) {
       setAuthError("Couldn't reach the server — try again.");
     } finally {
