@@ -1812,21 +1812,21 @@ function App() {
                 React.createElement(Badge, { teamId: teamId }),
                 React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 16, color: teamInfo.color, margin: 0 } }, teamInfo.label)
               ),
-              React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 } },
+              React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 16, marginBottom: 6 } },
                 React.createElement("span", { style: { width: 130, flexShrink: 0 } }),
-                React.createElement("span", { style: { ...labelStyle, width: 60, flexShrink: 0, marginBottom: 0, whiteSpace: "nowrap" } }, "CVs Out"),
-                React.createElement("span", { style: { ...labelStyle, width: 70, flexShrink: 0, marginBottom: 0, whiteSpace: "nowrap" } }, "Interviews"),
-                React.createElement("span", { style: { ...labelStyle, marginBottom: 0, whiteSpace: "nowrap" } }, "CV : IV Ratio")
+                React.createElement("span", { style: { ...labelStyle, width: 40, flexShrink: 0, marginBottom: 0, lineHeight: 1.3 } }, "CVs Out"),
+                React.createElement("span", { style: { ...labelStyle, width: 65, flexShrink: 0, marginBottom: 0, whiteSpace: "nowrap" } }, "Interviews"),
+                React.createElement("span", { style: { ...labelStyle, marginBottom: 0, whiteSpace: "nowrap" } }, "CV : Interview Ratio")
               ),
               rows.map(r => {
                 const ratio = r.cvsOut > 0 ? Math.round((r.interviews / r.cvsOut) * 100) : 0;
                 return React.createElement("div", {
                   key: r.consultantId,
-                  style: { display: "flex", alignItems: "baseline", gap: 8, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+                  style: { display: "flex", alignItems: "baseline", gap: 16, fontSize: 13.5, padding: "5px 0", color: INDIGO }
                 },
                   React.createElement("span", { style: { width: 130, flexShrink: 0 } }, r.name),
-                  React.createElement("span", { style: { fontWeight: 700, width: 60, flexShrink: 0 } }, r.cvsOut),
-                  React.createElement("span", { style: { fontWeight: 700, width: 70, flexShrink: 0 } }, r.interviews),
+                  React.createElement("span", { style: { fontWeight: 700, width: 40, flexShrink: 0 } }, r.cvsOut),
+                  React.createElement("span", { style: { fontWeight: 700, width: 65, flexShrink: 0 } }, r.interviews),
                   React.createElement("span", { style: { fontWeight: 700 } }, `${ratio}%`)
                 );
               })
