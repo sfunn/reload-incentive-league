@@ -25,6 +25,23 @@ const DEFAULT_TEAM_BY_CONSULTANT = {
 
 const TEAM_LEAD_TEAM = { "james-lancer": "james", "josh-stark": "josh" };
 
+// Display names — matches public/index.html's INITIAL_CONSULTANTS.
+const CONSULTANT_NAMES = {
+  "alex-silverman": "Alex Silverman",
+  "ash-thiara": "Ash Thiara",
+  "jack-thompson": "Jack Thompson",
+  "max-hart": "Max Hart",
+  "oleg-sokyrka": "Oleg Sokyrka",
+  "alex-aparo": "Alex Aparo",
+  "jack-routledge": "Jack Routledge",
+  "joe-purton": "Joe Purton",
+  "josh-davis": "Josh Davis",
+  "natasha-barnard": "Natasha Barnard",
+  "james-lancer": "James Lancer",
+  "josh-stark": "Josh Stark",
+};
+
+
 // Each pillar's named tiers, in ascending order. Anything between two named
 // points is interpolated exactly linearly (e.g. 85% between 80%→£1,000 and
 // 90%→£2,000 gives exactly £1,500). Below the lowest tier = £0. At or above
@@ -222,14 +239,20 @@ module.exports = async (req, res) => {
     });
 
     const avg = (arr, key) => (arr.length ? arr.reduce((s, x) => s + x[key], 0) / arr.length : 0);
+    // Months that haven't started yet shouldn't drag the average down to 0
+    // just because nothing's happened there — only average across the
+    // months that have actually begun (including the current, in-progress
+    // one) by today's real date.
+    const nowMonthKey = monthKeyFromDateStr(null);
+    const monthsSoFar = monthlyBreakdown.filter((m) => m.month <= nowMonthKey);
     const totalCVs = monthlyBreakdown.reduce((s, m) => s + m.cvs, 0);
     const totalInterviews = monthlyBreakdown.reduce((s, m) => s + m.interviews, 0);
     const targetCVsTotal = monthlyBreakdown.reduce((s, m) => s + m.targetCVs, 0);
     const targetInterviewsTotal = monthlyBreakdown.reduce((s, m) => s + m.targetInterviews, 0);
 
-    const pillar1Percent = avg(monthlyBreakdown, "cvPercent");
-    const pillar2Percent = avg(monthlyBreakdown, "interviewPercent");
-    const ratioPercent = avg(monthlyBreakdown, "ratioPercent");
+    const pillar1Percent = avg(monthsSoFar, "cvPercent");
+    const pillar2Percent = avg(monthsSoFar, "interviewPercent");
+    const ratioPercent = avg(monthsSoFar, "ratioPercent");
 
     const pillar1Bonus = interpolate(PILLAR_1_CV_VOLUME, pillar1Percent);
     const pillar2Bonus = interpolate(PILLAR_2_INTERVIEW_VOLUME, pillar2Percent);
@@ -242,15 +265,21 @@ module.exports = async (req, res) => {
     // candidate eventually starts.
     let teamMemberDeals = 0;
     let teamLeadOwnDeals = 0;
+    const pillar4TeamDealsList = [];
+    const pillar4OwnDealsList = [];
     for (const r of records) {
       if (!r.consultantId) continue;
       const dealDate = r.feeDate;
       if (!inRange(dealDate, start, end)) continue;
       const consultantTeam = teamOverrides[r.consultantId] || DEFAULT_TEAM_BY_CONSULTANT[r.consultantId] || null;
+      const placement = r.placementId ? placements[r.placementId] : null;
+      const candidateName = (placement && placement.candidateName) || null;
       if (r.consultantId === teamLeadId) {
         teamLeadOwnDeals += 1;
+        pillar4OwnDealsList.push({ candidateName, date: dealDate });
       } else if (consultantTeam === team) {
         teamMemberDeals += 1;
+        pillar4TeamDealsList.push({ candidateName, date: dealDate, consultantName: CONSULTANT_NAMES[r.consultantId] || r.consultantId });
       }
     }
     const teamLeadCountedDeals = Math.min(teamLeadOwnDeals, TEAM_LEAD_OWN_DEAL_CAP);
@@ -289,7 +318,14 @@ module.exports = async (req, res) => {
         if (priorToPeriodTotal >= m.threshold) continue; // already crossed before this period started
         const everCrossedInEarlierYear = Object.entries(byYear).some(([y, total]) => Number(y) < year && total >= m.threshold);
         if (!everCrossedInEarlierYear) {
-          milestoneCrossings.push({ consultantId, threshold: m.threshold, bonus: m.bonus });
+          milestoneCrossings.push({
+            consultantId,
+            consultantName: CONSULTANT_NAMES[consultantId] || consultantId,
+            threshold: m.threshold,
+            bonus: m.bonus,
+            priorToPeriodTotal: Math.round(priorToPeriodTotal),
+            throughPeriodTotal: Math.round(throughPeriodTotal),
+          });
         }
       }
     }
@@ -316,6 +352,8 @@ module.exports = async (req, res) => {
       pillar4: {
         teamMemberDeals, teamLeadOwnDeals, teamLeadCountedDeals, totalCountedDeals,
         target: PILLAR_4_TARGET_DEALS, bonus: pillar4Bonus,
+        teamDealsList: pillar4TeamDealsList,
+        ownDealsList: pillar4OwnDealsList,
       },
       developmentBonus: { milestoneCrossings, promotions, promotionBonusTotal, milestoneBonusTotal, total: developmentBonusTotal },
       totalBonus,
