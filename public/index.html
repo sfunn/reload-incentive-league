@@ -1757,7 +1757,7 @@ function App() {
             React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col2Label)
           ),
           React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
-            consultants.filter(c => c.team === teamId).map(c => React.createElement("div", {
+            [...consultants].filter(c => c.team === teamId).sort((a, b) => a.name.localeCompare(b.name)).map(c => React.createElement("div", {
               key: c.id,
               style: { display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 10, alignItems: "center" }
             },
@@ -1790,34 +1790,48 @@ function App() {
         style: primaryButtonStyle(!isAdmin)
       }, React.createElement(Plus, { size: 16 }), " ", "Save corrections")
     ) : React.createElement(Panel, null,
-        React.createElement(SectionTitle, { eyebrow: liveWeekData ? `${toDayMonthYear(liveWeekData.weekStart)} – ${toDayMonthYear(liveWeekData.weekEnd)}` : "This week", title: "Live tally" }),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
+          React.createElement(SectionTitle, { eyebrow: liveWeekData ? `${toDayMonthYear(liveWeekData.weekStart)} – ${toDayMonthYear(liveWeekData.weekEnd)}` : "This week", title: "Live tally" }),
+          React.createElement("button", {
+            onClick: loadLiveWeek,
+            disabled: liveWeekLoading,
+            style: ghostStyle
+          }, liveWeekLoading ? "Refreshing…" : "Refresh now")
+        ),
         liveWeekLoading && !liveWeekData ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
         !liveWeekData ? null :
         React.createElement("div", { style: { display: "flex", gap: 30, flexWrap: "wrap" } },
           Object.keys(TEAMS).map(teamId => {
             const teamInfo = TEAMS[teamId];
-            const rows = liveWeekData.consultants.filter(c => c.team === teamId);
+            const rows = liveWeekData.consultants
+              .filter(c => c.team === teamId)
+              .map(c => ({ ...c, name: (consultants.find(cc => cc.id === c.consultantId) || {}).name || c.consultantId }))
+              .sort((a, b) => a.name.localeCompare(b.name));
             return React.createElement("div", { key: teamId, style: { flex: 1, minWidth: 260 } },
               React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
                 React.createElement(Badge, { teamId: teamId }),
                 React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 16, color: teamInfo.color, margin: 0 } }, teamInfo.label)
               ),
+              React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 } },
+                React.createElement("span", { style: { width: 130, flexShrink: 0 } }),
+                React.createElement("span", { style: { ...labelStyle, width: 40, flexShrink: 0, marginBottom: 0 } }, "CVs Out"),
+                React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, "Interviews")
+              ),
               rows.map(r => {
-                const consultant = consultants.find(c => c.id === r.consultantId);
                 return React.createElement("div", {
                   key: r.consultantId,
                   style: { display: "flex", alignItems: "baseline", gap: 8, fontSize: 13.5, padding: "4px 0", color: INDIGO }
                 },
-                  React.createElement("span", { style: { width: 130, flexShrink: 0 } }, consultant ? consultant.name : r.consultantId),
+                  React.createElement("span", { style: { width: 130, flexShrink: 0 } }, r.name),
                   React.createElement("span", { style: { fontWeight: 600, width: 40, flexShrink: 0 } }, r.cvsOut),
-                  React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `${r.interviews} interviews`)
+                  React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, r.interviews)
                 );
               })
             );
           })
         ),
         React.createElement("div", { style: { marginTop: 14, fontSize: 12, color: INDIGO_MUTED } },
-          "Pulled live from Atlas as candidates move stage — no manual entry needed. This week locks in automatically once Sunday ends."
+          "Pulled live from Atlas as candidates move stage — no manual entry needed, refreshes automatically every 20 seconds. This week locks in automatically once Sunday ends, and stays editable afterwards from Past weeks below."
         )
       ),
     sortedWeeks.length > 0 && React.createElement(Panel, null,
