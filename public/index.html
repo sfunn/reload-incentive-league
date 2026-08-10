@@ -2491,6 +2491,19 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
             React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
           )
         ),
+        commissionData.placementBreakdown && React.createElement("div", { style: { marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: labelStyle }, "Placements vs Onsite Fees"),
+          React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "3px 0", color: INDIGO } },
+            React.createElement("span", { style: { width: 110, flexShrink: 0 } }, "Placements"),
+            React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `£${Math.round(commissionData.placementBreakdown.placements.totalCommission).toLocaleString()}`),
+            React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `${commissionData.placementBreakdown.placements.count} deal${commissionData.placementBreakdown.placements.count !== 1 ? "s" : ""}`)
+          ),
+          React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "3px 0", color: INDIGO } },
+            React.createElement("span", { style: { width: 110, flexShrink: 0 } }, "Onsite Fees"),
+            React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `£${Math.round(commissionData.placementBreakdown.onsiteFees.totalCommission).toLocaleString()}`),
+            React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `${commissionData.placementBreakdown.onsiteFees.count} deal${commissionData.placementBreakdown.onsiteFees.count !== 1 ? "s" : ""}`)
+          )
+        ),
         commissionData.lines.length === 0 ? React.createElement(EmptyState, { text: `No deals coordinated yet for ${commissionYear}.` }) :
         React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: [
@@ -2503,7 +2516,10 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
             React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
-            React.createElement(Cell, { width: 170, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
+            React.createElement(Cell, { width: 170 },
+              React.createElement("div", { style: { color: l.candidateName ? INDIGO : INDIGO_MUTED } }, l.candidateName || "—"),
+              l.clientCompanyName && React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED } }, l.clientCompanyName)
+            ),
             React.createElement(Cell, { width: 90, color: l.startDate ? INDIGO : INDIGO_MUTED }, l.startDate ? toDayMonthYear(l.startDate) : "—"),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
             React.createElement(Cell, { width: 130, color: l.source ? INDIGO : INDIGO_MUTED }, l.source || "—"),
@@ -2600,10 +2616,14 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
           ] }),
           commissionData.lines.map((l, i) => React.createElement(RowLine, { key: `${l.feeId}-${l.splitId}-${i}` },
             React.createElement(Cell, { width: 100 }, toDayMonthYear(l.feeDate)),
-            React.createElement(Cell, { width: 120, color: l.candidateName ? INDIGO : INDIGO_MUTED }, l.candidateName || "—"),
+            React.createElement(Cell, { width: 120 },
+              React.createElement("div", { style: { color: l.candidateName ? INDIGO : INDIGO_MUTED } }, l.candidateName || "—"),
+              l.clientCompanyName && React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED } }, l.clientCompanyName)
+            ),
             React.createElement(Cell, { width: 90, color: l.startDate ? INDIGO : INDIGO_MUTED }, l.startDate ? toDayMonthYear(l.startDate) : "—"),
             React.createElement(Cell, { width: 170, color: INDIGO_MUTED },
-              `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`} · £${Math.round(l.gbpPortion).toLocaleString()}`
+              React.createElement("div", null, `£${l.bandMin.toLocaleString()}${l.bandMax === null ? "+" : `-£${l.bandMax.toLocaleString()}`} · £${Math.round(l.gbpPortion).toLocaleString()}`),
+              l.originalCurrency && l.originalCurrency !== "GBP" && React.createElement("div", { style: { fontSize: 11 } }, `${l.originalCurrency} ${Number(l.originalAmount).toLocaleString()}`)
             ),
             React.createElement(Cell, { width: 55 }, `${(l.rate * 100).toFixed(1)}%`),
             React.createElement(Cell, { width: 90, bold: true }, `£${Math.round(l.commission).toLocaleString()}`),
@@ -2670,6 +2690,19 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
                   React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Commission earned"),
                   React.createElement("span", { style: { fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(netCommission).toLocaleString()}`),
                   withheldTotal > 0 && React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, marginLeft: 6 } }, `(£${Math.round(withheldTotal).toLocaleString()} withheld)`)
+                ),
+                commissionData.placementBreakdown && React.createElement("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+                  React.createElement("div", { style: labelStyle }, "Placements vs Onsite Fees"),
+                  React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "3px 0", color: INDIGO } },
+                    React.createElement("span", { style: { width: 110, flexShrink: 0 } }, "Placements"),
+                    React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `£${Math.round(commissionData.placementBreakdown.placements.totalCommission).toLocaleString()}`),
+                    React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `${commissionData.placementBreakdown.placements.count} deal${commissionData.placementBreakdown.placements.count !== 1 ? "s" : ""}`)
+                  ),
+                  React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "3px 0", color: INDIGO } },
+                    React.createElement("span", { style: { width: 110, flexShrink: 0 } }, "Onsite Fees"),
+                    React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `£${Math.round(commissionData.placementBreakdown.onsiteFees.totalCommission).toLocaleString()}`),
+                    React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `${commissionData.placementBreakdown.onsiteFees.count} deal${commissionData.placementBreakdown.onsiteFees.count !== 1 ? "s" : ""}`)
+                  )
                 )
               );
             })()
