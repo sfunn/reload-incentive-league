@@ -1001,6 +1001,87 @@ function App() {
       loadUserAccounts();
     }
   }, [isSuperAdmin, dealsYear]);
+  function renderDealDetailsTable(records) {
+    return dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+    records.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
+    React.createElement("div", { style: { overflowX: "auto" } },
+    React.createElement(React.Fragment, null,
+      React.createElement(TableHeader, { cols: [
+        { label: "Date Signed", width: 100 },
+        { label: "Consultant", width: 120 },
+        { label: "Candidate", width: 110 },
+        { label: "Client", width: 100 },
+        { label: "Start Date", width: 90 },
+        { label: "Amount", width: 100 },
+        { label: "USD", width: 90 },
+        { label: "Source", width: 130 },
+        { label: "Coordinator", width: 110 },
+        { label: "Paid", width: 130 },
+        { label: "", width: 70 }
+      ] }),
+      records.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
+        React.createElement(Cell, { width: 100 }, toDayMonthYear(r.feeDate)),
+        React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
+        React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
+        React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
+        React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
+        React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && parseFloat(r.share) !== 100 ? ` (${r.share}%)` : ""}`),
+        React.createElement(Cell, { width: 90 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
+        React.createElement(Cell, { width: 130 },
+          React.createElement("select", {
+            value: r.source || "",
+            onChange: e => setDealSource(r.feeId, r.splitId, e.target.value || null),
+            style: { ...inputStyleSmall, width: 120, padding: "4px 6px" }
+          },
+            React.createElement("option", { value: "" }, "—"),
+            SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
+          )
+        ),
+        React.createElement(Cell, { width: 110 },
+          React.createElement("select", {
+            value: r.coordinatorId || "",
+            onChange: e => setDealCoordinator(r.feeId, r.splitId, e.target.value || null),
+            style: { ...inputStyleSmall, width: 100, padding: "4px 6px" }
+          },
+            React.createElement("option", { value: "" }, "—"),
+            COORDINATORS.map(co => React.createElement("option", { key: co.id, value: co.id }, co.name))
+          )
+        ),
+        React.createElement(Cell, { width: 130 },
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            React.createElement("input", {
+              type: "checkbox",
+              checked: !!r.paid,
+              onChange: e => markPaid(r.feeId, r.splitId, e.target.checked, e.target.checked ? todayStr() : undefined)
+            }),
+            r.paid && React.createElement("input", {
+              type: "date",
+              value: paidDateDrafts[`${r.feeId}-${r.splitId}`] !== undefined
+                ? paidDateDrafts[`${r.feeId}-${r.splitId}`]
+                : (r.paidMarkedAt ? r.paidMarkedAt.slice(0, 10) : ""),
+              onChange: e => {
+                const key = `${r.feeId}-${r.splitId}`;
+                setPaidDateDrafts(prev => ({ ...prev, [key]: e.target.value }));
+              },
+              onBlur: e => {
+                const key = `${r.feeId}-${r.splitId}`;
+                if (e.target.value) setPaidDate(r.feeId, r.splitId, e.target.value);
+                setPaidDateDrafts(prev => { const next = { ...prev }; delete next[key]; return next; });
+              },
+              style: { ...inputStyleSmall, width: 118, padding: "3px 4px", fontSize: 11.5 }
+            })
+          )
+        ),
+        React.createElement(Cell, { width: 70 },
+          React.createElement("button", {
+            onClick: () => deleteDeal(r.feeId, r.splitId),
+            style: { ...ghostStyle, color: MELON_LINK, borderColor: MELON_LINK, fontSize: 11, padding: "4px 8px" }
+          }, "Delete")
+        )
+      ))
+    )
+    );
+  }
   async function markPaid(feeId, splitId, paidVal, paidDate) {
     try {
       const body = { feeId, splitId, paid: paidVal };
@@ -1486,6 +1567,9 @@ function App() {
   }] : []), ...(authUser && isAdmin ? [{
     id: "teamlead",
     label: "Team Lead Bonus"
+  }] : []), ...(authUser && isSuperAdmin ? [{
+    id: "managelogins",
+    label: "Manage Logins"
   }] : []), {
     id: "ask",
     label: "Ask The Table"
@@ -2317,161 +2401,19 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
         ),
 
         dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
-        dealDetails.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
-        React.createElement("div", { style: { overflowX: "auto" } },
-        React.createElement(React.Fragment, null,
-          React.createElement(TableHeader, { cols: [
-            { label: "Date Signed", width: 100 },
-            { label: "Consultant", width: 120 },
-            { label: "Candidate", width: 110 },
-            { label: "Client", width: 100 },
-            { label: "Start Date", width: 90 },
-            { label: "Amount", width: 100 },
-            { label: "USD", width: 90 },
-            { label: "Source", width: 130 },
-            { label: "Coordinator", width: 110 },
-            { label: "Paid", width: 130 },
-            { label: "", width: 70 }
-          ] }),
-          dealDetails.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
-            React.createElement(Cell, { width: 100 }, toDayMonthYear(r.feeDate)),
-            React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
-            React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
-            React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
-            React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
-            React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && parseFloat(r.share) !== 100 ? ` (${r.share}%)` : ""}`),
-            React.createElement(Cell, { width: 90 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
-            React.createElement(Cell, { width: 130 },
-              React.createElement("select", {
-                value: r.source || "",
-                onChange: e => setDealSource(r.feeId, r.splitId, e.target.value || null),
-                style: { ...inputStyleSmall, width: 120, padding: "4px 6px" }
-              },
-                React.createElement("option", { value: "" }, "—"),
-                SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
-              )
-            ),
-            React.createElement(Cell, { width: 110 },
-              React.createElement("select", {
-                value: r.coordinatorId || "",
-                onChange: e => setDealCoordinator(r.feeId, r.splitId, e.target.value || null),
-                style: { ...inputStyleSmall, width: 100, padding: "4px 6px" }
-              },
-                React.createElement("option", { value: "" }, "—"),
-                COORDINATORS.map(co => React.createElement("option", { key: co.id, value: co.id }, co.name))
-              )
-            ),
-            React.createElement(Cell, { width: 130 },
-              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
-                React.createElement("input", {
-                  type: "checkbox",
-                  checked: !!r.paid,
-                  onChange: e => markPaid(r.feeId, r.splitId, e.target.checked, e.target.checked ? todayStr() : undefined)
-                }),
-                r.paid && React.createElement("input", {
-                  type: "date",
-                  value: paidDateDrafts[`${r.feeId}-${r.splitId}`] !== undefined
-                    ? paidDateDrafts[`${r.feeId}-${r.splitId}`]
-                    : (r.paidMarkedAt ? r.paidMarkedAt.slice(0, 10) : ""),
-                  onChange: e => {
-                    const key = `${r.feeId}-${r.splitId}`;
-                    setPaidDateDrafts(prev => ({ ...prev, [key]: e.target.value }));
-                  },
-                  onBlur: e => {
-                    const key = `${r.feeId}-${r.splitId}`;
-                    if (e.target.value) setPaidDate(r.feeId, r.splitId, e.target.value);
-                    setPaidDateDrafts(prev => { const next = { ...prev }; delete next[key]; return next; });
-                  },
-                  style: { ...inputStyleSmall, width: 118, padding: "3px 4px", fontSize: 11.5 }
-                })
-              )
-            ),
-            React.createElement(Cell, { width: 70 },
-              React.createElement("button", {
-                onClick: () => deleteDeal(r.feeId, r.splitId),
-                style: { ...ghostStyle, color: MELON_LINK, borderColor: MELON_LINK, fontSize: 11, padding: "4px 8px" }
-              }, "Delete")
-            )
-          ))
-        )
-        ),
+        renderDealDetailsTable(dealDetails.filter(r => r.hasPlacementName)),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
           "Marking a deal Paid starts the 4-month commission payout the following month. Individual monthly instalments can be withheld from that person's Commission page if needed (e.g. a one-off fine) without affecting anyone else's numbers or their total commission earned. Assigning a Coordinator gives them a flat fee for that deal, independent of the consultant's own commission."
         )
     ),
     isSuperAdmin && React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Manage Logins" }),
-      pwdError && React.createElement("div", { style: { marginBottom: 10, fontSize: 11.5, color: MELON_LINK } }, pwdError),
-      userAccounts.length === 0 ? React.createElement(EmptyState, { text: "Loading…" }) :
-      React.createElement(React.Fragment, null,
-        React.createElement(TableHeader, { cols: [
-          { label: "Name", width: 110 },
-          { label: "Team", width: 90 },
-          { label: "Email", flex: true },
-          { label: "Has account", width: 80 },
-          { label: "Admin", width: 70 },
-          { label: "Super Admin", width: 90 },
-          { label: "New password", width: 130 },
-          { label: "", width: 100 }
-        ] }),
-        userAccounts.map(u => React.createElement(RowLine, { key: u.email },
-          React.createElement(Cell, { width: 110 }, u.name),
-          React.createElement(Cell, { width: 90 },
-            (() => {
-              const consultant = consultants.find(c => c.id === u.consultantId);
-              if (!consultant) return React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, "—");
-              return React.createElement("select", {
-                value: consultant.team,
-                onChange: e => setConsultantTeam(u.consultantId, e.target.value),
-                style: { ...inputStyleSmall, width: 80, padding: "4px 6px", color: TEAMS[consultant.team].color, fontWeight: 600 }
-              },
-                Object.keys(TEAMS).map(teamId => React.createElement("option", { key: teamId, value: teamId }, TEAMS[teamId].label))
-              );
-            })()
-          ),
-          React.createElement(Cell, { flex: true, color: INDIGO_MUTED }, u.email),
-          React.createElement(Cell, { width: 80, color: u.hasAccount ? VERDIGRIS : INDIGO_MUTED }, u.hasAccount ? "Yes" : "Not yet"),
-          React.createElement(Cell, { width: 70 },
-            u.isPermanentSuperAdmin ? React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, "—") :
-            React.createElement("input", {
-              type: "checkbox",
-              checked: u.isAdmin,
-              disabled: !u.hasAccount,
-              onChange: e => setUserRoles(u.email, e.target.checked, u.isSuperAdmin)
-            })
-          ),
-          React.createElement(Cell, { width: 90 },
-            u.isPermanentSuperAdmin ? React.createElement("span", { style: { fontSize: 11, color: VERDIGRIS } }, "Always") :
-            React.createElement("input", {
-              type: "checkbox",
-              checked: u.isSuperAdmin,
-              disabled: !u.hasAccount,
-              onChange: e => setUserRoles(u.email, u.isAdmin, e.target.checked)
-            })
-          ),
-          React.createElement(Cell, { width: 130 },
-            React.createElement("input", {
-              type: "text",
-              value: newPasswordInputs[u.email] || "",
-              onChange: e => setNewPasswordInputs(prev => ({ ...prev, [u.email]: e.target.value })),
-              placeholder: "New password",
-              style: { ...inputStyleSmall, width: 110 }
-            })
-          ),
-          React.createElement(Cell, { width: 100 },
-            pwdNoticeEmail === u.email ? React.createElement("span", { style: { color: VERDIGRIS, fontSize: 12 } }, "Saved ✓") :
-            React.createElement("button", {
-              onClick: () => setUserPassword(u.email),
-              disabled: pwdSavingEmail === u.email,
-              style: ghostStyle
-            }, pwdSavingEmail === u.email ? "Saving…" : (u.hasAccount ? "Reset" : "Set"))
-          )
-        ))
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Onsite Fees" }),
+      React.createElement("div", { style: { marginTop: 4, marginBottom: 14, fontSize: 12, color: INDIGO_MUTED } },
+        "Fees with no linked placement — e.g. genuine Onsite fees in Atlas. Same source, coordinator and payout controls as the main table above."
       ),
-      React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-        "Admin can save manual weekly entries. Super Admin also gets Yearly Deal Table's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
-      )
-    )
+      dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+      renderDealDetailsTable(dealDetails.filter(r => !r.hasPlacementName))
+    ),
   ), tab === "commission" && React.createElement("div", {
     style: { display: "flex", flexDirection: "column", gap: 20 }
   },
@@ -2938,6 +2880,87 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
         )
       )
     )
+  
+  ), tab === "managelogins" && React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 20 }
+  },
+tab === "managelogins" && React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 20 }
+  },
+    isSuperAdmin && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Manage Logins" }),
+      pwdError && React.createElement("div", { style: { marginBottom: 10, fontSize: 11.5, color: MELON_LINK } }, pwdError),
+      userAccounts.length === 0 ? React.createElement(EmptyState, { text: "Loading…" }) :
+      React.createElement(React.Fragment, null,
+        React.createElement(TableHeader, { cols: [
+          { label: "Name", width: 110 },
+          { label: "Team", width: 90 },
+          { label: "Email", flex: true },
+          { label: "Has account", width: 80 },
+          { label: "Admin", width: 70 },
+          { label: "Super Admin", width: 90 },
+          { label: "New password", width: 130 },
+          { label: "", width: 100 }
+        ] }),
+        userAccounts.map(u => React.createElement(RowLine, { key: u.email },
+          React.createElement(Cell, { width: 110 }, u.name),
+          React.createElement(Cell, { width: 90 },
+            (() => {
+              const consultant = consultants.find(c => c.id === u.consultantId);
+              if (!consultant) return React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, "—");
+              return React.createElement("select", {
+                value: consultant.team,
+                onChange: e => setConsultantTeam(u.consultantId, e.target.value),
+                style: { ...inputStyleSmall, width: 80, padding: "4px 6px", color: TEAMS[consultant.team].color, fontWeight: 600 }
+              },
+                Object.keys(TEAMS).map(teamId => React.createElement("option", { key: teamId, value: teamId }, TEAMS[teamId].label))
+              );
+            })()
+          ),
+          React.createElement(Cell, { flex: true, color: INDIGO_MUTED }, u.email),
+          React.createElement(Cell, { width: 80, color: u.hasAccount ? VERDIGRIS : INDIGO_MUTED }, u.hasAccount ? "Yes" : "Not yet"),
+          React.createElement(Cell, { width: 70 },
+            u.isPermanentSuperAdmin ? React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, "—") :
+            React.createElement("input", {
+              type: "checkbox",
+              checked: u.isAdmin,
+              disabled: !u.hasAccount,
+              onChange: e => setUserRoles(u.email, e.target.checked, u.isSuperAdmin)
+            })
+          ),
+          React.createElement(Cell, { width: 90 },
+            u.isPermanentSuperAdmin ? React.createElement("span", { style: { fontSize: 11, color: VERDIGRIS } }, "Always") :
+            React.createElement("input", {
+              type: "checkbox",
+              checked: u.isSuperAdmin,
+              disabled: !u.hasAccount,
+              onChange: e => setUserRoles(u.email, u.isAdmin, e.target.checked)
+            })
+          ),
+          React.createElement(Cell, { width: 130 },
+            React.createElement("input", {
+              type: "text",
+              value: newPasswordInputs[u.email] || "",
+              onChange: e => setNewPasswordInputs(prev => ({ ...prev, [u.email]: e.target.value })),
+              placeholder: "New password",
+              style: { ...inputStyleSmall, width: 110 }
+            })
+          ),
+          React.createElement(Cell, { width: 100 },
+            pwdNoticeEmail === u.email ? React.createElement("span", { style: { color: VERDIGRIS, fontSize: 12 } }, "Saved ✓") :
+            React.createElement("button", {
+              onClick: () => setUserPassword(u.email),
+              disabled: pwdSavingEmail === u.email,
+              style: ghostStyle
+            }, pwdSavingEmail === u.email ? "Saving…" : (u.hasAccount ? "Reset" : "Set"))
+          )
+        ))
+      ),
+      React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
+        "Admin can save manual weekly entries. Super Admin also gets Yearly Deal Table's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
+      )
+    )
+  )
   ))));
 }
 function EmptyState({
