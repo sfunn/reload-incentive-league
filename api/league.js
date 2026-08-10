@@ -71,10 +71,11 @@ async function autoFinalizePastWeeks() {
   const nowKey = isoWeekKey(new Date().toISOString());
   let config = await kv.get(CONFIG_KEY);
   if (!config) {
-    config = { weekKey: nowKey, metric: METRIC_CVS_OUT, threshold: null };
+    config = { weekKey: nowKey, metric: METRIC_CVS_OUT, threshold: null, excludedConsultants: [] };
     await kv.set(CONFIG_KEY, config);
     return { weeks, config };
   }
+  if (!config.excludedConsultants) config.excludedConsultants = [];
   if (config.weekKey === nowKey) {
     return { weeks, config };
   }
@@ -95,6 +96,7 @@ async function autoFinalizePastWeeks() {
       rows[consultantId] = {
         cvs, interviews, team,
         metricValue: computeMetricValue(config.metric, cvs, interviews),
+        excluded: config.excludedConsultants.includes(consultantId),
       };
     }
     const newWeek = {
@@ -110,8 +112,10 @@ async function autoFinalizePastWeeks() {
   }
 
   // Move the "current week" forward — carrying the same metric/threshold
-  // forward as the sensible default until an Admin changes it.
-  const newConfig = { weekKey: nowKey, metric: config.metric || METRIC_CVS_OUT, threshold: config.threshold ?? null };
+  // forward as the sensible default until an Admin changes it. Exclusions
+  // reset fresh each week (e.g. "on holiday this week") rather than
+  // silently carrying someone's exclusion forward indefinitely.
+  const newConfig = { weekKey: nowKey, metric: config.metric || METRIC_CVS_OUT, threshold: config.threshold ?? null, excludedConsultants: [] };
   await kv.set(CONFIG_KEY, newConfig);
   return { weeks: nextWeeks, config: newConfig };
 }
@@ -134,6 +138,7 @@ module.exports = async (req, res) => {
     const tally = (await kv.get(`${TALLY_PREFIX}${config.weekKey}`)) || {};
     const teamOverrides = (await kv.get(TEAMS_KEY)) || {};
     const { monday, sunday } = isoWeekToDates(config.weekKey);
+    const excluded = config.excludedConsultants || [];
     const consultants = Object.keys(DEFAULT_TEAM_BY_CONSULTANT).map((consultantId) => {
       const t = tally[consultantId] || { cvsOut: 0, interviews: 0 };
       return {
@@ -141,9 +146,31 @@ module.exports = async (req, res) => {
         team: teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId],
         cvsOut: t.cvsOut || 0,
         interviews: t.interviews || 0,
+        excluded: excluded.includes(consultantId),
       };
     });
     return res.status(200).json({ weekKey: config.weekKey, weekStart: monday, weekEnd: sunday, metric: config.metric, threshold: config.threshold, consultants });
+  }
+
+  if (req.method === "POST" && action === "toggle-exclude") {
+    // Excludes someone from this week's scoring entirely — e.g. a new
+    // starter it wouldn't be fair to rank yet, or someone on leave whose
+    // zeroed numbers shouldn't count against them. Resets automatically
+    // each week rather than persisting indefinitely.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isAdmin) {
+      return res.status(401).json({ error: "Admin access required." });
+    }
+    const { consultantId } = req.body || {};
+    if (!consultantId) return res.status(400).json({ error: "consultantId is required." });
+    const { config } = await autoFinalizePastWeeks();
+    const current = config.excludedConsultants || [];
+    const next = current.includes(consultantId)
+      ? current.filter((id) => id !== consultantId)
+      : [...current, consultantId];
+    const nextConfig = { ...config, excludedConsultants: next };
+    await kv.set(CONFIG_KEY, nextConfig);
+    return res.status(200).json({ ok: true, config: nextConfig });
   }
 
   if (req.method === "POST" && action === "set-current-week-config") {
