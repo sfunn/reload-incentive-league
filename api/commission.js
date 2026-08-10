@@ -134,7 +134,9 @@ module.exports = async (req, res) => {
         const orderDate = (placement && placement.startDate) || r.feeDate;
         const candidateName = (placement && placement.candidateName) || r.notes || null;
         const startDate = (placement && placement.startDate) || r.feeDate || null;
-        return { ...r, orderDate, candidateName, startDate };
+        const hasPlacementName = !!(placement && placement.candidateName);
+        const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+        return { ...r, orderDate, candidateName, startDate, hasPlacementName, clientCompanyName };
       });
       withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
 
@@ -148,10 +150,24 @@ module.exports = async (req, res) => {
         paidMarkedAt: r.paidMarkedAt,
         source: r.source || null,
         candidateName: r.candidateName,
+        clientCompanyName: r.clientCompanyName,
+        originalCurrency: r.currency,
+        originalAmount: r.totalAmount,
         monthOverrides: r.monthOverrides || {},
+        hasPlacementName: r.hasPlacementName,
       }));
       const linesWithSchedule = lines.map((l) => ({ ...l, payout: singleMonthPayout(l) }));
       const totalCommission = lines.reduce((sum, l) => sum + l.commission, 0);
+      const placementBreakdown = {
+        placements: {
+          count: lines.filter((l) => l.hasPlacementName).length,
+          totalCommission: lines.filter((l) => l.hasPlacementName).reduce((s, l) => s + l.commission, 0),
+        },
+        onsiteFees: {
+          count: lines.filter((l) => !l.hasPlacementName).length,
+          totalCommission: lines.filter((l) => !l.hasPlacementName).reduce((s, l) => s + l.commission, 0),
+        },
+      };
 
       return res.status(200).json({
         consultantId,
@@ -163,6 +179,7 @@ module.exports = async (req, res) => {
         target: (personSettings.targets && personSettings.targets[year]) || null,
         lines: linesWithSchedule,
         heldBackCount: 0,
+        placementBreakdown,
       });
     }
 
@@ -187,7 +204,9 @@ module.exports = async (req, res) => {
       const orderDate = (placement && placement.startDate) || r.feeDate;
       const candidateName = (placement && placement.candidateName) || r.notes || null;
       const startDate = (placement && placement.startDate) || r.feeDate || null;
-      return { ...r, orderDate, candidateName, startDate };
+      const hasPlacementName = !!(placement && placement.candidateName);
+      const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+      return { ...r, orderDate, candidateName, startDate, hasPlacementName, clientCompanyName };
     });
     withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
 
@@ -201,7 +220,11 @@ module.exports = async (req, res) => {
       paidMarkedAt: r.paidMarkedAt,
       source: r.source,
       candidateName: r.candidateName,
+      clientCompanyName: r.clientCompanyName,
+      originalCurrency: r.currency,
+      originalAmount: r.totalAmount,
       monthOverrides: r.monthOverrides || {},
+      hasPlacementName: r.hasPlacementName,
     }));
 
     const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
@@ -209,6 +232,23 @@ module.exports = async (req, res) => {
 
     const { lines, totalGBP, totalCommission } = computeCommissionLines(usableDeals, bands);
     const linesWithSchedule = lines.map((l) => ({ ...l, payout: payoutSchedule(l) }));
+
+    // A single deal can split into multiple lines across bracket boundaries,
+    // so count DISTINCT deals (by feeId+splitId), not lines, while still
+    // summing commission across every line for the £ totals.
+    const dealKey = (l) => `${l.feeId}|${l.splitId}`;
+    const placementLines = lines.filter((l) => l.hasPlacementName);
+    const onsiteLines = lines.filter((l) => !l.hasPlacementName);
+    const placementBreakdown = {
+      placements: {
+        count: new Set(placementLines.map(dealKey)).size,
+        totalCommission: placementLines.reduce((s, l) => s + l.commission, 0),
+      },
+      onsiteFees: {
+        count: new Set(onsiteLines.map(dealKey)).size,
+        totalCommission: onsiteLines.reduce((s, l) => s + l.commission, 0),
+      },
+    };
 
     return res.status(200).json({
       consultantId,
@@ -220,6 +260,7 @@ module.exports = async (req, res) => {
       totalCommission,
       lines: linesWithSchedule,
       heldBackCount: heldBack, // deals whose currency has no GBP rate set yet for their month
+      placementBreakdown,
     });
   }
 
