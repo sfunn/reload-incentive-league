@@ -163,8 +163,13 @@ function monthLabel(monthKey) {
   });
 }
 function computeWeekRows(week, consultants) {
-  const entered = consultants.filter(c => week.rows[c.id] !== undefined);
+  const enteredAll = consultants.filter(c => week.rows[c.id] !== undefined);
   const missing = consultants.filter(c => week.rows[c.id] === undefined);
+  // Excluded consultants (e.g. a new starter, or someone on leave) are kept
+  // out of the ranking/points/penalties entirely — as if they simply
+  // didn't compete that week — rather than being scored on a zero.
+  const excluded = enteredAll.filter(c => week.rows[c.id].excluded);
+  const entered = enteredAll.filter(c => !week.rows[c.id].excluded);
   const isCvsOutWeek = week.metric === METRIC_CVS_OUT;
   const rows = entered.map(c => {
     const entry = week.rows[c.id];
@@ -209,7 +214,8 @@ function computeWeekRows(week, consultants) {
   });
   return {
     rows: withRank,
-    missing
+    missing,
+    excluded
   };
 }
 function weekTeamWinners(weekRows) {
@@ -551,6 +557,19 @@ function App() {
       // no-op
     } finally {
       setConfigSaving(false);
+    }
+  }
+  async function toggleExcludeConsultant(consultantId) {
+    try {
+      const res = await fetch("/api/league?action=toggle-exclude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
+        body: JSON.stringify({ consultantId })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadLiveWeek();
+    } catch (e) {
+      // no-op
     }
   }
   useEffect(() => {
@@ -1831,12 +1850,17 @@ function App() {
                 const ratio = r.cvsOut > 0 ? Math.round((r.interviews / r.cvsOut) * 100) : 0;
                 return React.createElement("div", {
                   key: r.consultantId,
-                  style: { display: "flex", alignItems: "baseline", gap: 16, fontSize: 13.5, padding: "5px 0", color: INDIGO }
+                  style: { display: "flex", alignItems: "baseline", gap: 16, fontSize: 13.5, padding: "5px 0", color: r.excluded ? INDIGO_MUTED : INDIGO }
                 },
-                  React.createElement("span", { style: { width: 130, flexShrink: 0 } }, r.name),
+                  React.createElement("span", { style: { width: 130, flexShrink: 0, textDecoration: r.excluded ? "line-through" : "none" } }, r.name),
                   React.createElement("span", { style: { fontWeight: 700, width: 55, flexShrink: 0 } }, r.cvsOut),
                   React.createElement("span", { style: { fontWeight: 700, width: 65, flexShrink: 0 } }, r.interviews),
-                  React.createElement("span", { style: { fontWeight: 700 } }, `${ratio}%`)
+                  React.createElement("span", { style: { fontWeight: 700, width: 60, flexShrink: 0 } }, `${ratio}%`),
+                  isAdmin && React.createElement("button", {
+                    onClick: () => toggleExcludeConsultant(r.consultantId),
+                    title: r.excluded ? "Include them in this week's scoring again" : "Exclude them from this week's scoring (e.g. new starter, on leave)",
+                    style: { ...ghostStyle, fontSize: 10.5, padding: "2px 8px", color: r.excluded ? VERDIGRIS : MELON_LINK, borderColor: r.excluded ? VERDIGRIS : MELON_LINK }
+                  }, r.excluded ? "Include" : "Exclude")
                 );
               })
             );
