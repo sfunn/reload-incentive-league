@@ -39,6 +39,27 @@ function yearFromDateStr(dateStr) {
   return d.getUTCFullYear();
 }
 
+// Every fee event includes a projectId even when there's no placement
+// connected yet — and a project always belongs to a client company in
+// Atlas. So when a fee has no linked placement (and therefore no client
+// name from that route), this gives us a real fallback instead of a blank.
+async function lookupProjectClientName(projectId) {
+  if (!projectId) return null;
+  try {
+    const res = await fetch(
+      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const company = json.data && json.data.company;
+    return company ? company.name : null;
+  } catch (e) {
+    console.error("[atlas-fee-webhook] project client lookup failed:", e.message);
+    return null;
+  }
+}
+
 // Fee/split "share" is treated as a percentage (e.g. "50" meaning 50%) when
 // present. If a split has no share (or there's only one split), it gets
 // full credit for the fee amount.
@@ -86,7 +107,7 @@ export default async function handler(req, res) {
   }
 
   const data = payload.data || {};
-  const { id: feeId, feeDate, amount, currency, splits, placementId, notes } = data;
+  const { id: feeId, feeDate, amount, currency, splits, placementId, projectId, notes } = data;
 
   if (!feeId || !amount || !currency || !Array.isArray(splits) || splits.length === 0) {
     console.log("[atlas-fee-webhook] skipped: missing fields. data was:", JSON.stringify(data));
@@ -94,6 +115,12 @@ export default async function handler(req, res) {
   }
 
   const year = yearFromDateStr(feeDate) || new Date().getUTCFullYear();
+
+  // Only bother calling out to Atlas for the project's client when there's
+  // no placement connected — if a placement exists, its own webhook will
+  // supply the client name via the normal join, so this avoids an
+  // unnecessary API call on the common case.
+  const projectClientName = placementId ? null : await lookupProjectClientName(projectId);
 
   // Load existing records, strip out any prior entries for this fee (so
   // financial.feeUpdated replaces cleanly instead of duplicating), then
@@ -157,6 +184,7 @@ export default async function handler(req, res) {
       consultantName,
       placementId: placementId || null,
       notes: notes || null,
+      projectClientName: projectClientName || null,
       paid: prior.paid,
       paidMarkedAt: prior.paidMarkedAt,
       monthOverrides: prior.monthOverrides || {},
