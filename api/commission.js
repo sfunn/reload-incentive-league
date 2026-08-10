@@ -133,7 +133,7 @@ module.exports = async (req, res) => {
         const placement = r.placementId ? placements[r.placementId] : null;
         const orderDate = (placement && placement.startDate) || r.feeDate;
         const candidateName = (placement && placement.candidateName) || r.notes || null;
-        const startDate = (placement && placement.startDate) || null;
+        const startDate = (placement && placement.startDate) || r.feeDate || null;
         return { ...r, orderDate, candidateName, startDate };
       });
       withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
@@ -186,7 +186,7 @@ module.exports = async (req, res) => {
       const placement = r.placementId ? placements[r.placementId] : null;
       const orderDate = (placement && placement.startDate) || r.feeDate;
       const candidateName = (placement && placement.candidateName) || r.notes || null;
-      const startDate = (placement && placement.startDate) || null;
+      const startDate = (placement && placement.startDate) || r.feeDate || null;
       return { ...r, orderDate, candidateName, startDate };
     });
     withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
