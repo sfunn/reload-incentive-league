@@ -53,7 +53,11 @@ function computeCommissionLines(deals, bands) {
         paidMarkedAt: deal.paidMarkedAt,
         source: deal.source || null,
         candidateName: deal.candidateName || null,
+        clientCompanyName: deal.clientCompanyName || null,
+        originalCurrency: deal.originalCurrency || null,
+        originalAmount: deal.originalAmount !== undefined ? deal.originalAmount : null,
         monthOverrides: deal.monthOverrides || {},
+        hasPlacementName: !!deal.hasPlacementName,
       });
 
       cumulative += portion;
