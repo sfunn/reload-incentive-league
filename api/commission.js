@@ -132,7 +132,7 @@ module.exports = async (req, res) => {
       const withOrderDate = yearRecords.map((r) => {
         const placement = r.placementId ? placements[r.placementId] : null;
         const orderDate = (placement && placement.startDate) || r.feeDate;
-        const candidateName = (placement && placement.candidateName) || null;
+        const candidateName = (placement && placement.candidateName) || r.notes || null;
         const startDate = (placement && placement.startDate) || null;
         return { ...r, orderDate, candidateName, startDate };
       });
@@ -185,7 +185,7 @@ module.exports = async (req, res) => {
     const withOrderDate = yearRecords.map((r) => {
       const placement = r.placementId ? placements[r.placementId] : null;
       const orderDate = (placement && placement.startDate) || r.feeDate;
-      const candidateName = (placement && placement.candidateName) || null;
+      const candidateName = (placement && placement.candidateName) || r.notes || null;
       const startDate = (placement && placement.startDate) || null;
       return { ...r, orderDate, candidateName, startDate };
     });
