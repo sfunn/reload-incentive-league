@@ -273,7 +273,11 @@ module.exports = async (req, res) => {
       if (!inRange(dealDate, start, end)) continue;
       const consultantTeam = teamOverrides[r.consultantId] || DEFAULT_TEAM_BY_CONSULTANT[r.consultantId] || null;
       const placement = r.placementId ? placements[r.placementId] : null;
-      const candidateName = (placement && placement.candidateName) || r.notes || null;
+      // Pillar 4 specifically only ever counts a deal if there's a genuine
+      // placement-linked candidate name — unlike everywhere else in the
+      // app, the notes fallback does NOT apply here.
+      const candidateName = (placement && placement.candidateName) || null;
+      if (!candidateName) continue;
       if (r.consultantId === teamLeadId) {
         teamLeadOwnDeals += 1;
         pillar4OwnDealsList.push({ candidateName, date: dealDate });
