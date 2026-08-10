@@ -86,7 +86,7 @@ export default async function handler(req, res) {
   }
 
   const data = payload.data || {};
-  const { id: feeId, feeDate, amount, currency, splits, placementId } = data;
+  const { id: feeId, feeDate, amount, currency, splits, placementId, notes } = data;
 
   if (!feeId || !amount || !currency || !Array.isArray(splits) || splits.length === 0) {
     console.log("[atlas-fee-webhook] skipped: missing fields. data was:", JSON.stringify(data));
@@ -156,6 +156,7 @@ export default async function handler(req, res) {
       consultantId,
       consultantName,
       placementId: placementId || null,
+      notes: notes || null,
       paid: prior.paid,
       paidMarkedAt: prior.paidMarkedAt,
       monthOverrides: prior.monthOverrides || {},
