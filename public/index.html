@@ -1001,7 +1001,7 @@ function App() {
       loadUserAccounts();
     }
   }, [isSuperAdmin, dealsYear]);
-  function renderDealDetailsTable(records) {
+  function renderDealDetailsTable(records, showSourceAndCoordinator) {
     return dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
     records.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
     React.createElement("div", { style: { overflowX: "auto" } },
@@ -1014,8 +1014,7 @@ function App() {
         { label: "Start Date", width: 90 },
         { label: "Amount", width: 100 },
         { label: "USD", width: 90 },
-        { label: "Source", width: 130 },
-        { label: "Coordinator", width: 110 },
+        ...(showSourceAndCoordinator ? [{ label: "Source", width: 130 }, { label: "Coordinator", width: 110 }] : []),
         { label: "Paid", width: 130 },
         { label: "", width: 70 }
       ] }),
@@ -1027,7 +1026,7 @@ function App() {
         React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
         React.createElement(Cell, { width: 100 }, `${r.currency} ${Number(r.totalAmount).toLocaleString()}${r.share && parseFloat(r.share) !== 100 ? ` (${r.share}%)` : ""}`),
         React.createElement(Cell, { width: 90 }, r.usdAmount !== null ? `$${Math.round(r.usdAmount).toLocaleString()}` : "no rate"),
-        React.createElement(Cell, { width: 130 },
+        showSourceAndCoordinator && React.createElement(Cell, { width: 130 },
           React.createElement("select", {
             value: r.source || "",
             onChange: e => setDealSource(r.feeId, r.splitId, e.target.value || null),
@@ -1037,7 +1036,7 @@ function App() {
             SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
           )
         ),
-        React.createElement(Cell, { width: 110 },
+        showSourceAndCoordinator && React.createElement(Cell, { width: 110 },
           React.createElement("select", {
             value: r.coordinatorId || "",
             onChange: e => setDealCoordinator(r.feeId, r.splitId, e.target.value || null),
@@ -2401,7 +2400,7 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
         ),
 
         dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
-        renderDealDetailsTable(dealDetails.filter(r => r.hasPlacementName)),
+        renderDealDetailsTable(dealDetails.filter(r => r.hasPlacementName), true),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
           "Marking a deal Paid starts the 4-month commission payout the following month. Individual monthly instalments can be withheld from that person's Commission page if needed (e.g. a one-off fine) without affecting anyone else's numbers or their total commission earned. Assigning a Coordinator gives them a flat fee for that deal, independent of the consultant's own commission."
         )
@@ -2409,10 +2408,10 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Onsite Fees" }),
       React.createElement("div", { style: { marginTop: 4, marginBottom: 14, fontSize: 12, color: INDIGO_MUTED } },
-        "Fees with no linked placement — e.g. genuine Onsite fees in Atlas. Same source, coordinator and payout controls as the main table above."
+        "Fees with no linked placement — e.g. genuine Onsite fees in Atlas. Same payout controls as the main table above."
       ),
       dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
-      renderDealDetailsTable(dealDetails.filter(r => !r.hasPlacementName))
+      renderDealDetailsTable(dealDetails.filter(r => !r.hasPlacementName), false)
     ),
   ), tab === "commission" && React.createElement("div", {
     style: { display: "flex", flexDirection: "column", gap: 20 }
