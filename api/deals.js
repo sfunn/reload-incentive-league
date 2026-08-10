@@ -97,7 +97,7 @@ module.exports = async (req, res) => {
             ...r,
             usdAmount: await convertToUSD(r, allRates),
             candidateName: (placement && placement.candidateName) || r.notes || null,
-            clientCompanyName: (placement && placement.clientCompanyName) || null,
+            clientCompanyName: (placement && placement.clientCompanyName) || r.projectClientName || null,
             placementStartDate: (placement && placement.startDate) || null,
             monthOverrides: r.monthOverrides || {},
             coordinatorId: r.coordinatorId || null,
