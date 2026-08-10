@@ -702,7 +702,8 @@ function App() {
       rows[c.id] = entry ? {
         cvs: String(entry.cvs),
         metricValue: String(entry.metricValue),
-        interviews: String(entry.interviews ?? "")
+        interviews: String(entry.interviews ?? ""),
+        excluded: !!entry.excluded
       } : {};
     });
     setFormRows(rows);
@@ -724,12 +725,14 @@ function App() {
       const hasCvs = r && r.cvs !== undefined && r.cvs !== "";
       const hasMetric = r && r.metricValue !== undefined && r.metricValue !== "";
       const hasInterviews = r && r.interviews !== undefined && r.interviews !== "";
-      if (hasCvs || hasMetric || hasInterviews) {
+      const hasExcludedFlag = r && r.excluded !== undefined;
+      if (hasCvs || hasMetric || hasInterviews || hasExcludedFlag) {
         newRowsPart[c.id] = {
           cvs: Number(r.cvs) || 0,
           metricValue: Number(r.metricValue) || 0,
           interviews: Number(r.interviews) || 0,
-          team: c.team
+          team: c.team,
+          excluded: !!r.excluded
         };
       }
     });
@@ -1779,17 +1782,20 @@ function App() {
             React.createElement(Badge, { teamId: teamId }),
             React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 17, color: teamInfo.color, margin: 0 } }, teamInfo.label)
           ),
-          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 10, marginBottom: 6 } },
+          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 120px 140px 80px", gap: 10, marginBottom: 6 } },
             React.createElement("span", null),
             React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col1Label),
-            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col2Label)
+            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col2Label),
+            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, "Exclude")
           ),
           React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
             [...consultants].filter(c => c.team === teamId).sort((a, b) => a.name.localeCompare(b.name)).map(c => React.createElement("div", {
               key: c.id,
-              style: { display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 10, alignItems: "center" }
+              style: { display: "grid", gridTemplateColumns: "1fr 120px 140px 80px", gap: 10, alignItems: "center" }
             },
-              React.createElement("span", { style: { fontFamily: "'Work Sans', sans-serif", fontSize: 14 } }, c.name),
+              React.createElement("span", {
+                style: { fontFamily: "'Work Sans', sans-serif", fontSize: 14, textDecoration: formRows[c.id]?.excluded ? "line-through" : "none", color: formRows[c.id]?.excluded ? INDIGO_MUTED : INDIGO }
+              }, c.name),
               React.createElement("input", {
                 type: "number", min: "0", placeholder: col1Label,
                 value: formRows[c.id]?.cvs ?? "",
@@ -1802,6 +1808,12 @@ function App() {
                 value: formRows[c.id]?.[col2Field] ?? "",
                 onChange: e => updateFormRow(c.id, col2Field, e.target.value),
                 style: inputStyleSmall
+              }),
+              React.createElement("input", {
+                type: "checkbox",
+                checked: !!formRows[c.id]?.excluded,
+                title: "Exclude them from this week's scoring (e.g. new starter, on leave)",
+                onChange: e => updateFormRow(c.id, "excluded", e.target.checked)
               })
             ))
           )
