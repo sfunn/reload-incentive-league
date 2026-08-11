@@ -59,6 +59,24 @@ function convertToGBP(record, allRates) {
   return null;
 }
 
+// A USD-equivalent figure alongside the GBP one, shown for EVERY line
+// (not just when the original currency happens to differ from GBP) — so
+// there's always a dollar reference point, matching how Deal Lead Award
+// and Total Revenue already show both currencies.
+function convertToUSDEquivalent(record, allRates) {
+  if (record.currency === "USD") return record.shareAmount;
+  const monthRates = applicableMonthRates(record, allRates);
+  if (record.currency === "EUR") {
+    if (!monthRates || !monthRates.EUR) return null;
+    return record.shareAmount * monthRates.EUR;
+  }
+  if (record.currency === "GBP") {
+    if (!monthRates || !monthRates.GBP) return null;
+    return record.shareAmount * monthRates.GBP;
+  }
+  return null;
+}
+
 // Which year a deal counts toward is based on the candidate's START DATE,
 // not the signed/fee date — matching deals.js, so a deal never lands on a
 // different year's commission sheet than it does on the leaderboard.
@@ -153,6 +171,7 @@ module.exports = async (req, res) => {
         clientCompanyName: r.clientCompanyName,
         originalCurrency: r.currency,
         originalAmount: r.totalAmount,
+        usdAmount: convertToUSDEquivalent(r, allRates),
         monthOverrides: r.monthOverrides || {},
         hasPlacementName: r.hasPlacementName,
       }));
@@ -223,6 +242,7 @@ module.exports = async (req, res) => {
       clientCompanyName: r.clientCompanyName,
       originalCurrency: r.currency,
       originalAmount: r.totalAmount,
+      usdAmount: convertToUSDEquivalent(r, allRates),
       monthOverrides: r.monthOverrides || {},
       hasPlacementName: r.hasPlacementName,
     }));
