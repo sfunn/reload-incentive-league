@@ -2706,19 +2706,12 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
               })()
             ),
             (() => {
-              const usdTotal = dealsLeaderboard.find(l => l.consultantId === commissionViewConsultantId);
               const withheldTotal = commissionData.lines.reduce(
                 (sum, l) => sum + (l.payout || []).filter(p => p.status === "withheld").reduce((s, p) => s + p.amount, 0),
                 0
               );
               const netCommission = commissionData.totalCommission - withheldTotal;
               return React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", flexDirection: "column", gap: 6 } },
-                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
-                  React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Total revenue"),
-                  React.createElement("span", { style: { fontWeight: 700, color: INDIGO } },
-                    `${usdTotal ? `$${Math.round(usdTotal.totalUSD).toLocaleString()} · ` : ""}£${Math.round(commissionData.totalGBP).toLocaleString()}`
-                  )
-                ),
                 React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
                   React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Commission earned"),
                   React.createElement("span", { style: { fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(netCommission).toLocaleString()}`),
