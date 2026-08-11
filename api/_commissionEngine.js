@@ -56,6 +56,7 @@ function computeCommissionLines(deals, bands) {
         clientCompanyName: deal.clientCompanyName || null,
         originalCurrency: deal.originalCurrency || null,
         originalAmount: deal.originalAmount !== undefined ? deal.originalAmount : null,
+        usdAmount: deal.usdAmount !== undefined ? deal.usdAmount : null,
         monthOverrides: deal.monthOverrides || {},
         hasPlacementName: !!deal.hasPlacementName,
       });
