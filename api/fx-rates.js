@@ -30,12 +30,32 @@ module.exports = async (req, res) => {
     if (!user || !user.isSuperAdmin) {
       return res.status(401).json({ error: "Super Admin access required" });
     }
-    const { monthKey, rates: monthRates } = req.body || {};
-    if (!monthKey || typeof monthRates !== "object") {
+    const { monthKey, yearKey, rates: monthRates } = req.body || {};
+    if (typeof monthRates !== "object") {
       return res.status(400).json({ error: "Malformed rates payload" });
     }
-    // monthRates expected shape: { GBP: 1.27, EUR: 1.09, USD: 1 }
     const all = (await kv.get(KEY)) || {};
+
+    // Setting a whole year at once — useful for backfilling older years
+    // (e.g. 2024) where monthly precision isn't available or doesn't
+    // matter, without having to enter the same rate twelve separate times.
+    if (yearKey) {
+      const year = String(parseInt(yearKey, 10));
+      if (!year || year === "NaN") {
+        return res.status(400).json({ error: "Malformed yearKey" });
+      }
+      for (let m = 1; m <= 12; m++) {
+        const mk = `${year}-${String(m).padStart(2, "0")}`;
+        all[mk] = monthRates;
+      }
+      await kv.set(KEY, all);
+      return res.status(200).json({ ok: true, yearKey: year, rates: monthRates });
+    }
+
+    if (!monthKey) {
+      return res.status(400).json({ error: "Either monthKey or yearKey is required" });
+    }
+    // monthRates expected shape: { GBP: 1.27, EUR: 1.09, USD: 1 }
     all[monthKey] = monthRates;
     await kv.set(KEY, all);
     return res.status(200).json({ ok: true, monthKey, rates: monthRates });
