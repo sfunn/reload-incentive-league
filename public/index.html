@@ -1499,12 +1499,13 @@ function App() {
   }
   const dealsYearOptions = useMemo(() => {
     const current = new Date().getUTCFullYear();
-    // Includes past years too — Scott/Lee can backfill historical deals
-    // (2023 onward) directly in Atlas, and they'll show up here correctly.
+    // Scott/Lee can see the full historical range for backfilling and
+    // audit purposes; everyone else is limited to 2024 onward.
+    const startYear = isSuperAdmin ? 2019 : 2024;
     const years = [];
-    for (let y = 2019; y <= current + 1; y++) years.push(y);
+    for (let y = startYear; y <= current + 1; y++) years.push(y);
     return years;
-  }, []);
+  }, [isSuperAdmin]);
 
   // --- Auth functions ---
   async function doSignup() {
