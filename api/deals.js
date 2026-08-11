@@ -134,13 +134,20 @@ module.exports = async (req, res) => {
     const yearRecords = records.filter((r) => effectiveYear(r, placements) === year && r.consultantId);
     const totals = {};
     const bySource = {};
+    // Scott and Lee's own deals count toward Source and Client Breakdown
+    // (so those totals reflect everything, not just the tracked consultants)
+    // but they're deliberately left off the individual leaderboard ranking —
+    // that's meant to be the consultants' own competition, not theirs.
+    const EXCLUDED_FROM_LEADERBOARD = new Set(["scott-finn", "lee-mamo"]);
     for (const r of yearRecords) {
       const usd = await convertToUSD(r, allRates);
       if (usd === null) continue;
-      if (!totals[r.consultantId]) {
-        totals[r.consultantId] = { consultantId: r.consultantId, consultantName: r.consultantName, totalUSD: 0 };
+      if (!EXCLUDED_FROM_LEADERBOARD.has(r.consultantId)) {
+        if (!totals[r.consultantId]) {
+          totals[r.consultantId] = { consultantId: r.consultantId, consultantName: r.consultantName, totalUSD: 0 };
+        }
+        totals[r.consultantId].totalUSD += usd;
       }
-      totals[r.consultantId].totalUSD += usd;
 
       // Source breakdown — visible to everyone, same as the leaderboard.
       // Deals without a source set yet just aren't counted here (rather
