@@ -440,6 +440,8 @@ function App() {
   const [dealDetails, setDealDetails] = useState([]);
   const [dealDetailsLoading, setDealDetailsLoading] = useState(false);
   const [fxRates, setFxRates] = useState({});
+  const [fxMode, setFxMode] = useState("month"); // "month" or "year"
+  const [fxYearInput, setFxYearInput] = useState(String(new Date().getUTCFullYear() - 1));
   const [fxMonthInput, setFxMonthInput] = useState(toDisplayMonth(monthOf(todayStr())));
   const [fxGbpInput, setFxGbpInput] = useState("");
   const [fxEurInput, setFxEurInput] = useState("");
@@ -1459,6 +1461,42 @@ function App() {
       setFxSaving(false);
     }
   }
+  async function saveFxRateForYear() {
+    const year = parseInt(fxYearInput, 10);
+    if (!year || fxYearInput.trim().length !== 4) {
+      setFxError("Enter a 4-digit year, e.g. 2024.");
+      return;
+    }
+    // Whole-year rates don't merge with existing per-currency values the
+    // way a single month does — entering a year is an explicit, deliberate
+    // "this rate applies to all of it" action, so both fields are required.
+    if (fxGbpInput.trim() === "" || fxEurInput.trim() === "") {
+      setFxError("Enter both GBP and EUR rates when setting a whole year.");
+      return;
+    }
+    setFxSaving(true);
+    setFxError("");
+    try {
+      const gbp = parseFloat(fxGbpInput) || 0;
+      const eur = parseFloat(fxEurInput) || 0;
+      const res = await fetch("/api/fx-rates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({
+          yearKey: String(year),
+          rates: { GBP: gbp, EUR: eur, USD: 1 }
+        })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadFxRates();
+      await refreshDealsLeaderboard(dealsYear);
+      await loadDealDetails();
+    } catch (e) {
+      setFxError("Couldn't save the rate — try again.");
+    } finally {
+      setFxSaving(false);
+    }
+  }
   const dealsYearOptions = useMemo(() => {
     const current = new Date().getUTCFullYear();
     // Includes past years too — Scott/Lee can backfill historical deals
@@ -2379,11 +2417,26 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
       React.createElement("div", { style: { marginBottom: 20, marginTop: 16 } },
-          React.createElement("div", { style: labelStyle }, "This month's exchange rate (→ USD)"),
-          React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" } },
-            React.createElement("div", null,
+          React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 } },
+            React.createElement("div", { style: labelStyle }, fxMode === "month" ? "This month's exchange rate (→ USD)" : "Set a rate for a whole year (→ USD)"),
+            React.createElement("div", { style: { display: "flex", gap: 6 } },
+              React.createElement("button", {
+                onClick: () => setFxMode("month"),
+                style: { ...chipStyle, background: fxMode === "month" ? MELON : "rgba(255,176,140,0.14)", fontWeight: fxMode === "month" ? 700 : 500 }
+              }, "Month"),
+              React.createElement("button", {
+                onClick: () => setFxMode("year"),
+                style: { ...chipStyle, background: fxMode === "year" ? MELON : "rgba(255,176,140,0.14)", fontWeight: fxMode === "year" ? 700 : 500 }
+              }, "Whole year")
+            )
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 8 } },
+            fxMode === "month" ? React.createElement("div", null,
               React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Month (MM/YYYY)"),
               React.createElement("input", { type: "text", value: fxMonthInput, onChange: e => setFxMonthInput(e.target.value), placeholder: "08/2026", style: { ...inputStyleSmall, width: 100 } })
+            ) : React.createElement("div", null,
+              React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Year (YYYY)"),
+              React.createElement("input", { type: "text", value: fxYearInput, onChange: e => setFxYearInput(e.target.value), placeholder: "2024", style: { ...inputStyleSmall, width: 90 } })
             ),
             React.createElement("div", null,
               React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "£ GBP rate"),
@@ -2393,7 +2446,14 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
               React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "€ EUR rate"),
               React.createElement("input", { type: "number", step: "0.0001", value: fxEurInput, onChange: e => setFxEurInput(e.target.value), placeholder: "1.09", style: { ...inputStyleSmall, width: 90 } })
             ),
-            React.createElement("button", { onClick: saveFxRate, disabled: fxSaving, style: ghostStyle }, fxSaving ? "Saving…" : "Save rate")
+            React.createElement("button", {
+              onClick: fxMode === "month" ? saveFxRate : saveFxRateForYear,
+              disabled: fxSaving,
+              style: ghostStyle
+            }, fxSaving ? "Saving…" : (fxMode === "month" ? "Save rate" : "Save for whole year"))
+          ),
+          fxMode === "year" && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: INDIGO_MUTED } },
+            "Sets the same rate for all 12 months of that year — useful for backfilling older years where monthly precision isn't needed."
           ),
           fxError && React.createElement("div", { style: { marginTop: 8, fontSize: 11.5, color: MELON_LINK } }, fxError),
           Object.keys(fxRates).length > 0 && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
