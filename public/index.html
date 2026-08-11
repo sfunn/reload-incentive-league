@@ -2665,43 +2665,46 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
                 React.createElement("span", { style: { width: 80, ...labelStyle, marginBottom: 0 } }, "Fee £"),
                 React.createElement("span", { style: { width: 80, ...labelStyle, marginBottom: 0 } }, "Start")
               ),
-              commissionData.lines.map((l, i) => React.createElement("div", {
-                key: `simple-${l.feeId}-${l.splitId}-${i}`,
-                style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13 }
-              },
-                React.createElement("span", { style: { flex: 1, color: l.candidateName ? INDIGO : INDIGO_MUTED } }, l.candidateName || "—"),
-                React.createElement("span", { style: { width: 80, fontWeight: 600 } }, l.usdAmount !== null && l.usdAmount !== undefined ? `$${Math.round(l.usdAmount).toLocaleString()}` : "—"),
-                React.createElement("span", { style: { width: 80, fontWeight: 600 } }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
-                React.createElement("span", { style: { width: 80, color: INDIGO_MUTED, fontSize: 12 } }, l.startDate ? toDayMonthYear(l.startDate) : "—")
-              )),
               (() => {
-                const totalUSD = commissionData.lines.reduce((s, l) => s + (l.usdAmount || 0), 0);
-                const totalGBPSum = commissionData.lines.reduce((s, l) => s + (l.gbpPortion || 0), 0);
-                return React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0 0", fontWeight: 700 } },
-                  React.createElement("span", { style: { flex: 1 } }, "Total"),
-                  React.createElement("span", { style: { width: 80 } }, `$${Math.round(totalUSD).toLocaleString()}`),
-                  React.createElement("span", { style: { width: 80 } }, `£${Math.round(totalGBPSum).toLocaleString()}`),
-                  React.createElement("span", { style: { width: 80 } })
+                // A single deal can split into multiple lines across bracket
+                // boundaries — merge those back into one row here, since
+                // this is a deals list, not a bracket ladder, and a deal
+                // shouldn't visibly repeat just because it crossed a band.
+                const dealMap = new Map();
+                commissionData.lines.forEach((l) => {
+                  const key = `${l.feeId}|${l.splitId}`;
+                  if (dealMap.has(key)) {
+                    const existing = dealMap.get(key);
+                    existing.gbpPortion += l.gbpPortion;
+                    existing.usdAmount = (existing.usdAmount || 0) + (l.usdAmount || 0);
+                  } else {
+                    dealMap.set(key, { ...l });
+                  }
+                });
+                const dedupedDeals = [...dealMap.values()];
+                return React.createElement(React.Fragment, null,
+                  dedupedDeals.map((l, i) => React.createElement("div", {
+                    key: `simple-${l.feeId}-${l.splitId}-${i}`,
+                    style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13 }
+                  },
+                    React.createElement("span", { style: { flex: 1, color: l.candidateName ? INDIGO : INDIGO_MUTED } }, l.candidateName || "—"),
+                    React.createElement("span", { style: { width: 80, fontWeight: 600 } }, l.usdAmount !== null && l.usdAmount !== undefined ? `$${Math.round(l.usdAmount).toLocaleString()}` : "—"),
+                    React.createElement("span", { style: { width: 80, fontWeight: 600 } }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
+                    React.createElement("span", { style: { width: 80, color: INDIGO_MUTED, fontSize: 12 } }, l.startDate ? toDayMonthYear(l.startDate) : "—")
+                  )),
+                  (() => {
+                    const totalUSD = dedupedDeals.reduce((s, l) => s + (l.usdAmount || 0), 0);
+                    const totalGBPSum = dedupedDeals.reduce((s, l) => s + (l.gbpPortion || 0), 0);
+                    return React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0 0", fontWeight: 700 } },
+                      React.createElement("span", { style: { flex: 1 } }, "Total"),
+                      React.createElement("span", { style: { width: 80 } }, `$${Math.round(totalUSD).toLocaleString()}`),
+                      React.createElement("span", { style: { width: 80 } }, `£${Math.round(totalGBPSum).toLocaleString()}`),
+                      React.createElement("span", { style: { width: 80 } })
+                    );
+                  })()
                 );
               })()
-            )
-          ),
-          React.createElement("div", { style: { flex: 1, minWidth: 280 } },
-          React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
-          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 6, marginBottom: 16 } },
-            commissionData.bands.map((b, i) => {
-              const inThisBand = commissionData.totalGBP > b.min;
-              const filled = Math.max(0, Math.min(commissionData.totalGBP, b.max === null ? commissionData.totalGBP : b.max) - b.min);
-              return React.createElement("div", {
-                key: i,
-                style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 12.5, padding: "4px 0", color: inThisBand ? INDIGO : INDIGO_MUTED, fontWeight: inThisBand ? 600 : 400 }
-              },
-                React.createElement("span", { style: { width: 190, flexShrink: 0 } }, `£${b.min.toLocaleString()}${b.max === null ? "+" : ` – £${b.max.toLocaleString()}`}`),
-                React.createElement("span", null, `${(b.rate * 100).toFixed(1)}%${filled > 0 ? ` · £${Math.round(filled).toLocaleString()} used` : ""}`)
-              );
-            })
-          ),
-          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+            ),
             (() => {
               const usdTotal = dealsLeaderboard.find(l => l.consultantId === commissionViewConsultantId);
               const withheldTotal = commissionData.lines.reduce(
@@ -2709,7 +2712,7 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
                 0
               );
               const netCommission = commissionData.totalCommission - withheldTotal;
-              return React.createElement(React.Fragment, null,
+              return React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", flexDirection: "column", gap: 6 } },
                 React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
                   React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Total revenue"),
                   React.createElement("span", { style: { fontWeight: 700, color: INDIGO } },
@@ -2736,6 +2739,21 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
                 )
               );
             })()
+          ),
+          React.createElement("div", { style: { flex: 1, minWidth: 280 } },
+          React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
+          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 6, marginBottom: 16 } },
+            commissionData.bands.map((b, i) => {
+              const inThisBand = commissionData.totalGBP > b.min;
+              const filled = Math.max(0, Math.min(commissionData.totalGBP, b.max === null ? commissionData.totalGBP : b.max) - b.min);
+              return React.createElement("div", {
+                key: i,
+                style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 12.5, padding: "4px 0", color: inThisBand ? INDIGO : INDIGO_MUTED, fontWeight: inThisBand ? 600 : 400 }
+              },
+                React.createElement("span", { style: { width: 190, flexShrink: 0 } }, `£${b.min.toLocaleString()}${b.max === null ? "+" : ` – £${b.max.toLocaleString()}`}`),
+                React.createElement("span", null, `${(b.rate * 100).toFixed(1)}%${filled > 0 ? ` · £${Math.round(filled).toLocaleString()} used` : ""}`)
+              );
+            })
           )
           )
         )
