@@ -38,6 +38,13 @@ function computeCommissionLines(deals, bands) {
       const spaceInBand = band.max === null ? Infinity : band.max - cumulative;
       const portion = Math.min(remaining, spaceInBand);
       const commission = portion * band.rate;
+      // usdAmount must split proportionally too, just like gbpPortion —
+      // otherwise a deal crossing a bracket boundary would report its
+      // FULL dollar value on every resulting line, wildly overstating the
+      // total the moment more than one deal ever splits across bands.
+      const usdPortion = (deal.usdAmount !== null && deal.usdAmount !== undefined && deal.gbpAmount > 0)
+        ? deal.usdAmount * (portion / deal.gbpAmount)
+        : null;
 
       lines.push({
         feeId: deal.feeId,
@@ -56,7 +63,7 @@ function computeCommissionLines(deals, bands) {
         clientCompanyName: deal.clientCompanyName || null,
         originalCurrency: deal.originalCurrency || null,
         originalAmount: deal.originalAmount !== undefined ? deal.originalAmount : null,
-        usdAmount: deal.usdAmount !== undefined ? deal.usdAmount : null,
+        usdAmount: usdPortion,
         monthOverrides: deal.monthOverrides || {},
         hasPlacementName: !!deal.hasPlacementName,
       });
