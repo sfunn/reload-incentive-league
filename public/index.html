@@ -1461,7 +1461,11 @@ function App() {
   }
   const dealsYearOptions = useMemo(() => {
     const current = new Date().getUTCFullYear();
-    return [current, current + 1];
+    // Includes past years too — Scott/Lee can backfill historical deals
+    // (2023 onward) directly in Atlas, and they'll show up here correctly.
+    const years = [];
+    for (let y = 2023; y <= current + 1; y++) years.push(y);
+    return years;
   }, []);
 
   // --- Auth functions ---
