@@ -20,6 +20,8 @@ const EMAIL_TO_CONSULTANT = {
   "natasha@reloadsearch.com": "natasha-barnard",
   "james@reloadsearch.com": "james-lancer",
   "josh@reloadsearch.com": "josh-stark",
+  "scott@reloadsearch.com": "scott-finn",
+  "lee@reloadsearch.com": "lee-mamo",
 };
 // ============================================================================
 
