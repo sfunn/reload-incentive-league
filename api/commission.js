@@ -77,6 +77,47 @@ function convertToUSDEquivalent(record, allRates) {
   return null;
 }
 
+// ============================================================================
+// SPECIAL CASE — Natasha Barnard / Citadel, effective 2026 onward.
+//
+// Natasha is paid 30% on Citadel deals, versus the standard 25% everyone
+// else (including her own non-Citadel deals) is paid on. Every deal is
+// still RECORDED in Atlas at the standard 25% — this function tops up the
+// commission-calculation inputs by the extra 5 percentage points, ON THIS
+// PAGE ONLY, so it blends invisibly into her own bracket ladder and deals
+// list without a separate flagged line item.
+//
+// The extra 5% of the candidate's salary is mathematically equal to
+// exactly 1/5 (20%) of the recorded 25%-based fee — no need to reverse out
+// the salary — so the fee simply gets multiplied by 1.2.
+//
+// This must NEVER touch the underlying atlas-fee-records data, and must
+// NEVER be visible or applied anywhere except Natasha's own commission
+// compute below: not the Yearly Deal Table leaderboard (deals.js, a
+// completely separate file, untouched by this change), not Team Lead
+// Bonus (team-lead-bonus.js, also untouched), not any other consultant's
+// page even if they also do Citadel deals.
+//
+// Three conditions must ALL be true, checked directly against the record
+// every time — nothing here is inherited from outer filtering, so this
+// stays correct and auditable even if surrounding code changes later:
+//   1. This is genuinely Natasha's own record (by consultantId, not name)
+//   2. The client name contains "Citadel" (covers both "Citadel" and
+//      "Citadel Securities") — case-insensitive, substring match
+//   3. The deal's effective year is 2026 or later
+const SPECIAL_RATE_CONSULTANT_ID = "natasha-barnard";
+const SPECIAL_RATE_CLIENT_SUBSTRING = "citadel";
+const SPECIAL_RATE_MIN_YEAR = 2026;
+const SPECIAL_RATE_MULTIPLIER = 1.2; // 30% / 25% — tops up the recorded 25%-based fee to reflect the true 30%
+
+function appliesNatashaCitadelUplift(record, year) {
+  if (record.consultantId !== SPECIAL_RATE_CONSULTANT_ID) return false;
+  const client = (record.clientCompanyName || "").toLowerCase();
+  if (!client.includes(SPECIAL_RATE_CLIENT_SUBSTRING)) return false;
+  if (!year || year < SPECIAL_RATE_MIN_YEAR) return false;
+  return true;
+}
+
 // Which year a deal counts toward is based on the candidate's START DATE,
 // not the signed/fee date — matching deals.js, so a deal never lands on a
 // different year's commission sheet than it does on the leaderboard.
@@ -229,23 +270,28 @@ module.exports = async (req, res) => {
     });
     withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
 
-    const dealsForEngine = withOrderDate.map((r) => ({
-      feeId: r.feeId,
-      splitId: r.splitId,
-      gbpAmount: convertToGBP(r, allRates),
-      feeDate: r.feeDate,
-      startDate: r.startDate,
-      paid: r.paid,
-      paidMarkedAt: r.paidMarkedAt,
-      source: r.source,
-      candidateName: r.candidateName,
-      clientCompanyName: r.clientCompanyName,
-      originalCurrency: r.currency,
-      originalAmount: r.totalAmount,
-      usdAmount: convertToUSDEquivalent(r, allRates),
-      monthOverrides: r.monthOverrides || {},
-      hasPlacementName: r.hasPlacementName,
-    }));
+    const dealsForEngine = withOrderDate.map((r) => {
+      const uplift = appliesNatashaCitadelUplift(r, year);
+      const rawGbp = convertToGBP(r, allRates);
+      const rawUsd = convertToUSDEquivalent(r, allRates);
+      return {
+        feeId: r.feeId,
+        splitId: r.splitId,
+        gbpAmount: (uplift && rawGbp !== null) ? rawGbp * SPECIAL_RATE_MULTIPLIER : rawGbp,
+        feeDate: r.feeDate,
+        startDate: r.startDate,
+        paid: r.paid,
+        paidMarkedAt: r.paidMarkedAt,
+        source: r.source,
+        candidateName: r.candidateName,
+        clientCompanyName: r.clientCompanyName,
+        originalCurrency: r.currency,
+        originalAmount: r.totalAmount,
+        usdAmount: (uplift && rawUsd !== null) ? rawUsd * SPECIAL_RATE_MULTIPLIER : rawUsd,
+        monthOverrides: r.monthOverrides || {},
+        hasPlacementName: r.hasPlacementName,
+      };
+    });
 
     const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
     const usableDeals = dealsForEngine.filter((d) => d.gbpAmount !== null);
