@@ -98,13 +98,15 @@ function convertToUSDEquivalent(record, allRates) {
 // Bonus (team-lead-bonus.js, also untouched), not any other consultant's
 // page even if they also do Citadel deals.
 //
-// Three conditions must ALL be true, checked directly against the record
+// Four conditions must ALL be true, checked directly against the record
 // every time — nothing here is inherited from outer filtering, so this
 // stays correct and auditable even if surrounding code changes later:
 //   1. This is genuinely Natasha's own record (by consultantId, not name)
 //   2. The client name contains "Citadel" (covers both "Citadel" and
 //      "Citadel Securities") — case-insensitive, substring match
 //   3. The deal's effective year is 2026 or later
+//   4. It's a genuine placement (a real linked candidate name) — NOT an
+//      onsite fee, which never gets the uplift regardless of client/year
 const SPECIAL_RATE_CONSULTANT_ID = "natasha-barnard";
 const SPECIAL_RATE_CLIENT_SUBSTRING = "citadel";
 const SPECIAL_RATE_MIN_YEAR = 2026;
@@ -115,6 +117,7 @@ function appliesNatashaCitadelUplift(record, year) {
   const client = (record.clientCompanyName || "").toLowerCase();
   if (!client.includes(SPECIAL_RATE_CLIENT_SUBSTRING)) return false;
   if (!year || year < SPECIAL_RATE_MIN_YEAR) return false;
+  if (!record.hasPlacementName) return false;
   return true;
 }
 
