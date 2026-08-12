@@ -11,6 +11,15 @@ import { Webhook } from "svix";
 const CVS_OUT_STAGE = "CV Sent";
 const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
 
+// A candidate's interview PROCESS is one thing, even if it involves several
+// stages (HR call, then HRX, then 1st Stage Interview) — this should only
+// ever count as ONE interview per candidate per process, not one per stage
+// they pass through. This persists forever (not scoped to any single week)
+// since the different stages for the same process can span multiple weeks —
+// once a candidate+project pair has been counted, it never counts again,
+// no matter which further interview-type stage they later move through.
+const INTERVIEW_COUNTED_KEY = "atlas-interview-counted"; // { "candidateId:projectId": true, ... }
+
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
   "ash@reloadsearch.com": "ash-thiara",
@@ -136,6 +145,20 @@ export default async function handler(req, res) {
   }
 
   const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
+
+  // Interview stages only ever count once per candidate per process —
+  // check (and record) that here, before touching the weekly tally at all.
+  if (metric === "interviews") {
+    const dedupeKey = `${candidateId}:${projectId}`;
+    const alreadyCounted = (await kv.get(INTERVIEW_COUNTED_KEY)) || {};
+    if (alreadyCounted[dedupeKey]) {
+      console.log("[atlas-webhook] skipped: this candidate's interview process was already counted", dedupeKey);
+      return res.status(200).json({ ok: true, skipped: true, reason: "interview already counted for this candidate/process" });
+    }
+    alreadyCounted[dedupeKey] = true;
+    await kv.set(INTERVIEW_COUNTED_KEY, alreadyCounted);
+  }
+
   const current = (await kv.get(weekKey)) || {};
   if (!current[consultantId]) current[consultantId] = { cvsOut: 0, interviews: 0 };
   current[consultantId][metric] += 1;
