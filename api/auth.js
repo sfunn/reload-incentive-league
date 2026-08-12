@@ -29,7 +29,7 @@ const EMAIL_TO_CONSULTANT = {
   // they get their own Commission page showing a flat fee per deal they're
   // manually assigned to (rather than the tiered bracket system).
   "isabelle@reloadsearch.com": { id: "izzy-coordinator", name: "Izzy", isCoordinator: true },
-  "zoe@reloadsearch.com": { id: "zoe-coordinator", name: "Zoe", isCoordinator: true },
+  "alexandra@reloadsearch.com": { id: "zoe-coordinator", name: "Alexandra", isCoordinator: true },
 };
 
 function normalizeEmail(email) {
