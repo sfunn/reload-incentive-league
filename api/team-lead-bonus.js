@@ -97,19 +97,28 @@ function monthKeyFromDateStr(dateStr) {
   const d = dateStr ? new Date(dateStr) : new Date();
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
-function latestSetMonthKey(allRates) {
-  const keys = Object.keys(allRates).sort();
+// Each currency independently finds its own most recent set month, rather
+// than all currencies being tied to a single "latest month" — otherwise,
+// if GBP gets re-entered every month but EUR was only ever set once a
+// while back, EUR deals would wrongly show no rate despite a perfectly
+// valid EUR rate still existing from that earlier month.
+function latestSetMonthKeyForCurrency(allRates, currency) {
+  const keys = Object.keys(allRates)
+    .filter((k) => allRates[k] && allRates[k][currency] !== undefined && allRates[k][currency] !== null && allRates[k][currency] !== 0)
+    .sort();
   return keys.length ? keys[keys.length - 1] : null;
 }
 async function convertToUSD(record, allRates) {
   if (record.currency === "USD") return record.shareAmount;
-  const dateForRate = record.paid && record.paidMarkedAt ? record.paidMarkedAt : null;
-  let monthRates = allRates[monthKeyFromDateStr(dateForRate)];
-  if (!monthRates) {
-    const latestKey = latestSetMonthKey(allRates);
-    monthRates = latestKey ? allRates[latestKey] : null;
+  let rate = null;
+  if (record.paid && record.paidMarkedAt) {
+    const paidMonthKey = monthKeyFromDateStr(record.paidMarkedAt);
+    rate = allRates[paidMonthKey] && allRates[paidMonthKey][record.currency];
   }
-  const rate = monthRates && monthRates[record.currency];
+  if (!rate) {
+    const latestKey = latestSetMonthKeyForCurrency(allRates, record.currency);
+    rate = latestKey ? allRates[latestKey][record.currency] : null;
+  }
   if (!rate) return null;
   return record.shareAmount * rate;
 }
