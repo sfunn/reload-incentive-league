@@ -1017,19 +1017,19 @@ function App() {
     React.createElement(React.Fragment, null,
       React.createElement(TableHeader, { cols: [
         { label: "Date Signed", width: 100 },
-        { label: "Consultant", width: 120 },
         { label: "Candidate", width: 110 },
         { label: "Client", width: 100 },
         { label: "Start Date", width: 90 },
         { label: "Amount", width: 100 },
         { label: "USD", width: 90 },
-        ...(showSourceAndCoordinator ? [{ label: "Source", width: 130 }, { label: "Coordinator", width: 110 }] : []),
+        ...(showSourceAndCoordinator ? [{ label: "Source", width: 130 }] : []),
+        { label: "Consultant", width: 120 },
+        ...(showSourceAndCoordinator ? [{ label: "Coordinator", width: 110 }] : []),
         { label: "Paid", width: 130 },
         { label: "", width: 70 }
       ] }),
       records.map(r => React.createElement(RowLine, { key: `${r.feeId}-${r.splitId}` },
         React.createElement(Cell, { width: 100 }, toDayMonthYear(r.feeDate)),
-        React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
         React.createElement(Cell, { width: 110, color: r.candidateName ? INDIGO : INDIGO_MUTED }, r.candidateName || "—"),
         React.createElement(Cell, { width: 100, color: r.clientCompanyName ? INDIGO : INDIGO_MUTED }, r.clientCompanyName || "—"),
         React.createElement(Cell, { width: 90, color: r.placementStartDate ? INDIGO : INDIGO_MUTED }, r.placementStartDate ? toDayMonthYear(r.placementStartDate) : "—"),
@@ -1045,6 +1045,7 @@ function App() {
             SOURCE_OPTIONS.map(s => React.createElement("option", { key: s, value: s }, s))
           )
         ),
+        React.createElement(Cell, { width: 120 }, r.consultantName || r.consultantEmail || "Unmapped"),
         showSourceAndCoordinator && React.createElement(Cell, { width: 110 },
           React.createElement("select", {
             value: r.coordinatorId || "",
