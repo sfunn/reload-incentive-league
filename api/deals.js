@@ -12,14 +12,6 @@ function monthKeyFromDateStr(dateStr) {
   return `${y}-${m}`;
 }
 
-// "YYYY-MM" keys sort correctly as plain strings, so the last one after
-// sorting is simply the most recent month Scott/Lee have actually entered
-// a rate for.
-function latestSetMonthKey(allRates) {
-  const keys = Object.keys(allRates).sort();
-  return keys.length ? keys[keys.length - 1] : null;
-}
-
 // Prefers the REAL rate from the month a deal was actually paid, once
 // Scott/Lee have set one for that specific month. Otherwise — not paid
 // yet, or paid but that exact month has no rate entered — falls back to
@@ -27,20 +19,34 @@ function latestSetMonthKey(allRates) {
 // NEVER tied to today's literal calendar date: rates are set manually,
 // so "today" might not have one yet, and using it would either wrongly
 // show "held back" or silently disagree with what's already on screen.
-function applicableMonthRates(record, allRates) {
+// Each currency independently finds its own most recent set month, rather
+// than all currencies being tied to a single "latest month" — otherwise,
+// if GBP gets re-entered every month but EUR was only ever set once a
+// while back, EUR deals would wrongly show "no rate" despite a perfectly
+// valid EUR rate still existing from that earlier month.
+function latestSetMonthKeyForCurrency(allRates, currency) {
+  const keys = Object.keys(allRates)
+    .filter((k) => allRates[k] && allRates[k][currency] !== undefined && allRates[k][currency] !== null && allRates[k][currency] !== 0)
+    .sort();
+  return keys.length ? keys[keys.length - 1] : null;
+}
+
+function getRateForCurrency(record, allRates, currency) {
   if (record.paid && record.paidMarkedAt) {
     const paidMonthKey = monthKeyFromDateStr(record.paidMarkedAt);
-    if (allRates[paidMonthKey]) return allRates[paidMonthKey];
+    const paidRate = allRates[paidMonthKey] && allRates[paidMonthKey][currency];
+    if (paidRate) return paidRate;
+    // Paid but that month never had this specific currency set — fall
+    // through to the same latest-set fallback as an unpaid deal would use.
   }
-  const latestKey = latestSetMonthKey(allRates);
-  return latestKey ? allRates[latestKey] : null;
+  const latestKey = latestSetMonthKeyForCurrency(allRates, currency);
+  return latestKey ? allRates[latestKey][currency] : null;
 }
 
 async function convertToUSD(record, allRates) {
   if (record.currency === "USD") return record.shareAmount;
-  const monthRates = applicableMonthRates(record, allRates);
-  const rate = monthRates && monthRates[record.currency];
-  if (!rate) return null; // no rate set for that month/currency yet
+  const rate = getRateForCurrency(record, allRates, record.currency);
+  if (!rate) return null; // no rate set for that currency in any month yet
   return record.shareAmount * rate;
 }
 
