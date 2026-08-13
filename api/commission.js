@@ -19,42 +19,49 @@ function monthKeyFromDateStr(dateStr) {
   return `${y}-${m}`;
 }
 
-// "YYYY-MM" keys sort correctly as plain strings, so the last one after
-// sorting is simply the most recent month Scott/Lee have actually entered
-// a rate for.
-function latestSetMonthKey(allRates) {
-  const keys = Object.keys(allRates).sort();
+// Each currency independently finds its own most recent set month, rather
+// than all currencies being tied to a single "latest month" — otherwise,
+// if GBP gets re-entered every month but EUR was only ever set once a
+// while back, EUR deals would wrongly show "no rate" despite a perfectly
+// valid EUR rate still existing from that earlier month.
+function latestSetMonthKeyForCurrency(allRates, currency) {
+  const keys = Object.keys(allRates)
+    .filter((k) => allRates[k] && allRates[k][currency] !== undefined && allRates[k][currency] !== null && allRates[k][currency] !== 0)
+    .sort();
   return keys.length ? keys[keys.length - 1] : null;
 }
 
 // Prefers the REAL rate from the month a deal was actually paid, once
-// Scott/Lee have set one for that specific month. Otherwise — not paid
-// yet, or paid but that exact month has no rate entered — falls back to
-// whichever month they most recently set a rate for. This is deliberately
-// NEVER tied to today's literal calendar date: rates are set manually,
-// so "today" might not have one yet, and using it would either wrongly
-// show "held back" or silently disagree with what's already on screen.
-function applicableMonthRates(record, allRates) {
+// Scott/Lee have set one for THAT SPECIFIC CURRENCY that month. Otherwise
+// — not paid yet, or paid but that exact month/currency has no rate
+// entered — falls back to whichever month most recently had a rate set
+// for this specific currency. This is deliberately never tied to today's
+// literal calendar date: rates are set manually, so "today" might not
+// have one yet, and using it would either wrongly show "held back" or
+// silently disagree with what's already on screen.
+function getRateForCurrency(record, allRates, currency) {
   if (record.paid && record.paidMarkedAt) {
     const paidMonthKey = monthKeyFromDateStr(record.paidMarkedAt);
-    if (allRates[paidMonthKey]) return allRates[paidMonthKey];
+    const paidRate = allRates[paidMonthKey] && allRates[paidMonthKey][currency];
+    if (paidRate) return paidRate;
   }
-  const latestKey = latestSetMonthKey(allRates);
-  return latestKey ? allRates[latestKey] : null;
+  const latestKey = latestSetMonthKeyForCurrency(allRates, currency);
+  return latestKey ? allRates[latestKey][currency] : null;
 }
 
 // Converts a deal's share amount into GBP, using the SAME monthly rates
 // already set in Deal Lead Award (stored as "1 unit of that currency = X
 // USD") — just run in reverse for GBP/EUR, and via USD as a bridge for EUR.
 function convertToGBP(record, allRates) {
-  const monthRates = applicableMonthRates(record, allRates);
   if (record.currency === "GBP") return record.shareAmount;
-  if (!monthRates || !monthRates.GBP) return null; // no GBP rate for that month yet
-  if (record.currency === "USD") return record.shareAmount / monthRates.GBP;
+  const gbpRate = getRateForCurrency(record, allRates, "GBP");
+  if (!gbpRate) return null; // no GBP rate set for any applicable month yet
+  if (record.currency === "USD") return record.shareAmount / gbpRate;
   if (record.currency === "EUR") {
-    if (!monthRates.EUR) return null;
-    const usdEquivalent = record.shareAmount * monthRates.EUR;
-    return usdEquivalent / monthRates.GBP;
+    const eurRate = getRateForCurrency(record, allRates, "EUR");
+    if (!eurRate) return null;
+    const usdEquivalent = record.shareAmount * eurRate;
+    return usdEquivalent / gbpRate;
   }
   return null;
 }
@@ -65,14 +72,15 @@ function convertToGBP(record, allRates) {
 // and Total Revenue already show both currencies.
 function convertToUSDEquivalent(record, allRates) {
   if (record.currency === "USD") return record.shareAmount;
-  const monthRates = applicableMonthRates(record, allRates);
   if (record.currency === "EUR") {
-    if (!monthRates || !monthRates.EUR) return null;
-    return record.shareAmount * monthRates.EUR;
+    const eurRate = getRateForCurrency(record, allRates, "EUR");
+    if (!eurRate) return null;
+    return record.shareAmount * eurRate;
   }
   if (record.currency === "GBP") {
-    if (!monthRates || !monthRates.GBP) return null;
-    return record.shareAmount * monthRates.GBP;
+    const gbpRate = getRateForCurrency(record, allRates, "GBP");
+    if (!gbpRate) return null;
+    return record.shareAmount * gbpRate;
   }
   return null;
 }
