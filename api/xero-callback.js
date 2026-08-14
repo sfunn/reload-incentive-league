@@ -62,7 +62,6 @@ async function handleConnect(req, res) {
     "profile",
     "email",
     "accounting.reports.read",
-    "accounting.settings.read",
     "offline_access", // required to receive a refresh token, not just a short-lived access token
   ].join(" ");
 
