@@ -538,7 +538,7 @@ function App() {
   }, []);
   const refreshTeamOverrides = useCallback(async () => {
     try {
-      const res = await fetch("/api/consultant-teams");
+      const res = await fetch("/api/league?action=teams");
       if (!res.ok) return;
       const data = await res.json();
       setTeamOverrides(data.teams || {});
@@ -796,7 +796,7 @@ function App() {
     setAtlasPulling(true);
     setAtlasError("");
     try {
-      const res = await fetch("/api/atlas-tally");
+      const res = await fetch("/api/league?action=tally");
       if (!res.ok) throw new Error("Request failed");
       const data = await res.json();
       const tally = data.tally || {};
@@ -980,7 +980,7 @@ function App() {
   async function setConsultantTeam(consultantId, team) {
     setPwdError("");
     try {
-      const res = await fetch("/api/consultant-teams", {
+      const res = await fetch("/api/league?action=set-team", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
         body: JSON.stringify({ consultantId, team }),
@@ -3179,7 +3179,7 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
           }, y)),
           React.createElement("span", { style: { width: 1, height: 20, background: INDIGO_HAIRLINE, margin: "0 4px" } }),
           React.createElement("button", {
-            onClick: () => { window.location.href = `/api/xero-connect?token=${encodeURIComponent(authUser.token)}`; },
+            onClick: () => { window.location.href = `/api/xero-callback?action=connect&token=${encodeURIComponent(authUser.token)}`; },
             style: ghostStyle
           }, "Connect to Xero")
         )
