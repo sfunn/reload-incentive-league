@@ -1,4 +1,5 @@
 const { kv } = require("@vercel/kv");
+const { getUserFromRequest } = require("./_authHelpers");
 
 const TOKENS_KEY = "xero-oauth-tokens"; // { refreshToken, tenantId, tenantName, connectedAt }
 
@@ -11,12 +12,77 @@ function htmlPage(title, message, ok) {
   </body></html>`;
 }
 
+// This single file handles BOTH steps of the Xero OAuth flow, merged
+// together to save a serverless function slot (Vercel's free plan caps at
+// 12) — but the actual URL Xero redirects back to must stay exactly
+// "/api/xero-callback", since that's the fixed redirect URI already
+// registered in the Xero app settings. The "start the flow" step
+// (?action=connect) lives here too, on the same path, distinguished by
+// that query parameter rather than being its own separate file/route.
+module.exports = async (req, res) => {
+  if (req.query.action === "connect") {
+    return handleConnect(req, res);
+  }
+  return handleCallback(req, res);
+};
+
+// Scott or Lee visits /api/xero-callback?action=connect once (via the
+// "Connect to Xero" button), gets sent to Xero's own login/consent screen,
+// and Xero redirects back to this SAME URL (without ?action=connect) with
+// a temporary code we exchange for real tokens in handleCallback below.
+async function handleConnect(req, res) {
+  // This step has to be a genuine browser navigation (the browser itself
+  // needs to physically leave for Xero's login page) — it can't be called
+  // via fetch() from inside the React app the normal way, so there's no
+  // custom Authorization header to read. Instead, the token is passed as
+  // a ?token= query parameter, built by the "Connect to Xero" button.
+  const queryToken = req.query.token;
+  const fakeReq = queryToken ? { headers: { authorization: `Bearer ${queryToken}` } } : req;
+  const user = await getUserFromRequest(fakeReq);
+  if (!user || !user.isSuperAdmin) {
+    res.setHeader("Content-Type", "text/html");
+    return res.status(401).send(
+      htmlPage("Super Admin access required", `Use the "Connect to Xero" button on the Company Overview page instead of visiting this link directly.`, false)
+    );
+  }
+
+  const clientId = process.env.XERO_CLIENT_ID;
+  const redirectUri = process.env.XERO_REDIRECT_URI; // e.g. https://reload-incentive-league.vercel.app/api/xero-callback
+  if (!clientId || !redirectUri) {
+    return res.status(500).json({ error: "Xero isn't configured yet — XERO_CLIENT_ID and XERO_REDIRECT_URI must be set in Vercel." });
+  }
+
+  // A random value Xero echoes back unchanged — lets the callback confirm
+  // this specific request initiated the flow, rather than blindly trusting
+  // whatever comes back.
+  const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+  const scopes = [
+    "openid",
+    "profile",
+    "email",
+    "accounting.reports.read",
+    "accounting.settings.read",
+    "offline_access", // required to receive a refresh token, not just a short-lived access token
+  ].join(" ");
+
+  const authUrl = new URL("https://login.xero.com/identity/connect/authorize");
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", scopes);
+  authUrl.searchParams.set("state", state);
+
+  res.writeHead(302, { Location: authUrl.toString() });
+  res.end();
+}
+
 // Xero redirects the browser back here after Scott/Lee approves the
 // connection in Xero's own consent screen. This exchanges the one-time
 // code for a refresh token (which lasts much longer, and is what lets us
 // pull fresh reports later without asking anyone to log in again) and
 // finds out which Xero organization ("tenant") was actually connected.
-module.exports = async (req, res) => {
+async function handleCallback(req, res) {
   const { code, error } = req.query;
 
   if (error) {
@@ -82,4 +148,4 @@ module.exports = async (req, res) => {
     res.setHeader("Content-Type", "text/html");
     return res.status(500).send(htmlPage("Something went wrong", "An unexpected error occurred. Check the Vercel logs for details.", false));
   }
-};
+}
