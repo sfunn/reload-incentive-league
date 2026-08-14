@@ -44,15 +44,17 @@ const EMAIL_TO_CONSULTANT = {
   "joe@reloadsearch.com": "joe-purton",
   "joshd@reloadsearch.com": "josh-davis",
   "natasha@reloadsearch.com": "natasha-barnard",
+  // Team leads — tracked here identically to everyone else. The distinction
+  // between "regular consultant" and "team lead" is NOT enforced in this
+  // file at all — it's enforced downstream in league.js, which reads the
+  // same tally data this file writes and deliberately routes james-lancer
+  // and josh-stark into a separate `leadRows` field, never `rows`, so their
+  // own activity can never leak into the League Table or Team Lead Bonus's
+  // team volume figures. See league.js's TEAM_LEAD_BY_CONSULTANT for the
+  // actual enforcement point.
+  "james@reloadsearch.com": "james-lancer",
+  "josh@reloadsearch.com": "josh-stark",
 };
-
-// Team leaders — real consultants in Atlas, but excluded from the league
-// table on purpose. Candidates they own are acknowledged and skipped,
-// not treated as an error.
-const TEAM_LEADER_EMAILS = new Set([
-  "james@reloadsearch.com",
-  "josh@reloadsearch.com",
-]);
 // ============================================================================
 
 function getRawBody(req) {
@@ -141,11 +143,6 @@ export default async function handler(req, res) {
     // behalf still count correctly for that consultant.
     const email = await lookupCandidateOwnerEmail(projectId, candidateId);
     console.log("[atlas-webhook] candidate owner email:", email);
-
-    if (email && TEAM_LEADER_EMAILS.has(email)) {
-      console.log("[atlas-webhook] skipped: owner is a team leader, not tracked on leaderboard");
-      return res.status(200).json({ ok: true, skipped: true, reason: "team leader, excluded from leaderboard" });
-    }
 
     if (email) consultantId = EMAIL_TO_CONSULTANT[email] || null;
   } catch (e) {
