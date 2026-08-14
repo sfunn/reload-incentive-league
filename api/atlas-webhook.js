@@ -10,6 +10,11 @@ import { Webhook } from "svix";
 // ============================================================================
 const CVS_OUT_STAGE = "CV Sent";
 const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
+// Confirmed directly against Atlas's own pipeline stage names — kept as
+// arrays (like INTERVIEW_STAGES above) so a future variant name can be
+// added without changing anything else.
+const ONSITE_STAGES = ["Onsite"];
+const OFFER_STAGES = ["Offer"];
 
 // A candidate's interview PROCESS is one thing, even if it involves several
 // stages (HR call, then HRX, then 1st Stage Interview) — this should only
@@ -19,6 +24,14 @@ const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
 // once a candidate+project pair has been counted, it never counts again,
 // no matter which further interview-type stage they later move through.
 const INTERVIEW_COUNTED_KEY = "atlas-interview-counted"; // { "candidateId:projectId": true, ... }
+// Same one-per-candidate-per-process dedup, separately for Onsite and
+// Offer — each stage gets its own independent counted-key, so a candidate
+// bouncing back into an earlier stage (e.g. re-offered after a renegotiation)
+// never double-counts, and so that Onsite and Offer counts stay genuinely
+// independent of each other and of the interview count.
+const ONSITE_COUNTED_KEY = "atlas-onsite-counted";
+const OFFER_COUNTED_KEY = "atlas-offer-counted";
+
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -114,6 +127,8 @@ export default async function handler(req, res) {
   let metric = null;
   if (newStage.name === CVS_OUT_STAGE) metric = "cvsOut";
   else if (INTERVIEW_STAGES.includes(newStage.name)) metric = "interviews";
+  else if (ONSITE_STAGES.includes(newStage.name)) metric = "onsite";
+  else if (OFFER_STAGES.includes(newStage.name)) metric = "offers";
   else {
     console.log("[atlas-webhook] skipped: not a tracked stage. newStage.name was:", JSON.stringify(newStage.name));
     return res.status(200).json({ ok: true, skipped: true, reason: "not a tracked stage" });
@@ -146,21 +161,41 @@ export default async function handler(req, res) {
 
   const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
 
-  // Interview stages only ever count once per candidate per process —
-  // check (and record) that here, before touching the weekly tally at all.
-  if (metric === "interviews") {
+  // Interview, Onsite, and Offer stages each only ever count once per
+  // candidate per process — check (and record) that here, before touching
+  // the weekly tally at all. Each metric uses its OWN independent counted-
+  // key, so a candidate's interview, onsite, and offer counts never
+  // interfere with one another even though they follow the same pattern.
+  const DEDUPE_KEY_BY_METRIC = {
+    interviews: INTERVIEW_COUNTED_KEY,
+    onsite: ONSITE_COUNTED_KEY,
+    offers: OFFER_COUNTED_KEY,
+  };
+  if (DEDUPE_KEY_BY_METRIC[metric]) {
+    const dedupeStoreKey = DEDUPE_KEY_BY_METRIC[metric];
     const dedupeKey = `${candidateId}:${projectId}`;
-    const alreadyCounted = (await kv.get(INTERVIEW_COUNTED_KEY)) || {};
+    const alreadyCounted = (await kv.get(dedupeStoreKey)) || {};
     if (alreadyCounted[dedupeKey]) {
-      console.log("[atlas-webhook] skipped: this candidate's interview process was already counted", dedupeKey);
-      return res.status(200).json({ ok: true, skipped: true, reason: "interview already counted for this candidate/process" });
+      console.log(`[atlas-webhook] skipped: this candidate's ${metric} process was already counted`, dedupeKey);
+      return res.status(200).json({ ok: true, skipped: true, reason: `${metric} already counted for this candidate/process` });
     }
     alreadyCounted[dedupeKey] = true;
-    await kv.set(INTERVIEW_COUNTED_KEY, alreadyCounted);
+    await kv.set(dedupeStoreKey, alreadyCounted);
   }
 
   const current = (await kv.get(weekKey)) || {};
-  if (!current[consultantId]) current[consultantId] = { cvsOut: 0, interviews: 0 };
+  // Handles two cases: a consultant with no entry at all this week yet, AND
+  // a consultant who already has a cvsOut/interviews entry from earlier in
+  // the week but has never had onsite/offers fields before (either because
+  // this deploy is brand new, or their entry predates this change) — both
+  // need the missing fields patched in before incrementing, or an onsite/
+  // offer move would try to add 1 to `undefined` and silently store NaN.
+  if (!current[consultantId]) {
+    current[consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+  } else {
+    if (current[consultantId].onsite === undefined) current[consultantId].onsite = 0;
+    if (current[consultantId].offers === undefined) current[consultantId].offers = 0;
+  }
   current[consultantId][metric] += 1;
   await kv.set(weekKey, current);
 
