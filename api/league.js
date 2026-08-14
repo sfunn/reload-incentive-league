@@ -152,6 +152,39 @@ module.exports = async (req, res) => {
     return res.status(200).json({ weekKey: config.weekKey, weekStart: monday, weekEnd: sunday, metric: config.metric, threshold: config.threshold, consultants });
   }
 
+  if (req.method === "GET" && action === "tally") {
+    // Merged in from the old standalone atlas-tally.js — a raw read of a
+    // specific (or current) ISO week's tally, used by the "Pull numbers
+    // from Atlas" convenience button when correcting a past week.
+    const week = typeof req.query.week === "string" ? req.query.week : isoWeekKey(new Date().toISOString());
+    const tally = (await kv.get(`${TALLY_PREFIX}${week}`)) || {};
+    return res.status(200).json({ week, tally });
+  }
+
+  // Merged in from the old standalone consultant-teams.js — current team
+  // assignment overrides, keyed by consultantId → "james" | "josh".
+  // Deliberately public-readable (like the rest of league data) since it's
+  // needed to render the League Table for everyone, logged in or not —
+  // only changing it is restricted.
+  if (req.method === "GET" && action === "teams") {
+    const teams = (await kv.get(TEAMS_KEY)) || {};
+    return res.status(200).json({ teams });
+  }
+  if (req.method === "POST" && action === "set-team") {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
+    }
+    const { consultantId, team } = req.body || {};
+    if (!consultantId || (team !== "james" && team !== "josh")) {
+      return res.status(400).json({ error: "consultantId and a valid team (james/josh) are required" });
+    }
+    const teams = (await kv.get(TEAMS_KEY)) || {};
+    teams[consultantId] = team;
+    await kv.set(TEAMS_KEY, teams);
+    return res.status(200).json({ ok: true, teams });
+  }
+
   if (req.method === "POST" && action === "toggle-exclude") {
     // Excludes someone from this week's scoring entirely — e.g. a new
     // starter it wouldn't be fair to rank yet, or someone on leave whose
