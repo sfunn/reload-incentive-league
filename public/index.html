@@ -457,6 +457,13 @@ function App() {
   // is always genuinely current when read inside an async callback that
   // resolves later, letting a stale response recognize itself as stale.
   const commissionRequestRef = useRef(null);
+  // --- Company Overview ---
+  const [companyOverviewYear, setCompanyOverviewYear] = useState(new Date().getUTCFullYear());
+  const [companyOverviewData, setCompanyOverviewData] = useState(null);
+  const [companyOverviewLoading, setCompanyOverviewLoading] = useState(false);
+  const [grossProfitInput, setGrossProfitInput] = useState("");
+  const [grossProfitNotesInput, setGrossProfitNotesInput] = useState("");
+  const [grossProfitSaving, setGrossProfitSaving] = useState(false);
   const thisMonthRequestRef = useRef(null);
   const [commissionData, setCommissionData] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
@@ -1518,6 +1525,43 @@ function App() {
       setFxSaving(false);
     }
   }
+  const loadCompanyOverview = useCallback(async () => {
+    if (!authUser || !isSuperAdmin) return;
+    setCompanyOverviewLoading(true);
+    try {
+      const res = await fetch(`/api/company-overview?year=${companyOverviewYear}`, {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setCompanyOverviewData(data);
+      setGrossProfitInput(data.grossProfitUSD !== null && data.grossProfitUSD !== undefined ? String(data.grossProfitUSD) : "");
+      setGrossProfitNotesInput(data.grossProfitNotes || "");
+    } catch (e) {
+      // silent — the panel just stays empty, matching other admin panels
+    } finally {
+      setCompanyOverviewLoading(false);
+    }
+  }, [authUser, isSuperAdmin, companyOverviewYear]);
+  useEffect(() => {
+    if (tab === "companyoverview") loadCompanyOverview();
+  }, [tab, companyOverviewYear]);
+  async function saveGrossProfit() {
+    setGrossProfitSaving(true);
+    try {
+      const res = await fetch("/api/company-overview?action=set-manual-metric", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ year: companyOverviewYear, grossProfitUSD: grossProfitInput, notes: grossProfitNotesInput })
+      });
+      if (!res.ok) throw new Error("save failed");
+      await loadCompanyOverview();
+    } catch (e) {
+      // no-op
+    } finally {
+      setGrossProfitSaving(false);
+    }
+  }
   const dealsYearOptions = useMemo(() => {
     const current = new Date().getUTCFullYear();
     // Scott/Lee can see the full historical range for backfilling and
@@ -1633,6 +1677,9 @@ function App() {
   }] : []), ...(authUser && isSuperAdmin ? [{
     id: "managelogins",
     label: "Manage Logins"
+  }, {
+    id: "companyoverview",
+    label: "Company Overview"
   }] : []), {
     id: "ask",
     label: "Ask The Table"
@@ -3044,9 +3091,6 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
   ), tab === "managelogins" && React.createElement("div", {
     style: { display: "flex", flexDirection: "column", gap: 20 }
   },
-tab === "managelogins" && React.createElement("div", {
-    style: { display: "flex", flexDirection: "column", gap: 20 }
-  },
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Manage Logins" }),
       pwdError && React.createElement("div", { style: { marginBottom: 10, fontSize: 11.5, color: MELON_LINK } }, pwdError),
@@ -3121,6 +3165,80 @@ tab === "managelogins" && React.createElement("div", {
       )
     )
   )
+  , tab === "companyoverview" && React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 20 }
+  },
+    React.createElement(Panel, null,
+      React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
+        React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Company Overview" }),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          [2024, 2025, 2026, 2027].map(y => React.createElement("button", {
+            key: y,
+            onClick: () => setCompanyOverviewYear(y),
+            style: { ...chipStyle, background: companyOverviewYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: companyOverviewYear === y ? 700 : 500 }
+          }, y))
+        )
+      )
+    ),
+    companyOverviewLoading ? React.createElement(Panel, null, React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")) :
+    !companyOverviewData ? null :
+    React.createElement(React.Fragment, null,
+      React.createElement(Panel, null,
+        React.createElement("div", { style: { display: "flex", gap: 30, flexWrap: "wrap" } },
+          React.createElement("div", { style: { flex: 1, minWidth: 200 } },
+            React.createElement("div", { style: labelStyle }, "Revenue / NFI"),
+            React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: INDIGO } }, `$${Math.round(companyOverviewData.totalRevenueUSD).toLocaleString()}`),
+            React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginTop: 4 } }, `${companyOverviewData.countedDeals} deals counted`)
+          ),
+          React.createElement("div", { style: { flex: 1, minWidth: 200 } },
+            React.createElement("div", { style: labelStyle }, "Average Fee"),
+            React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: INDIGO } }, `$${Math.round(companyOverviewData.averageFeeUSD).toLocaleString()}`)
+          ),
+          React.createElement("div", { style: { flex: 1, minWidth: 200 } },
+            React.createElement("div", { style: labelStyle }, "Gross Profit (manual)"),
+            React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: companyOverviewData.grossProfitUSD !== null ? VERDIGRIS : INDIGO_MUTED } },
+              companyOverviewData.grossProfitUSD !== null ? `$${Math.round(companyOverviewData.grossProfitUSD).toLocaleString()}` : "Not set"
+            )
+          )
+        )
+      ),
+      React.createElement(Panel, null,
+        React.createElement(SectionTitle, { title: "Client Concentration" }),
+        React.createElement("div", { style: { display: "flex", gap: 20, marginBottom: 14, fontSize: 13 } },
+          React.createElement("div", null, React.createElement("span", { style: labelStyle }, "Top 3 clients: "), React.createElement("strong", null, `${companyOverviewData.top3Percentage.toFixed(1)}%`), " of revenue"),
+          React.createElement("div", null, React.createElement("span", { style: labelStyle }, "Top 5 clients: "), React.createElement("strong", null, `${companyOverviewData.top5Percentage.toFixed(1)}%`), " of revenue")
+        ),
+        companyOverviewData.clientConcentration.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
+        React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
+          companyOverviewData.clientConcentration.slice(0, 10).map((c, i) => React.createElement("div", {
+            key: c.client,
+            style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}` }
+          },
+            React.createElement("span", { style: { width: 24, color: INDIGO_MUTED } }, i + 1),
+            React.createElement("span", { style: { flex: 1 } }, c.client),
+            React.createElement("span", { style: { fontWeight: 700, width: 100 } }, `$${Math.round(c.totalUSD).toLocaleString()}`),
+            React.createElement("span", { style: { width: 60, color: INDIGO_MUTED } }, `${c.percentage.toFixed(1)}%`)
+          ))
+        )
+      ),
+      React.createElement(Panel, null,
+        React.createElement(SectionTitle, { title: "Gross Profit — manual entry" }),
+        React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 12 } },
+          "Atlas has no visibility into costs, so this has to be entered by hand from your accounts — e.g. once a quarter from Xero."
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Gross profit ($)"),
+            React.createElement("input", { type: "number", value: grossProfitInput, onChange: e => setGrossProfitInput(e.target.value), placeholder: "e.g. 250000", style: { ...inputStyleSmall, width: 140 } })
+          ),
+          React.createElement("div", { style: { flex: 1, minWidth: 200 } },
+            React.createElement("div", { style: { ...labelStyle, marginBottom: 4 } }, "Notes (optional)"),
+            React.createElement("input", { type: "text", value: grossProfitNotesInput, onChange: e => setGrossProfitNotesInput(e.target.value), placeholder: "e.g. From Xero, Q3 export", style: { ...inputStyleSmall, width: "100%" } })
+          ),
+          React.createElement("button", { onClick: saveGrossProfit, disabled: grossProfitSaving, style: ghostStyle }, grossProfitSaving ? "Saving…" : "Save")
+        )
+      )
+    )
   ))));
 }
 function EmptyState({
