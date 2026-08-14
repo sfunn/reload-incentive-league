@@ -89,12 +89,17 @@ async function autoFinalizePastWeeks() {
     const teamOverrides = (await kv.get(TEAMS_KEY)) || {};
     const rows = {};
     for (const consultantId of Object.keys(DEFAULT_TEAM_BY_CONSULTANT)) {
-      const t = tally[consultantId] || { cvsOut: 0, interviews: 0 };
+      const t = tally[consultantId] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
       const team = teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId];
       const cvs = t.cvsOut || 0;
       const interviews = t.interviews || 0;
+      // onsite/offers may be missing entirely on tally entries recorded
+      // before this tracking existed — default to 0 rather than leaving
+      // them undefined, same defensive pattern as cvs/interviews above.
+      const onsite = t.onsite || 0;
+      const offers = t.offers || 0;
       rows[consultantId] = {
-        cvs, interviews, team,
+        cvs, interviews, onsite, offers, team,
         metricValue: computeMetricValue(config.metric, cvs, interviews),
         excluded: config.excludedConsultants.includes(consultantId),
       };
@@ -140,12 +145,14 @@ module.exports = async (req, res) => {
     const { monday, sunday } = isoWeekToDates(config.weekKey);
     const excluded = config.excludedConsultants || [];
     const consultants = Object.keys(DEFAULT_TEAM_BY_CONSULTANT).map((consultantId) => {
-      const t = tally[consultantId] || { cvsOut: 0, interviews: 0 };
+      const t = tally[consultantId] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
       return {
         consultantId,
         team: teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId],
         cvsOut: t.cvsOut || 0,
         interviews: t.interviews || 0,
+        onsite: t.onsite || 0,
+        offers: t.offers || 0,
         excluded: excluded.includes(consultantId),
       };
     });
