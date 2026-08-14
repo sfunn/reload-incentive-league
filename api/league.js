@@ -24,6 +24,23 @@ const DEFAULT_TEAM_BY_CONSULTANT = {
   "natasha-barnard": "josh",
 };
 
+// Team leads' own CV/interview/onsite/offer activity, captured for stats
+// visibility ONLY — deliberately kept in a completely separate field
+// (leadRows, below) from DEFAULT_TEAM_BY_CONSULTANT's rows. James and
+// Josh's own recruiting activity must never be mixed into either the
+// League Table's competitive scoring or Team Lead Bonus's Pillar 1-3 team
+// volume averages — both of those read every entry in week.rows filtered
+// only by team match, with no fixed-roster check, so putting a team
+// lead's own numbers in there would silently inflate their own team's
+// figures with their personal activity. A separate field is the only way
+// to make that leak structurally impossible rather than hoping every
+// current and future consumer of week.rows filters correctly.
+const TEAM_LEAD_BY_CONSULTANT = {
+  "james-lancer": "james",
+  "josh-stark": "josh",
+};
+
+
 // Matches atlas-webhook.js's own isoWeekKey exactly, so both files always
 // agree on which real-world Monday–Sunday window a given key represents.
 function isoWeekKey(dateStr) {
@@ -104,12 +121,28 @@ async function autoFinalizePastWeeks() {
         excluded: config.excludedConsultants.includes(consultantId),
       };
     }
+    // Team leads' own activity — same tally source, deliberately written
+    // into a separate field, never `rows`. See the comment on
+    // TEAM_LEAD_BY_CONSULTANT above for why this separation is load-bearing,
+    // not cosmetic.
+    const leadRows = {};
+    for (const consultantId of Object.keys(TEAM_LEAD_BY_CONSULTANT)) {
+      const t = tally[consultantId] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+      leadRows[consultantId] = {
+        cvs: t.cvsOut || 0,
+        interviews: t.interviews || 0,
+        onsite: t.onsite || 0,
+        offers: t.offers || 0,
+        team: TEAM_LEAD_BY_CONSULTANT[consultantId],
+      };
+    }
     const newWeek = {
       id: `auto-${config.weekKey}`,
       date: sunday,
       metric: config.metric || METRIC_CVS_OUT,
       threshold: config.threshold ?? null,
       rows,
+      leadRows,
       autoFinalized: true,
     };
     nextWeeks = [...weeks, newWeek];
@@ -156,7 +189,22 @@ module.exports = async (req, res) => {
         excluded: excluded.includes(consultantId),
       };
     });
-    return res.status(200).json({ weekKey: config.weekKey, weekStart: monday, weekEnd: sunday, metric: config.metric, threshold: config.threshold, consultants });
+    // Team leads' own live-week activity — a separate array, deliberately
+    // never merged into `consultants` above, so no consumer of this
+    // response can accidentally fold their personal numbers into the
+    // League Table's competitive scoring.
+    const teamLeads = Object.keys(TEAM_LEAD_BY_CONSULTANT).map((consultantId) => {
+      const t = tally[consultantId] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+      return {
+        consultantId,
+        team: TEAM_LEAD_BY_CONSULTANT[consultantId],
+        cvsOut: t.cvsOut || 0,
+        interviews: t.interviews || 0,
+        onsite: t.onsite || 0,
+        offers: t.offers || 0,
+      };
+    });
+    return res.status(200).json({ weekKey: config.weekKey, weekStart: monday, weekEnd: sunday, metric: config.metric, threshold: config.threshold, consultants, teamLeads });
   }
 
   if (req.method === "GET" && action === "tally") {
