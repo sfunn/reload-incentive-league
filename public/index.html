@@ -3171,17 +3171,22 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
     React.createElement(Panel, null,
       React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
         React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Company Overview" }),
-        React.createElement("div", { style: { display: "flex", gap: 6 } },
+        React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
           [2024, 2025, 2026, 2027].map(y => React.createElement("button", {
             key: y,
             onClick: () => setCompanyOverviewYear(y),
             style: { ...chipStyle, background: companyOverviewYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: companyOverviewYear === y ? 700 : 500 }
-          }, y))
+          }, y)),
+          React.createElement("span", { style: { width: 1, height: 20, background: INDIGO_HAIRLINE, margin: "0 4px" } }),
+          React.createElement("button", {
+            onClick: () => { window.location.href = `/api/xero-connect?token=${encodeURIComponent(authUser.token)}`; },
+            style: ghostStyle
+          }, "Connect to Xero")
         )
       )
     ),
     companyOverviewLoading ? React.createElement(Panel, null, React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")) :
-    !companyOverviewData ? null :
+    !companyOverviewData ? React.createElement(Panel, null, React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, "Couldn't load company figures — check the browser console or try refreshing. This doesn't affect the Xero connection above, which works independently.")) :
     React.createElement(React.Fragment, null,
       React.createElement(Panel, null,
         React.createElement("div", { style: { display: "flex", gap: 30, flexWrap: "wrap" } },
@@ -3223,14 +3228,8 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
       ),
       React.createElement(Panel, null,
         React.createElement(SectionTitle, { title: "Gross Profit — manual entry" }),
-        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 } },
-          React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED } },
-            "Atlas has no visibility into costs, so this has to be entered by hand from your accounts — e.g. once a quarter from Xero."
-          ),
-          React.createElement("button", {
-            onClick: () => { window.location.href = `/api/xero-connect?token=${encodeURIComponent(authUser.token)}`; },
-            style: ghostStyle
-          }, "Connect to Xero")
+        React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 12 } },
+          "Atlas has no visibility into costs, so this has to be entered by hand from your accounts — e.g. once a quarter from Xero."
         ),
         React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" } },
           React.createElement("div", null,
