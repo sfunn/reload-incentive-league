@@ -3,10 +3,25 @@ const { getUserFromRequest } = require("./_authHelpers");
 // This is the "Connect to Xero" step — Scott or Lee visits this URL once,
 // gets sent to Xero's own login/consent screen, and Xero redirects back to
 // our callback endpoint with a temporary code we exchange for real tokens.
+//
+// Unlike every other endpoint in this app, this one has to be a genuine
+// browser navigation (the browser itself needs to physically leave for
+// Xero's login page) — it can't be called via fetch() from inside the
+// React app the normal way, so there's no custom Authorization header to
+// read. Instead, the token is passed as a ?token= query parameter, built
+// by the "Connect to Xero" button in the app itself.
 module.exports = async (req, res) => {
-  const user = await getUserFromRequest(req);
+  const queryToken = req.query.token;
+  const fakeReq = queryToken ? { headers: { authorization: `Bearer ${queryToken}` } } : req;
+  const user = await getUserFromRequest(fakeReq);
   if (!user || !user.isSuperAdmin) {
-    return res.status(401).json({ error: "Super Admin access required." });
+    res.setHeader("Content-Type", "text/html");
+    return res.status(401).send(
+      `<!DOCTYPE html><html><body style="font-family: sans-serif; padding: 40px; text-align: center;">
+        <h2 style="color: #c0392b;">Super Admin access required</h2>
+        <p>Use the "Connect to Xero" button on the Company Overview page instead of visiting this link directly.</p>
+      </body></html>`
+    );
   }
 
   const clientId = process.env.XERO_CLIENT_ID;
