@@ -2179,7 +2179,16 @@ function App() {
           );
         })
       )
-    ),
+    )
+  ), tab === "standings" && React.createElement("div", {
+  style: { display: "flex", flexDirection: "column", gap: 20 }
+},
+  React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED } },
+    "Winner in each team and this week's leaderboard, then monthly team score, then quarterly individual boards, all in one place."
+  ),
+  !latestWeek ? React.createElement(EmptyState, {
+    text: "No weeks logged yet. Head to Weekly Incentive to get the league started."
+  }) : React.createElement(React.Fragment, null,
     React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
     eyebrow: "Weekly prize",
     title: "Winner in each team"
@@ -2261,13 +2270,8 @@ function App() {
       fontWeight: 600
     }
   }, "Still waiting on: ", teamMissingLabel(latestWeekMissing).join(" · ")))
-  ), tab === "standings" && React.createElement("div", {
-  style: { display: "flex", flexDirection: "column", gap: 20 }
-},
-  React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED } },
-    "Monthly team score, quarterly individual boards, and the full-season leaderboard, all in one place."
   ),
-  React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 18, color: INDIGO } }, "Monthly Team Score"),
+  React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 18, color: INDIGO, marginTop: 8 } }, "Monthly Team Score"),
   monthlyTotals.length === 0 ? /*#__PURE__*/React.createElement(EmptyState, {
     text: "No completed weeks yet — monthly team totals will appear here."
   }) : [...monthlyTotals].reverse().map(([mk, totals]) => {
@@ -2348,28 +2352,7 @@ function App() {
     width: 90,
     bold: true,
     color: r.net >= 0 ? INDIGO : MELON
-  }, r.net > 0 ? `+${r.net}` : r.net))))),
-  React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
-    eyebrow: `${sortedWeeks.length} week${sortedWeeks.length === 1 ? "" : "s"} played`,
-    title: "Season standings"
-  }), /*#__PURE__*/React.createElement(TableHeader, {
-    cols: ["Pos", "Consultant", "Team", "Weeks", "Total Points"]
-  }), seasonTotals.map((r, i) => /*#__PURE__*/React.createElement(RowLine, {
-    key: r.id
-  }, /*#__PURE__*/React.createElement(Cell, {
-    width: 50
-  }, i + 1), /*#__PURE__*/React.createElement(Cell, {
-    flex: true
-  }, r.name), /*#__PURE__*/React.createElement(Cell, {
-    width: 90,
-    color: TEAMS[r.team].color
-  }, TEAMS[r.team].short), /*#__PURE__*/React.createElement(Cell, {
-    width: 70
-  }, r.games), /*#__PURE__*/React.createElement(Cell, {
-    width: 90,
-    bold: true,
-    color: r.net >= 0 ? INDIGO : MELON
-  }, r.net > 0 ? `+${r.net}` : r.net))))
+  }, r.net > 0 ? `+${r.net}` : r.net)))))
 ), tab === "ask" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
