@@ -1,0 +1,48 @@
+name: Financial safety check
+
+# Runs automatically on every push and pull request that touches any of the
+# four files where the Natasha/Citadel uplift or the James/Josh leadRows
+# isolation could break. This is the enforcement mechanism -- it does not
+# depend on anyone remembering to test by hand before committing.
+#
+# If this check goes red on a commit, do not deploy that change until it's
+# fixed. See tests/financial-safety.test.js for exactly what it checks and
+# why.
+
+on:
+  push:
+    paths:
+      - "api/commission.js"
+      - "api/deals.js"
+      - "api/league.js"
+      - "api/team-lead-bonus.js"
+      - "tests/financial-safety.test.js"
+  pull_request:
+    paths:
+      - "api/commission.js"
+      - "api/deals.js"
+      - "api/league.js"
+      - "api/team-lead-bonus.js"
+      - "tests/financial-safety.test.js"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Swap in test fixture for @vercel/kv
+        # Only affects this throwaway CI runner's node_modules -- never
+        # touches what actually deploys to Vercel, which always installs
+        # the real @vercel/kv from package.json.
+        run: cp -r tests/_fixtures/fake-vercel-kv/. node_modules/@vercel/kv/
+
+      - name: Run financial safety tests
+        run: node tests/financial-safety.test.js
