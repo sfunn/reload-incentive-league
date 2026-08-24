@@ -228,30 +228,34 @@ function weekTeamWinners(weekRows) {
   });
   return winners;
 }
-// Monthly Onsite/Offer (and CV/Interview, for context) breakdown for a set
-// of ids, read from one specific field on each week — "rows" for the ten
-// real consultants, "leadRows" for James/Josh's own tracked-but-isolated
-// activity. Never reads the other field for a given id, so this can't
-// accidentally blend the two the way Non-negotiable #2 warns against.
-function computeMonthlyPipeline(weeksList, ids, field) {
-  const byId = {};
-  ids.forEach(id => {
-    byId[id] = {};
-  });
-  weeksList.forEach(w => {
-    const mk = monthOf(w.date);
-    const source = w[field] || {};
-    ids.forEach(id => {
-      const entry = source[id];
+// Onsite/Offer/Placement pipeline for one specific month, for a chosen set
+// of people. Each person carries its own "field" (rows vs leadRows) so
+// James/Josh's own tracked-but-isolated activity is read from a completely
+// different field than the ten real consultants' — never the same field,
+// so this can't accidentally blend the two the way Non-negotiable #2 warns
+// against. Placement counts come from a separate, deliberately read-only,
+// counts-only endpoint (never $ amounts) — see api/league.js's
+// ?action=placement-counts.
+function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant, monthKey) {
+  return people.map(p => {
+    const source = p.isTeamLead ? "leadRows" : "rows";
+    let cvs = 0, interviews = 0, onsite = 0, offers = 0;
+    weeksList.forEach(w => {
+      if (monthOf(w.date) !== monthKey) return;
+      const entry = (w[source] || {})[p.id];
       if (!entry) return;
-      if (!byId[id][mk]) byId[id][mk] = { cvs: 0, interviews: 0, onsite: 0, offers: 0 };
-      byId[id][mk].cvs += Number(entry.cvs) || 0;
-      byId[id][mk].interviews += Number(entry.interviews) || 0;
-      byId[id][mk].onsite += Number(entry.onsite) || 0;
-      byId[id][mk].offers += Number(entry.offers) || 0;
+      cvs += Number(entry.cvs) || 0;
+      interviews += Number(entry.interviews) || 0;
+      onsite += Number(entry.onsite) || 0;
+      offers += Number(entry.offers) || 0;
     });
+    const placements = (placementCountsByConsultant[p.id] || {})[monthKey] || 0;
+    return { ...p, cvs, interviews, onsite, offers, placements };
   });
-  return byId;
+}
+function pipelinePct(numerator, denominator) {
+  if (!denominator) return "—";
+  return `${Math.round((numerator / denominator) * 100)}%`;
 }
 function teamMissingLabel(missing) {
   const byTeam = {
@@ -533,6 +537,17 @@ function App() {
     { id: "james-lancer", name: "James Lancer", team: "james" },
     { id: "josh-stark", name: "Josh Stark", team: "josh" },
   ];
+
+  // --- Onsite & Offers pipeline (CVs/Interviews/Onsite/Offers/Placements) ---
+  const [pipelineYear, setPipelineYear] = useState(new Date().getUTCFullYear());
+  const [pipelineMonth, setPipelineMonth] = useState(new Date().getUTCMonth() + 1); // 1-12
+  const [placementCounts, setPlacementCounts] = useState({});
+  useEffect(() => {
+    fetch("/api/league?action=placement-counts")
+      .then(r => r.json())
+      .then(d => setPlacementCounts(d.placementCounts || {}))
+      .catch(() => {});
+  }, []);
   const defaultHalf = new Date().getUTCMonth() < 6 ? "H1" : "H2";
   const [teamLeadPeriod, setTeamLeadPeriod] = useState(`${defaultHalf}-${new Date().getUTCFullYear()}`);
   const [teamLeadViewId, setTeamLeadViewId] = useState(null);
@@ -3150,80 +3165,77 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
 },
   React.createElement("div", {
     style: { fontSize: 12.5, color: INDIGO_MUTED }
-  }, "Onsite and Offer counts only start from when this tracking went live — weeks logged before that always show zero here, even if real onsite visits or offers happened."),
+  }, "Onsite and Offer counts only start from when this tracking went live — months before that always show zero here, even if real activity happened. Placements are genuine placements only, bucketed by their real start date."),
 
-  !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : (() => {
-    const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
-    const ownTeamLead = TEAM_LEADS.find(tl => tl.id === authUser.consultantId);
-    const person = ownConsultant || ownTeamLead;
-    if (!person) return null; // e.g. Scott/Lee, who aren't individually tracked in either field
-    const field = ownConsultant ? "rows" : "leadRows";
-    const monthly = computeMonthlyPipeline(sortedWeeks, [person.id], field)[person.id];
-    const monthKeys = Object.keys(monthly).sort((a, b) => b.localeCompare(a));
-    return React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Your own activity", title: person.name }),
-      monthKeys.length === 0
-        ? React.createElement(EmptyState, { text: "No Onsite/Offer activity logged yet for you." })
-        : React.createElement(React.Fragment, null,
-            React.createElement(TableHeader, { cols: ["Month", "CVs", "Interviews", "Onsite", "Offers"] }),
-            monthKeys.map(mk => React.createElement(RowLine, { key: mk },
-              React.createElement(Cell, { flex: true }, monthLabel(mk)),
-              React.createElement(Cell, { width: 70 }, monthly[mk].cvs),
-              React.createElement(Cell, { width: 90 }, monthly[mk].interviews),
-              React.createElement(Cell, { width: 70 }, monthly[mk].onsite),
-              React.createElement(Cell, { width: 70 }, monthly[mk].offers)
-            ))
-          )
-    );
-  })(),
-
-  isAdmin && React.createElement(React.Fragment, null,
-    React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Admins only", title: "Everyone's activity" }),
-      (() => {
-        const byConsultant = computeMonthlyPipeline(sortedWeeks, consultants.map(c => c.id), "rows");
-        const monthKeys = [...new Set(consultants.flatMap(c => Object.keys(byConsultant[c.id])))].sort((a, b) => b.localeCompare(a));
-        if (monthKeys.length === 0) return React.createElement(EmptyState, { text: "No Onsite/Offer activity logged yet." });
-        return monthKeys.map(mk => React.createElement("div", { key: mk, style: { marginBottom: 20 } },
-          React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 15, color: INDIGO, marginBottom: 8 } }, monthLabel(mk)),
-          React.createElement(TableHeader, { cols: ["Consultant", "Team", "CVs", "Interviews", "Onsite", "Offers"] }),
-          [...consultants].sort((a, b) => a.team.localeCompare(b.team) || a.name.localeCompare(b.name)).map(c => {
-            const m = byConsultant[c.id][mk] || { cvs: 0, interviews: 0, onsite: 0, offers: 0 };
-            return React.createElement(RowLine, { key: c.id },
-              React.createElement(Cell, { flex: true }, c.name),
-              React.createElement(Cell, { width: 70, color: TEAMS[c.team].color }, TEAMS[c.team].short),
-              React.createElement(Cell, { width: 70 }, m.cvs),
-              React.createElement(Cell, { width: 90 }, m.interviews),
-              React.createElement(Cell, { width: 70 }, m.onsite),
-              React.createElement(Cell, { width: 70 }, m.offers)
-            );
-          })
-        ));
-      })()
+  !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : React.createElement(Panel, null,
+    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 } },
+      React.createElement(SectionTitle, {
+        eyebrow: isAdmin ? "Admins see everyone; consultants see only their own" : "Your own activity",
+        title: "Consultant Stats"
+      }),
+      React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+        [pipelineYear - 3, pipelineYear - 2, pipelineYear - 1, pipelineYear, pipelineYear + 1].map(y => React.createElement("button", {
+          key: y,
+          onClick: () => setPipelineYear(y),
+          style: { ...chipStyle, background: pipelineYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineYear === y ? 700 : 500 }
+        }, y))
+      )
     ),
-    React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Personal activity — never counted in League Table or Team Lead Bonus scoring", title: "Team leads" }),
-      (() => {
-        const byLead = computeMonthlyPipeline(sortedWeeks, TEAM_LEADS.map(tl => tl.id), "leadRows");
-        const monthKeys = [...new Set(TEAM_LEADS.flatMap(tl => Object.keys(byLead[tl.id])))].sort((a, b) => b.localeCompare(a));
-        if (monthKeys.length === 0) return React.createElement(EmptyState, { text: "No personal activity logged yet." });
-        return monthKeys.map(mk => React.createElement("div", { key: mk, style: { marginBottom: 20 } },
-          React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 15, color: INDIGO, marginBottom: 8 } }, monthLabel(mk)),
-          React.createElement(TableHeader, { cols: ["Team lead", "Team", "CVs", "Interviews", "Onsite", "Offers"] }),
-          TEAM_LEADS.map(tl => {
-            const m = byLead[tl.id][mk] || { cvs: 0, interviews: 0, onsite: 0, offers: 0 };
-            return React.createElement(RowLine, { key: tl.id },
-              React.createElement(Cell, { flex: true }, tl.name),
-              React.createElement(Cell, { width: 70, color: TEAMS[tl.team].color }, TEAMS[tl.team].short),
-              React.createElement(Cell, { width: 70 }, m.cvs),
-              React.createElement(Cell, { width: 90 }, m.interviews),
-              React.createElement(Cell, { width: 70 }, m.onsite),
-              React.createElement(Cell, { width: 70 }, m.offers)
-            );
-          })
-        ));
-      })()
-    )
+    React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 } },
+      ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((label, i) => React.createElement("button", {
+        key: label,
+        onClick: () => setPipelineMonth(i + 1),
+        style: { ...chipStyle, background: pipelineMonth === i + 1 ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineMonth === i + 1 ? 700 : 500 }
+      }, label))
+    ),
+    (() => {
+      const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
+      const ALL_PIPELINE_PEOPLE = [
+        ...consultants.map(c => ({ ...c, isTeamLead: false })),
+        ...TEAM_LEADS.map(tl => ({ ...tl, isTeamLead: true })),
+      ].sort((a, b) => a.name.localeCompare(b.name));
+
+      const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
+      const ownTeamLead = TEAM_LEADS.find(tl => tl.id === authUser.consultantId);
+      const own = ownConsultant ? { ...ownConsultant, isTeamLead: false } : (ownTeamLead ? { ...ownTeamLead, isTeamLead: true } : null);
+
+      const peopleToShow = isAdmin ? ALL_PIPELINE_PEOPLE : (own ? [own] : []);
+      if (peopleToShow.length === 0) {
+        return React.createElement(EmptyState, { text: "Nothing to show — your login isn't linked to an individual consultant record." });
+      }
+
+      const computedRows = computeMonthPipelineRows(sortedWeeks, peopleToShow, placementCounts, monthKey);
+
+      return React.createElement(React.Fragment, null,
+        React.createElement(TableHeader, { cols: [
+          { label: "Consultant", flex: true },
+          { label: "CVs Out", width: 70 },
+          { label: "Interviews", width: 80 },
+          { label: "Onsite", width: 60 },
+          { label: "Offers", width: 60 },
+          { label: "Placements", width: 80 },
+          { label: "CV : Interview", width: 90 },
+          { label: "Interview : Onsite", width: 100 },
+          { label: "Onsite : Offer", width: 90 },
+          { label: "Offer : Placement", width: 100 },
+        ] }),
+        computedRows.map(r => React.createElement(RowLine, { key: r.id },
+          React.createElement(Cell, { flex: true },
+            r.name,
+            r.isTeamLead && React.createElement("div", { style: { fontSize: 10, color: MELON_LINK, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" } }, "Team lead")
+          ),
+          React.createElement(Cell, { width: 70 }, r.cvs),
+          React.createElement(Cell, { width: 80 }, r.interviews),
+          React.createElement(Cell, { width: 60 }, r.onsite),
+          React.createElement(Cell, { width: 60 }, r.offers),
+          React.createElement(Cell, { width: 80 }, r.placements),
+          React.createElement(Cell, { width: 90, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
+          React.createElement(Cell, { width: 100, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
+          React.createElement(Cell, { width: 90, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
+          React.createElement(Cell, { width: 100, color: INDIGO_MUTED }, pipelinePct(r.placements, r.offers))
+        ))
+      );
+    })()
   )
 ))));
 }
