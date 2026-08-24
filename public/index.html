@@ -253,6 +253,37 @@ function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant
     return { ...p, cvs, interviews, onsite, offers, placements };
   });
 }
+// Full-year, month-by-month breakdown for ONE person, plus a total row.
+// The total's percentages are recomputed from the summed raw counts, never
+// averaged from the monthly percentages — averaging percentages across
+// months of very different volume would be statistically meaningless.
+function computeYearPipelineForPerson(weeksList, person, placementCountsByConsultant, year) {
+  const source = person.isTeamLead ? "leadRows" : "rows";
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const mk = `${year}-${String(m).padStart(2, "0")}`;
+    let cvs = 0, interviews = 0, onsite = 0, offers = 0;
+    weeksList.forEach(w => {
+      if (monthOf(w.date) !== mk) return;
+      const entry = (w[source] || {})[person.id];
+      if (!entry) return;
+      cvs += Number(entry.cvs) || 0;
+      interviews += Number(entry.interviews) || 0;
+      onsite += Number(entry.onsite) || 0;
+      offers += Number(entry.offers) || 0;
+    });
+    const placements = (placementCountsByConsultant[person.id] || {})[mk] || 0;
+    months.push({ monthKey: mk, cvs, interviews, onsite, offers, placements });
+  }
+  const total = months.reduce((acc, m) => ({
+    cvs: acc.cvs + m.cvs,
+    interviews: acc.interviews + m.interviews,
+    onsite: acc.onsite + m.onsite,
+    offers: acc.offers + m.offers,
+    placements: acc.placements + m.placements,
+  }), { cvs: 0, interviews: 0, onsite: 0, offers: 0, placements: 0 });
+  return { months, total };
+}
 function pipelinePct(numerator, denominator) {
   if (!denominator) return "—";
   return `${Math.round((numerator / denominator) * 100)}%`;
@@ -541,6 +572,7 @@ function App() {
   // --- Onsite & Offers pipeline (CVs/Interviews/Onsite/Offers/Placements) ---
   const [pipelineYear, setPipelineYear] = useState(new Date().getUTCFullYear());
   const [pipelineMonth, setPipelineMonth] = useState(new Date().getUTCMonth() + 1); // 1-12
+  const [pipelineFocusId, setPipelineFocusId] = useState(null); // admin-only: focus on one person, all months + total
   const [placementCounts, setPlacementCounts] = useState({});
   useEffect(() => {
     fetch("/api/league?action=placement-counts")
@@ -3167,76 +3199,132 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 12.5, color: INDIGO_MUTED }
   }, "Onsite and Offer counts only start from when this tracking went live — months before that always show zero here, even if real activity happened. Placements are genuine placements only, bucketed by their real start date."),
 
-  !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : React.createElement(Panel, null,
-    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 } },
-      React.createElement(SectionTitle, {
-        eyebrow: isAdmin ? "Admins see everyone; consultants see only their own" : "Your own activity",
-        title: "Consultant Stats"
-      }),
-      React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
-        [pipelineYear - 3, pipelineYear - 2, pipelineYear - 1, pipelineYear, pipelineYear + 1].map(y => React.createElement("button", {
-          key: y,
-          onClick: () => setPipelineYear(y),
-          style: { ...chipStyle, background: pipelineYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineYear === y ? 700 : 500 }
-        }, y))
-      )
-    ),
-    React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 } },
-      ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((label, i) => React.createElement("button", {
-        key: label,
-        onClick: () => setPipelineMonth(i + 1),
-        style: { ...chipStyle, background: pipelineMonth === i + 1 ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineMonth === i + 1 ? 700 : 500 }
-      }, label))
-    ),
-    (() => {
-      const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
-      const ALL_PIPELINE_PEOPLE = [
-        ...consultants.map(c => ({ ...c, isTeamLead: false })),
-        ...TEAM_LEADS.map(tl => ({ ...tl, isTeamLead: true })),
-      ].sort((a, b) => a.name.localeCompare(b.name));
+  !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : (() => {
+    const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
+    const ownTeamLead = TEAM_LEADS.find(tl => tl.id === authUser.consultantId);
+    const own = ownConsultant ? { ...ownConsultant, isTeamLead: false } : (ownTeamLead ? { ...ownTeamLead, isTeamLead: true } : null);
 
-      const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
-      const ownTeamLead = TEAM_LEADS.find(tl => tl.id === authUser.consultantId);
-      const own = ownConsultant ? { ...ownConsultant, isTeamLead: false } : (ownTeamLead ? { ...ownTeamLead, isTeamLead: true } : null);
+    // Non-admins are always implicitly "focused" on themselves — no chip
+    // needed, and no possibility of viewing anyone else's numbers.
+    const focusId = isAdmin ? pipelineFocusId : (own ? own.id : "__none__");
 
-      const peopleToShow = isAdmin ? ALL_PIPELINE_PEOPLE : (own ? [own] : []);
-      if (peopleToShow.length === 0) {
-        return React.createElement(EmptyState, { text: "Nothing to show — your login isn't linked to an individual consultant record." });
-      }
+    if (!isAdmin && !own) {
+      return React.createElement(EmptyState, { text: "Nothing to show — your login isn't linked to an individual consultant record." });
+    }
 
-      const computedRows = computeMonthPipelineRows(sortedWeeks, peopleToShow, placementCounts, monthKey);
+    const ALL_PIPELINE_PEOPLE = [
+      ...consultants.map(c => ({ ...c, isTeamLead: false })),
+      ...TEAM_LEADS.map(tl => ({ ...tl, isTeamLead: true })),
+    ].sort((a, b) => a.name.localeCompare(b.name));
 
-      return React.createElement(React.Fragment, null,
-        React.createElement(TableHeader, { cols: [
-          { label: "Consultant", flex: true },
-          { label: "CVs Out", width: 70 },
-          { label: "Interviews", width: 80 },
-          { label: "Onsite", width: 60 },
-          { label: "Offers", width: 60 },
-          { label: "Placements", width: 80 },
-          { label: "CV : Interview", width: 90 },
-          { label: "Interview : Onsite", width: 100 },
-          { label: "Onsite : Offer", width: 90 },
-          { label: "Offer : Placement", width: 100 },
-        ] }),
-        computedRows.map(r => React.createElement(RowLine, { key: r.id },
-          React.createElement(Cell, { flex: true },
-            r.name,
-            r.isTeamLead && React.createElement("div", { style: { fontSize: 10, color: MELON_LINK, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" } }, "Team lead")
-          ),
-          React.createElement(Cell, { width: 70 }, r.cvs),
-          React.createElement(Cell, { width: 80 }, r.interviews),
-          React.createElement(Cell, { width: 60 }, r.onsite),
-          React.createElement(Cell, { width: 60 }, r.offers),
-          React.createElement(Cell, { width: 80 }, r.placements),
-          React.createElement(Cell, { width: 90, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
-          React.createElement(Cell, { width: 100, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
-          React.createElement(Cell, { width: 90, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
-          React.createElement(Cell, { width: 100, color: INDIGO_MUTED }, pipelinePct(r.placements, r.offers))
-        ))
-      );
-    })()
-  )
+    const focusedPerson = focusId ? (focusId === own?.id ? own : ALL_PIPELINE_PEOPLE.find(p => p.id === focusId)) : null;
+
+    const tableCols = [
+      { label: focusedPerson ? "Month" : "Consultant", flex: true },
+      { label: "CVs Out", width: 70 },
+      { label: "Interviews", width: 80 },
+      { label: "Onsite", width: 60 },
+      { label: "Offers", width: 60 },
+      { label: "Placements", width: 80 },
+      { label: "CV : Interview", width: 90 },
+      { label: "Interview : Onsite", width: 100 },
+      { label: "Onsite : Offer", width: 90 },
+      { label: "Offer : Placement", width: 100 },
+    ];
+
+    function pctCells(row) {
+      return [
+        React.createElement(Cell, { key: "p1", width: 90, color: INDIGO_MUTED }, pipelinePct(row.interviews, row.cvs)),
+        React.createElement(Cell, { key: "p2", width: 100, color: INDIGO_MUTED }, pipelinePct(row.onsite, row.interviews)),
+        React.createElement(Cell, { key: "p3", width: 90, color: INDIGO_MUTED }, pipelinePct(row.offers, row.onsite)),
+        React.createElement(Cell, { key: "p4", width: 100, color: INDIGO_MUTED }, pipelinePct(row.placements, row.offers)),
+      ];
+    }
+
+    return React.createElement(Panel, null,
+      React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 } },
+        React.createElement(SectionTitle, {
+          eyebrow: isAdmin ? "Admins see everyone; consultants see only their own" : "Your own activity",
+          title: focusedPerson ? focusedPerson.name : "Consultant Stats"
+        }),
+        React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+          [pipelineYear - 3, pipelineYear - 2, pipelineYear - 1, pipelineYear, pipelineYear + 1].map(y => React.createElement("button", {
+            key: y,
+            onClick: () => setPipelineYear(y),
+            style: { ...chipStyle, background: pipelineYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineYear === y ? 700 : 500 }
+          }, y))
+        )
+      ),
+
+      isAdmin && React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 } },
+        React.createElement("button", {
+          onClick: () => setPipelineFocusId(null),
+          style: { ...chipStyle, background: pipelineFocusId === null ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineFocusId === null ? 700 : 500 }
+        }, "Everyone"),
+        ALL_PIPELINE_PEOPLE.map(p => React.createElement("button", {
+          key: p.id,
+          onClick: () => setPipelineFocusId(p.id),
+          style: {
+            ...chipStyle,
+            background: pipelineFocusId === p.id ? TEAMS[p.team].color : "rgba(46,64,91,0.06)",
+            color: pipelineFocusId === p.id ? WHITE : INDIGO,
+            fontWeight: pipelineFocusId === p.id ? 700 : 500
+          }
+        }, p.name))
+      ),
+
+      !focusedPerson && React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 } },
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((label, i) => React.createElement("button", {
+          key: label,
+          onClick: () => setPipelineMonth(i + 1),
+          style: { ...chipStyle, background: pipelineMonth === i + 1 ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineMonth === i + 1 ? 700 : 500 }
+        }, label))
+      ),
+
+      focusedPerson ? (() => {
+        const { months, total } = computeYearPipelineForPerson(sortedWeeks, focusedPerson, placementCounts, pipelineYear);
+        return React.createElement(React.Fragment, null,
+          React.createElement(TableHeader, { cols: tableCols }),
+          months.map(m => React.createElement(RowLine, { key: m.monthKey },
+            React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
+            React.createElement(Cell, { width: 70 }, m.cvs),
+            React.createElement(Cell, { width: 80 }, m.interviews),
+            React.createElement(Cell, { width: 60 }, m.onsite),
+            React.createElement(Cell, { width: 60 }, m.offers),
+            React.createElement(Cell, { width: 80 }, m.placements),
+            ...pctCells(m)
+          )),
+          React.createElement(RowLine, { key: "total", highlighted: true },
+            React.createElement(Cell, { flex: true, bold: true }, "Total"),
+            React.createElement(Cell, { width: 70, bold: true }, total.cvs),
+            React.createElement(Cell, { width: 80, bold: true }, total.interviews),
+            React.createElement(Cell, { width: 60, bold: true }, total.onsite),
+            React.createElement(Cell, { width: 60, bold: true }, total.offers),
+            React.createElement(Cell, { width: 80, bold: true }, total.placements),
+            ...pctCells(total).map(c => /*#__PURE__*/React.cloneElement(c, { bold: true }))
+          )
+        );
+      })() : (() => {
+        const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
+        const rows = computeMonthPipelineRows(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey);
+        return React.createElement(React.Fragment, null,
+          React.createElement(TableHeader, { cols: tableCols }),
+          rows.map(r => React.createElement(RowLine, { key: r.id },
+            React.createElement(Cell, { flex: true },
+              r.name,
+              r.isTeamLead && React.createElement("div", { style: { fontSize: 10, color: MELON_LINK, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" } }, "Team lead")
+            ),
+            React.createElement(Cell, { width: 70 }, r.cvs),
+            React.createElement(Cell, { width: 80 }, r.interviews),
+            React.createElement(Cell, { width: 60 }, r.onsite),
+            React.createElement(Cell, { width: 60 }, r.offers),
+            React.createElement(Cell, { width: 80 }, r.placements),
+            ...pctCells(r)
+          ))
+        );
+      })()
+    );
+  })()
 ))));
 }
 function EmptyState({
