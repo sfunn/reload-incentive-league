@@ -1,0 +1,5 @@
+{
+  "name": "@vercel/kv",
+  "version": "0.0.0-test-fixture",
+  "main": "index.js"
+}
