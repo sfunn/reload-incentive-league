@@ -5,6 +5,18 @@ const WEEKS_KEY = "reload-league-weeks";
 const CONFIG_KEY = "reload-current-week-config";
 const TEAMS_KEY = "consultant-teams";
 const TALLY_PREFIX = "atlas-tally:";
+// Read-only for the new placement-counts action below -- this file never
+// writes to either key, and never touches commission/£ figures at all.
+// It exists purely to answer "how many genuine placements did person X
+// have in month Y", the same count already used (for different purposes)
+// by team-lead-bonus.js's Pillar 4 and deals.js.
+const RECORDS_KEY = "atlas-fee-records";
+const PLACEMENTS_KEY = "atlas-placements";
+
+function monthKeyFromDateStr(dateStr) {
+  const d = dateStr ? new Date(dateStr) : new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
 
 const METRIC_CVS_OUT = "CV's Out (Candidates presented)";
 const METRIC_INTERVIEWS = "Interviews (Candidates IV stage)";
@@ -214,6 +226,34 @@ module.exports = async (req, res) => {
     const week = typeof req.query.week === "string" ? req.query.week : isoWeekKey(new Date().toISOString());
     const tally = (await kv.get(`${TALLY_PREFIX}${week}`)) || {};
     return res.status(200).json({ week, tally });
+  }
+
+  if (req.method === "GET" && action === "placement-counts") {
+    // Deliberately COUNTS ONLY — never returns fee amounts, currency,
+    // or anything commission-related. A genuine placement here means
+    // exactly what it means everywhere else in this codebase: a real
+    // placement-linked candidate name, never a notes-derived onsite fee.
+    // Bucketed by month using the placement's START DATE, same convention
+    // as the year-bucketing rule used for the Yearly Deal Table.
+    const [records, placements] = await Promise.all([
+      kv.get(RECORDS_KEY).then((v) => v || []),
+      kv.get(PLACEMENTS_KEY).then((v) => v || {}),
+    ]);
+    const seen = new Set(); // dedupe key: consultantId|placementId
+    const byConsultantMonth = {};
+    for (const r of records) {
+      if (!r.consultantId || !r.placementId) continue;
+      const placement = placements[r.placementId];
+      const candidateName = placement && placement.candidateName;
+      if (!candidateName) continue; // not a genuine placement
+      const dedupeKey = `${r.consultantId}|${r.placementId}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const mk = monthKeyFromDateStr(placement.startDate || r.feeDate);
+      if (!byConsultantMonth[r.consultantId]) byConsultantMonth[r.consultantId] = {};
+      byConsultantMonth[r.consultantId][mk] = (byConsultantMonth[r.consultantId][mk] || 0) + 1;
+    }
+    return res.status(200).json({ placementCounts: byConsultantMonth });
   }
 
   // Merged in from the old standalone consultant-teams.js — current team
