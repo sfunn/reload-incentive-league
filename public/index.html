@@ -253,10 +253,30 @@ function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant
     return { ...p, cvs, interviews, onsite, offers, placements };
   });
 }
-// Full-year, month-by-month breakdown for ONE person, plus a total row.
-// The total's percentages are recomputed from the summed raw counts, never
-// averaged from the monthly percentages — averaging percentages across
-// months of very different volume would be statistically meaningless.
+// Simple mean, skipping null/undefined entries (used to skip months or
+// people where a percentage's denominator was 0 and so has no defined value).
+function pipelineMean(values) {
+  const nums = values.filter(v => v !== null && v !== undefined);
+  if (nums.length === 0) return null;
+  return nums.reduce((s, v) => s + v, 0) / nums.length;
+}
+function pipelinePctOrNull(numerator, denominator) {
+  if (!denominator) return null;
+  return (numerator / denominator) * 100;
+}
+function pipelinePct(numerator, denominator) {
+  const v = pipelinePctOrNull(numerator, denominator);
+  return v === null ? "—" : `${Math.round(v)}%`;
+}
+function fmtPipelinePct(v) {
+  return v === null || v === undefined ? "—" : `${Math.round(v)}%`;
+}
+// Full-year, month-by-month breakdown for ONE person, plus a Total row.
+// Raw counts in the Total row are a genuine SUM ("average CVs" doesn't
+// mean anything) but the four percentages are the AVERAGE of that
+// person's own monthly percentages, skipping any month with an undefined
+// ratio (0 denominator) — Scott's explicit call, in preference to
+// recomputing the percentage from the pooled yearly sums.
 function computeYearPipelineForPerson(weeksList, person, placementCountsByConsultant, year) {
   const source = person.isTeamLead ? "leadRows" : "rows";
   const months = [];
@@ -275,18 +295,52 @@ function computeYearPipelineForPerson(weeksList, person, placementCountsByConsul
     const placements = (placementCountsByConsultant[person.id] || {})[mk] || 0;
     months.push({ monthKey: mk, cvs, interviews, onsite, offers, placements });
   }
-  const total = months.reduce((acc, m) => ({
+  const totalRaw = months.reduce((acc, m) => ({
     cvs: acc.cvs + m.cvs,
     interviews: acc.interviews + m.interviews,
     onsite: acc.onsite + m.onsite,
     offers: acc.offers + m.offers,
     placements: acc.placements + m.placements,
   }), { cvs: 0, interviews: 0, onsite: 0, offers: 0, placements: 0 });
+  const total = {
+    ...totalRaw,
+    pctCvInterview: pipelineMean(months.map(m => pipelinePctOrNull(m.interviews, m.cvs))),
+    pctInterviewOnsite: pipelineMean(months.map(m => pipelinePctOrNull(m.onsite, m.interviews))),
+    pctOnsiteOffer: pipelineMean(months.map(m => pipelinePctOrNull(m.offers, m.onsite))),
+    pctOfferPlacement: pipelineMean(months.map(m => pipelinePctOrNull(m.placements, m.offers))),
+  };
   return { months, total };
 }
-function pipelinePct(numerator, denominator) {
-  if (!denominator) return "—";
-  return `${Math.round((numerator / denominator) * 100)}%`;
+// "Everyone" here always means the ten real consultants only — never
+// James/Josh's own leadRows figures, matching the established rule that
+// their personal activity never feeds into any team/company-wide figure.
+function computeEveryoneMonthAverage(weeksList, realConsultants, placementCountsByConsultant, monthKey) {
+  const rows = computeMonthPipelineRows(weeksList, realConsultants.map(c => ({ ...c, isTeamLead: false })), placementCountsByConsultant, monthKey);
+  return {
+    cvs: pipelineMean(rows.map(r => r.cvs)),
+    interviews: pipelineMean(rows.map(r => r.interviews)),
+    onsite: pipelineMean(rows.map(r => r.onsite)),
+    offers: pipelineMean(rows.map(r => r.offers)),
+    placements: pipelineMean(rows.map(r => r.placements)),
+    pctCvInterview: pipelineMean(rows.map(r => pipelinePctOrNull(r.interviews, r.cvs))),
+    pctInterviewOnsite: pipelineMean(rows.map(r => pipelinePctOrNull(r.onsite, r.interviews))),
+    pctOnsiteOffer: pipelineMean(rows.map(r => pipelinePctOrNull(r.offers, r.onsite))),
+    pctOfferPlacement: pipelineMean(rows.map(r => pipelinePctOrNull(r.placements, r.offers))),
+  };
+}
+function computeEveryoneYearAverage(weeksList, realConsultants, placementCountsByConsultant, year) {
+  const totals = realConsultants.map(c => computeYearPipelineForPerson(weeksList, { ...c, isTeamLead: false }, placementCountsByConsultant, year).total);
+  return {
+    cvs: pipelineMean(totals.map(t => t.cvs)),
+    interviews: pipelineMean(totals.map(t => t.interviews)),
+    onsite: pipelineMean(totals.map(t => t.onsite)),
+    offers: pipelineMean(totals.map(t => t.offers)),
+    placements: pipelineMean(totals.map(t => t.placements)),
+    pctCvInterview: pipelineMean(totals.map(t => t.pctCvInterview)),
+    pctInterviewOnsite: pipelineMean(totals.map(t => t.pctInterviewOnsite)),
+    pctOnsiteOffer: pipelineMean(totals.map(t => t.pctOnsiteOffer)),
+    pctOfferPlacement: pipelineMean(totals.map(t => t.pctOfferPlacement)),
+  };
 }
 function teamMissingLabel(missing) {
   const byTeam = {
@@ -3197,7 +3251,7 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
 },
   React.createElement("div", {
     style: { fontSize: 12.5, color: INDIGO_MUTED }
-  }, "Onsite and Offer counts only start from when this tracking went live — months before that always show zero here, even if real activity happened. Placements are genuine placements only, bucketed by their real start date."),
+  }, "Onsite and Offer counts only start from when this tracking went live — months before that always show zero here, even if real activity happened. Placements are genuine placements only, bucketed by their real start date. \"avg\" figures are the average across all ten consultants for the same period."),
 
   !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : (() => {
     const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
@@ -3221,24 +3275,29 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
 
     const tableCols = [
       { label: focusedPerson ? "Month" : "Consultant", flex: true },
-      { label: "CVs Out", width: 70 },
-      { label: "Interviews", width: 80 },
-      { label: "Onsite", width: 60 },
-      { label: "Offers", width: 60 },
-      { label: "Placements", width: 80 },
-      { label: "CV : Interview", width: 90 },
-      { label: "Interview : Onsite", width: 100 },
-      { label: "Onsite : Offer", width: 90 },
-      { label: "Offer : Placement", width: 100 },
+      { label: "CVs Out", width: 78 },
+      { label: "Interviews", width: 86 },
+      { label: "Onsite", width: 66 },
+      { label: "Offers", width: 66 },
+      { label: "Placements", width: 86 },
+      { label: "CV : Interview", width: 96 },
+      { label: "Interview : Onsite", width: 104 },
+      { label: "Onsite : Offer", width: 96 },
+      { label: "Offer : Placement", width: 104 },
     ];
 
-    function pctCells(row) {
-      return [
-        React.createElement(Cell, { key: "p1", width: 90, color: INDIGO_MUTED }, pipelinePct(row.interviews, row.cvs)),
-        React.createElement(Cell, { key: "p2", width: 100, color: INDIGO_MUTED }, pipelinePct(row.onsite, row.interviews)),
-        React.createElement(Cell, { key: "p3", width: 90, color: INDIGO_MUTED }, pipelinePct(row.offers, row.onsite)),
-        React.createElement(Cell, { key: "p4", width: 100, color: INDIGO_MUTED }, pipelinePct(row.placements, row.offers)),
-      ];
+    // Renders one cell showing the person's own value, with a small muted
+    // "avg: X" line underneath showing the same metric averaged across all
+    // ten real consultants for the same period — only used in the focused
+    // (single-person) view, never the "Everyone" grid, where all ten
+    // numbers already sit side by side.
+    function cellWithAvg(width, value, avgValue, isPercent, bold) {
+      const mainText = isPercent ? fmtPipelinePct(value) : value;
+      const avgText = avgValue === null || avgValue === undefined ? null : (isPercent ? fmtPipelinePct(avgValue) : Math.round(avgValue * 10) / 10);
+      return React.createElement(Cell, { width, bold },
+        mainText,
+        avgText !== null && React.createElement("div", { style: { fontSize: 10, color: INDIGO_MUTED, fontWeight: 400, marginTop: 1 } }, `avg: ${avgText}`)
+      );
     }
 
     return React.createElement(Panel, null,
@@ -3283,25 +3342,35 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
 
       focusedPerson ? (() => {
         const { months, total } = computeYearPipelineForPerson(sortedWeeks, focusedPerson, placementCounts, pipelineYear);
+        const yearAvg = computeEveryoneYearAverage(sortedWeeks, consultants, placementCounts, pipelineYear);
         return React.createElement(React.Fragment, null,
           React.createElement(TableHeader, { cols: tableCols }),
-          months.map(m => React.createElement(RowLine, { key: m.monthKey },
-            React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
-            React.createElement(Cell, { width: 70 }, m.cvs),
-            React.createElement(Cell, { width: 80 }, m.interviews),
-            React.createElement(Cell, { width: 60 }, m.onsite),
-            React.createElement(Cell, { width: 60 }, m.offers),
-            React.createElement(Cell, { width: 80 }, m.placements),
-            ...pctCells(m)
-          )),
+          months.map(m => {
+            const monthAvg = computeEveryoneMonthAverage(sortedWeeks, consultants, placementCounts, m.monthKey);
+            return React.createElement(RowLine, { key: m.monthKey },
+              React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
+              cellWithAvg(78, m.cvs, monthAvg.cvs, false),
+              cellWithAvg(86, m.interviews, monthAvg.interviews, false),
+              cellWithAvg(66, m.onsite, monthAvg.onsite, false),
+              cellWithAvg(66, m.offers, monthAvg.offers, false),
+              cellWithAvg(86, m.placements, monthAvg.placements, false),
+              cellWithAvg(96, pipelinePctOrNull(m.interviews, m.cvs), monthAvg.pctCvInterview, true),
+              cellWithAvg(104, pipelinePctOrNull(m.onsite, m.interviews), monthAvg.pctInterviewOnsite, true),
+              cellWithAvg(96, pipelinePctOrNull(m.offers, m.onsite), monthAvg.pctOnsiteOffer, true),
+              cellWithAvg(104, pipelinePctOrNull(m.placements, m.offers), monthAvg.pctOfferPlacement, true)
+            );
+          }),
           React.createElement(RowLine, { key: "total", highlighted: true },
             React.createElement(Cell, { flex: true, bold: true }, "Total"),
-            React.createElement(Cell, { width: 70, bold: true }, total.cvs),
-            React.createElement(Cell, { width: 80, bold: true }, total.interviews),
-            React.createElement(Cell, { width: 60, bold: true }, total.onsite),
-            React.createElement(Cell, { width: 60, bold: true }, total.offers),
-            React.createElement(Cell, { width: 80, bold: true }, total.placements),
-            ...pctCells(total).map(c => /*#__PURE__*/React.cloneElement(c, { bold: true }))
+            cellWithAvg(78, total.cvs, yearAvg.cvs, false, true),
+            cellWithAvg(86, total.interviews, yearAvg.interviews, false, true),
+            cellWithAvg(66, total.onsite, yearAvg.onsite, false, true),
+            cellWithAvg(66, total.offers, yearAvg.offers, false, true),
+            cellWithAvg(86, total.placements, yearAvg.placements, false, true),
+            cellWithAvg(96, total.pctCvInterview, yearAvg.pctCvInterview, true, true),
+            cellWithAvg(104, total.pctInterviewOnsite, yearAvg.pctInterviewOnsite, true, true),
+            cellWithAvg(96, total.pctOnsiteOffer, yearAvg.pctOnsiteOffer, true, true),
+            cellWithAvg(104, total.pctOfferPlacement, yearAvg.pctOfferPlacement, true, true)
           )
         );
       })() : (() => {
@@ -3314,12 +3383,15 @@ tab === "table" && /*#__PURE__*/React.createElement("div", {
               r.name,
               r.isTeamLead && React.createElement("div", { style: { fontSize: 10, color: MELON_LINK, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" } }, "Team lead")
             ),
-            React.createElement(Cell, { width: 70 }, r.cvs),
-            React.createElement(Cell, { width: 80 }, r.interviews),
-            React.createElement(Cell, { width: 60 }, r.onsite),
-            React.createElement(Cell, { width: 60 }, r.offers),
-            React.createElement(Cell, { width: 80 }, r.placements),
-            ...pctCells(r)
+            React.createElement(Cell, { width: 78 }, r.cvs),
+            React.createElement(Cell, { width: 86 }, r.interviews),
+            React.createElement(Cell, { width: 66 }, r.onsite),
+            React.createElement(Cell, { width: 66 }, r.offers),
+            React.createElement(Cell, { width: 86 }, r.placements),
+            React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
+            React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
+            React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
+            React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.placements, r.offers))
           ))
         );
       })()
