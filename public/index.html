@@ -2681,7 +2681,7 @@ function App() {
       )
     ),
     authUser && commissionViewConsultantId && React.createElement(Panel, null,
-      React.createElement("div", { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8 } },
+      React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 12 } },
         React.createElement(SectionTitle, { eyebrow: monthLabel(`${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`), title: "Due This Month" }),
         !thisMonthLoading && React.createElement("div", { style: { fontSize: 28, fontWeight: 700, color: MELON_LINK } }, `£${Math.round(thisMonthTotal).toLocaleString()}`)
       ),
