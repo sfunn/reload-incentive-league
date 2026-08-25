@@ -3537,13 +3537,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
 
     const tableCols = [
       { label: focusedPerson ? "Month" : "Consultant", flex: true },
+      { label: "Calls", width: 66 },
+      { label: "Phone Hrs", width: 78 },
       { label: "CVs Out", width: 78 },
       { label: "Interviews", width: 86 },
       { label: "Onsite", width: 66 },
       { label: "Offers", width: 66 },
       { label: "Placements", width: 86 },
-      { label: "Calls", width: 66 },
-      { label: "Phone Hrs", width: 78 },
       { label: "CV : Interview", width: 96 },
       { label: "Interview : Onsite", width: 104 },
       { label: "Onsite : Offer", width: 96 },
@@ -3615,6 +3615,12 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             return React.createElement(RowLine, { key: m.monthKey },
               React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
               isAdmin
+                ? React.createElement(EditableKpiCell, { width: 66, value: m.calls, isOverridden: m.overrides.calls, avgValue: monthAvg.calls, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "calls", v) })
+                : cellWithAvg(66, m.calls, monthAvg.calls, false),
+              isAdmin
+                ? React.createElement(EditableKpiCell, { width: 78, value: m.phoneHours, isOverridden: m.overrides.phoneHours, avgValue: monthAvg.phoneHours, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "phoneHours", v) })
+                : cellWithAvg(78, m.phoneHours, monthAvg.phoneHours, false),
+              isAdmin
                 ? React.createElement(EditableKpiCell, { width: 78, value: m.cvs, isOverridden: m.overrides.cvs, avgValue: monthAvg.cvs, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "cvs", v) })
                 : cellWithAvg(78, m.cvs, monthAvg.cvs, false),
               isAdmin
@@ -3629,12 +3635,6 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 86, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v) })
                 : cellWithAvg(86, m.placements, monthAvg.placements, false),
-              isAdmin
-                ? React.createElement(EditableKpiCell, { width: 66, value: m.calls, isOverridden: m.overrides.calls, avgValue: monthAvg.calls, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "calls", v) })
-                : cellWithAvg(66, m.calls, monthAvg.calls, false),
-              isAdmin
-                ? React.createElement(EditableKpiCell, { width: 78, value: m.phoneHours, isOverridden: m.overrides.phoneHours, avgValue: monthAvg.phoneHours, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "phoneHours", v) })
-                : cellWithAvg(78, m.phoneHours, monthAvg.phoneHours, false),
               cellWithAvg(96, pipelinePctOrNull(m.interviews, m.cvs), monthAvg.pctCvInterview, true),
               cellWithAvg(104, pipelinePctOrNull(m.onsite, m.interviews), monthAvg.pctInterviewOnsite, true),
               cellWithAvg(96, pipelinePctOrNull(m.offers, m.onsite), monthAvg.pctOnsiteOffer, true),
@@ -3643,13 +3643,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           }),
           React.createElement(RowLine, { key: "total", highlighted: true },
             React.createElement(Cell, { flex: true, bold: true }, "Total"),
+            cellWithAvg(66, total.calls, yearAvg.calls, false, true),
+            cellWithAvg(78, total.phoneHours, yearAvg.phoneHours, false, true),
             cellWithAvg(78, total.cvs, yearAvg.cvs, false, true),
             cellWithAvg(86, total.interviews, yearAvg.interviews, false, true),
             cellWithAvg(66, total.onsite, yearAvg.onsite, false, true),
             cellWithAvg(66, total.offers, yearAvg.offers, false, true),
             cellWithAvg(86, total.placements, yearAvg.placements, false, true),
-            cellWithAvg(66, total.calls, yearAvg.calls, false, true),
-            cellWithAvg(78, total.phoneHours, yearAvg.phoneHours, false, true),
             cellWithAvg(96, total.pctCvInterview, yearAvg.pctCvInterview, true, true),
             cellWithAvg(104, total.pctInterviewOnsite, yearAvg.pctInterviewOnsite, true, true),
             cellWithAvg(96, total.pctOnsiteOffer, yearAvg.pctOnsiteOffer, true, true),
@@ -3668,6 +3668,12 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               r.isTeamLead && React.createElement("div", { style: { fontSize: 10, color: MELON_LINK, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" } }, "Team lead")
             ),
             isAdmin
+              ? React.createElement(EditableKpiCell, { width: 66, value: r.calls, isOverridden: r.overrides.calls, onSave: (v) => saveKpiOverride(r.id, monthKey, "calls", v) })
+              : React.createElement(Cell, { width: 66 }, r.calls),
+            isAdmin
+              ? React.createElement(EditableKpiCell, { width: 78, value: r.phoneHours, isOverridden: r.overrides.phoneHours, onSave: (v) => saveKpiOverride(r.id, monthKey, "phoneHours", v) })
+              : React.createElement(Cell, { width: 78 }, r.phoneHours),
+            isAdmin
               ? React.createElement(EditableKpiCell, { width: 78, value: r.cvs, isOverridden: r.overrides.cvs, onSave: (v) => saveKpiOverride(r.id, monthKey, "cvs", v) })
               : React.createElement(Cell, { width: 78 }, r.cvs),
             isAdmin
@@ -3682,12 +3688,6 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 86, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v) })
               : React.createElement(Cell, { width: 86 }, r.placements),
-            isAdmin
-              ? React.createElement(EditableKpiCell, { width: 66, value: r.calls, isOverridden: r.overrides.calls, onSave: (v) => saveKpiOverride(r.id, monthKey, "calls", v) })
-              : React.createElement(Cell, { width: 66 }, r.calls),
-            isAdmin
-              ? React.createElement(EditableKpiCell, { width: 78, value: r.phoneHours, isOverridden: r.overrides.phoneHours, onSave: (v) => saveKpiOverride(r.id, monthKey, "phoneHours", v) })
-              : React.createElement(Cell, { width: 78 }, r.phoneHours),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
