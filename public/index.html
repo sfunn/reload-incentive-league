@@ -2969,7 +2969,7 @@ function App() {
               const totalGBPSum = dedupedDeals.reduce((s, l) => s + (l.gbpPortion || 0), 0);
 
               return React.createElement(React.Fragment, null,
-                React.createElement("div", { style: labelStyle }, "Deals this year"),
+                React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Deals This Year" }),
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 6 } },
                   React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0" } },
                     React.createElement("span", { style: { width: 150, flexShrink: 0, ...labelStyle, marginBottom: 0 } }, "Name"),
@@ -3055,7 +3055,7 @@ function App() {
               });
               const sourceRows = Object.values(bySource).sort((a, b) => b.valueUSD - a.valueUSD);
               return sourceRows.length === 0 ? null : React.createElement(React.Fragment, null,
-                React.createElement("div", { style: labelStyle }, "Deal Source Breakdown"),
+                React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Deal Source Breakdown" }),
                 React.createElement("div", { style: { marginTop: 6 } },
                   sourceRows.map(s => React.createElement("div", {
                     key: s.source,
@@ -3105,7 +3105,7 @@ React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap"
     })()
   ),
   React.createElement(Panel, { style: { flex: 1, minWidth: 320 } },
-    React.createElement("div", { style: labelStyle }, `${commissionYear} bracket ladder`),
+    React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Bracket Ladder" }),
 React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 6, marginBottom: 16 } },
             commissionData.bands.map((b, i) => {
               const inThisBand = commissionData.totalGBP > b.min;
