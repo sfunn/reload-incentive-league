@@ -2772,7 +2772,7 @@ function App() {
                     onChange: e => setMonthOverride(l.feeId, l.splitId, l.monthOverrides || {}, p.monthNumber, e.target.value),
                     style: { display: "block", marginTop: 3, width: "100%", fontSize: 10, padding: "1px 2px", border: "none", borderRadius: 3, background: "rgba(255,255,255,0.7)", cursor: "pointer" }
                   },
-                    React.createElement("option", { value: "auto" }, "Auto"),
+                    React.createElement("option", { value: "auto" }, currentOverride === "auto" && p.status === "paid" ? "Paid" : "Auto"),
                     React.createElement("option", { value: "paid" }, "Paid"),
                     React.createElement("option", { value: "due" }, "Due"),
                     React.createElement("option", { value: "withheld" }, "Withheld")
@@ -2942,7 +2942,14 @@ function App() {
                     onChange: e => setMonthOverride(l.feeId, l.splitId, l.monthOverrides || {}, p.monthNumber, e.target.value),
                     style: { display: "block", marginTop: 3, width: "100%", fontSize: 10, padding: "1px 2px", border: "none", borderRadius: 3, background: "rgba(255,255,255,0.7)", cursor: "pointer" }
                   },
-                    React.createElement("option", { value: "auto" }, "Auto"),
+                    // The "auto" option's label reflects what auto-computed
+                    // currently means for THIS specific month — once the
+                    // date's passed and it's genuinely paid (the green
+                    // state), it says "Paid" rather than the more
+                    // ambiguous "Auto". This is a label only — the stored
+                    // value stays "auto" (no override recorded) unless the
+                    // person actually picks a different option.
+                    React.createElement("option", { value: "auto" }, currentOverride === "auto" && p.status === "paid" ? "Paid" : "Auto"),
                     React.createElement("option", { value: "paid" }, "Paid"),
                     React.createElement("option", { value: "due" }, "Due"),
                     React.createElement("option", { value: "withheld" }, "Withheld")
