@@ -2683,9 +2683,14 @@ function App() {
       )
     ),
     authUser && commissionViewConsultantId && React.createElement(Panel, null,
-      React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 12 } },
-        React.createElement(SectionTitle, { eyebrow: monthLabel(`${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`), title: "Due This Month" }),
-        !thisMonthLoading && React.createElement("div", { style: { fontSize: 28, fontWeight: 700, color: MELON_LINK } }, `£${Math.round(thisMonthTotal).toLocaleString()}`)
+      React.createElement("div", { style: { marginBottom: 16 } },
+        React.createElement("div", { style: { fontFamily: "'Work Sans', sans-serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.12em", color: MELON, textTransform: "uppercase", marginBottom: 4 } },
+          monthLabel(`${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`)
+        ),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 12 } },
+          React.createElement("h2", { style: { fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 400, fontSize: 22, letterSpacing: "0.01em", color: INDIGO, margin: 0 } }, "Due This Month"),
+          !thisMonthLoading && React.createElement("div", { style: { fontSize: 28, fontWeight: 700, color: MELON_LINK } }, `£${Math.round(thisMonthTotal).toLocaleString()}`)
+        )
       ),
       thisMonthLoading ? React.createElement("div", { style: { padding: 8, color: INDIGO_MUTED, fontSize: 13 } }, "Loading…") :
       thisMonthItems.length === 0 ? React.createElement("div", { style: { padding: 4, color: INDIGO_MUTED, fontSize: 13.5 } }, "Nothing due to be paid this month.") :
