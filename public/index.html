@@ -276,16 +276,18 @@ function pipelinePct(numerator, denominator) {
 // like the existing "Deals this year" list does, so a deal that legitimately
 // split across two bracket bands is never double-counted here either.
 function computePaidCommission(lines) {
-  const dealMap = new Map();
-  (lines || []).forEach((l) => {
-    const key = `${l.feeId}|${l.splitId}`;
-    if (!dealMap.has(key)) dealMap.set(key, l);
-  });
-  const dedupedLines = [...dealMap.values()];
-
+  // No dedup here, deliberately. A deal that splits across bracket
+  // boundaries becomes multiple lines sharing the same feeId/splitId,
+  // each with its own genuine partial commission and its own payout
+  // months — both portions are real, distinct money and must both be
+  // counted. Deduping (as "Deals this year" correctly does, by SUMMING
+  // the split portions into one display row) is right for building a
+  // one-row-per-deal list; it's wrong here, where dropping either split
+  // portion silently throws away real paid money. This was a real bug —
+  // caught because James's actual figures came out far too low.
   let totalPaid = 0;
   const byMonth = {}; // "YYYY-MM" -> total £ paid that month
-  dedupedLines.forEach((l) => {
+  (lines || []).forEach((l) => {
     (l.payout || []).forEach((p) => {
       if (p.status !== "paid" || !p.paidDate) return;
       totalPaid += p.amount;
@@ -2786,7 +2788,12 @@ function App() {
           const dealMap = new Map();
           commissionData.lines.forEach((l) => {
             const key = `${l.feeId}|${l.splitId}`;
-            if (!dealMap.has(key)) dealMap.set(key, l);
+            if (dealMap.has(key)) {
+              const existing = dealMap.get(key);
+              existing.commission = (existing.commission || 0) + (l.commission || 0);
+            } else {
+              dealMap.set(key, { ...l });
+            }
           });
           const dedupedDeals = [...dealMap.values()];
           const bySource = {};
