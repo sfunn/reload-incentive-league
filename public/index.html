@@ -2779,22 +2779,64 @@ function App() {
           ))
         )
       ),
-      React.createElement(Panel, null,
-        React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Previous months paid" }),
-        React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 8 } },
+      React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
+        (() => {
+          const dealMap = new Map();
+          commissionData.lines.forEach((l) => {
+            const key = `${l.feeId}|${l.splitId}`;
+            if (!dealMap.has(key)) dealMap.set(key, l);
+          });
+          const dedupedDeals = [...dealMap.values()];
+          const bySource = {};
+          dedupedDeals.forEach((l) => {
+            if (!l.source) return;
+            if (!bySource[l.source]) bySource[l.source] = { source: l.source, deals: 0, valueGBP: 0 };
+            bySource[l.source].deals += 1;
+            bySource[l.source].valueGBP += l.commission || 0;
+          });
+          const sourceRows = Object.values(bySource).sort((a, b) => b.valueGBP - a.valueGBP);
+          return sourceRows.length === 0 ? null : React.createElement(Panel, { style: { flex: 1, minWidth: 300 } },
+            React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Deal Source Breakdown" }),
+            sourceRows.map(s => React.createElement("div", {
+              key: s.source,
+              style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+            },
+              React.createElement("span", { style: { width: 140, flexShrink: 0 } }, s.source),
+              React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `£${Math.round(s.valueGBP).toLocaleString()}`),
+              React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(${s.deals} deal${s.deals !== 1 ? "s" : ""})`)
+            )),
+            React.createElement("div", {
+              style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+            },
+              React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
+              React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(sourceRows.reduce((s, r) => s + r.valueGBP, 0)).toLocaleString()}`),
+              React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, fontWeight: 400 } }, `(${sourceRows.reduce((s, r) => s + r.deals, 0)} deals)`)
+            )
+          );
+        })(),
+        React.createElement(Panel, { style: { flex: 1, minWidth: 300 } },
+          React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Previous months paid" }),
           (() => {
-            const { byMonth: paidByMonth } = computePaidCommission(commissionData.lines);
-            return Array.from({ length: 12 }, (_, i) => {
+            const { byMonth: paidByMonth, totalPaid } = computePaidCommission(commissionData.lines);
+            const monthRows = Array.from({ length: 12 }, (_, i) => {
               const mk = `${commissionYear}-${String(i + 1).padStart(2, "0")}`;
-              const amount = paidByMonth[mk] || 0;
-              return React.createElement("div", {
-                key: mk,
-                style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5 }
-              },
-                React.createElement("span", { style: { color: amount > 0 ? INDIGO : INDIGO_MUTED } }, monthLabel(mk)),
-                React.createElement("span", { style: { fontWeight: amount > 0 ? 700 : 400, color: amount > 0 ? INDIGO : INDIGO_MUTED } }, `£${Math.round(amount).toLocaleString()}`)
-              );
+              return { mk, amount: paidByMonth[mk] || 0 };
             });
+            return React.createElement(React.Fragment, null,
+              monthRows.map(({ mk, amount }) => React.createElement("div", {
+                key: mk,
+                style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "4px 0", color: amount > 0 ? INDIGO : INDIGO_MUTED }
+              },
+                React.createElement("span", { style: { width: 140, flexShrink: 0 } }, monthLabel(mk)),
+                React.createElement("span", { style: { fontWeight: amount > 0 ? 600 : 400, width: 90, flexShrink: 0 } }, `£${Math.round(amount).toLocaleString()}`)
+              )),
+              React.createElement("div", {
+                style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+              },
+                React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
+                React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(totalPaid).toLocaleString()}`)
+              )
+            );
           })()
         )
       ),
@@ -2925,19 +2967,6 @@ function App() {
               const totalGBPSum = dedupedDeals.reduce((s, l) => s + (l.gbpPortion || 0), 0);
 
               return React.createElement(React.Fragment, null,
-                React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 14 } },
-                  React.createElement("div", null,
-                    React.createElement("div", { style: labelStyle }, "Number of deals"),
-                    React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, dedupedDeals.length)
-                  ),
-                  React.createElement("div", null,
-                    React.createElement("div", { style: labelStyle }, "Revenue"),
-                    React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } },
-                      `$${Math.round(totalUSD).toLocaleString()}`,
-                      React.createElement("span", { style: { fontSize: 13, fontWeight: 500, color: INDIGO_MUTED, marginLeft: 6 } }, `£${Math.round(totalGBPSum).toLocaleString()}`)
-                    )
-                  )
-                ),
                 React.createElement("div", { style: labelStyle }, "Deals this year"),
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 6 } },
                   React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0" } },
@@ -3016,22 +3045,73 @@ function App() {
           )
         )
       ),
-      React.createElement(Panel, null,
-        React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Previous months paid" }),
-        React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 8 } },
+      React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
+        (() => {
+          // Same dedup rule as "Deals this year" — a deal split across
+          // bracket boundaries counts once, not twice. Deals with no
+          // Source recorded yet are simply left out, same rule the
+          // Yearly Deal Table's own source breakdown already uses.
+          const dealMap = new Map();
+          commissionData.lines.forEach((l) => {
+            const key = `${l.feeId}|${l.splitId}`;
+            if (dealMap.has(key)) {
+              const existing = dealMap.get(key);
+              existing.usdAmount = (existing.usdAmount || 0) + (l.usdAmount || 0);
+            } else {
+              dealMap.set(key, { ...l });
+            }
+          });
+          const dedupedDeals = [...dealMap.values()];
+          const bySource = {};
+          dedupedDeals.forEach((l) => {
+            if (!l.source) return;
+            if (!bySource[l.source]) bySource[l.source] = { source: l.source, deals: 0, valueUSD: 0 };
+            bySource[l.source].deals += 1;
+            bySource[l.source].valueUSD += l.usdAmount || 0;
+          });
+          const sourceRows = Object.values(bySource).sort((a, b) => b.valueUSD - a.valueUSD);
+          return sourceRows.length === 0 ? null : React.createElement(Panel, { style: { flex: 1, minWidth: 300 } },
+            React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Deal Source Breakdown" }),
+            sourceRows.map(s => React.createElement("div", {
+              key: s.source,
+              style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "4px 0", color: INDIGO }
+            },
+              React.createElement("span", { style: { width: 140, flexShrink: 0 } }, s.source),
+              React.createElement("span", { style: { fontWeight: 600, width: 90, flexShrink: 0 } }, `$${Math.round(s.valueUSD).toLocaleString()}`),
+              React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED } }, `(${s.deals} deal${s.deals !== 1 ? "s" : ""})`)
+            )),
+            React.createElement("div", {
+              style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+            },
+              React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
+              React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `$${Math.round(sourceRows.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`),
+              React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, fontWeight: 400 } }, `(${sourceRows.reduce((s, r) => s + r.deals, 0)} deals)`)
+            )
+          );
+        })(),
+        React.createElement(Panel, { style: { flex: 1, minWidth: 300 } },
+          React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Previous months paid" }),
           (() => {
-            const { byMonth: paidByMonth } = computePaidCommission(commissionData.lines);
-            return Array.from({ length: 12 }, (_, i) => {
+            const { byMonth: paidByMonth, totalPaid } = computePaidCommission(commissionData.lines);
+            const monthRows = Array.from({ length: 12 }, (_, i) => {
               const mk = `${commissionYear}-${String(i + 1).padStart(2, "0")}`;
-              const amount = paidByMonth[mk] || 0;
-              return React.createElement("div", {
-                key: mk,
-                style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5 }
-              },
-                React.createElement("span", { style: { color: amount > 0 ? INDIGO : INDIGO_MUTED } }, monthLabel(mk)),
-                React.createElement("span", { style: { fontWeight: amount > 0 ? 700 : 400, color: amount > 0 ? INDIGO : INDIGO_MUTED } }, `£${Math.round(amount).toLocaleString()}`)
-              );
+              return { mk, amount: paidByMonth[mk] || 0 };
             });
+            return React.createElement(React.Fragment, null,
+              monthRows.map(({ mk, amount }) => React.createElement("div", {
+                key: mk,
+                style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "4px 0", color: amount > 0 ? INDIGO : INDIGO_MUTED }
+              },
+                React.createElement("span", { style: { width: 140, flexShrink: 0 } }, monthLabel(mk)),
+                React.createElement("span", { style: { fontWeight: amount > 0 ? 600 : 400, width: 90, flexShrink: 0 } }, `£${Math.round(amount).toLocaleString()}`)
+              )),
+              React.createElement("div", {
+                style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13.5, padding: "6px 0 0", marginTop: 4, borderTop: `1px solid ${INDIGO_HAIRLINE}`, fontWeight: 700, color: INDIGO }
+              },
+                React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
+                React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(totalPaid).toLocaleString()}`)
+              )
+            );
           })()
         )
       ),
