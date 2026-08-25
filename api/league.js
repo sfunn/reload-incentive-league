@@ -256,6 +256,48 @@ module.exports = async (req, res) => {
     return res.status(200).json({ placementCounts: byConsultantMonth });
   }
 
+  // Manual corrections to the Consultant KPIs page — only ever a MONTHLY
+  // override for one specific field (cvs/interviews/onsite/offers/
+  // placements), never touching the underlying weekly Atlas data or the
+  // League Table's own scoring. Any admin (including team leads) can set
+  // these; deliberately public-readable like the rest of league data, so
+  // the KPI page can apply them for anyone viewing it.
+  const KPI_OVERRIDES_KEY = "kpi-overrides";
+  const KPI_OVERRIDE_FIELDS = ["cvs", "interviews", "onsite", "offers", "placements"];
+
+  if (req.method === "GET" && action === "kpi-overrides") {
+    const overrides = (await kv.get(KPI_OVERRIDES_KEY)) || {};
+    return res.status(200).json({ overrides });
+  }
+
+  if (req.method === "POST" && action === "set-kpi-override") {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isAdmin) {
+      return res.status(401).json({ error: "Admin access required." });
+    }
+    const { personId, monthKey, field, value } = req.body || {};
+    if (!personId || !monthKey || !KPI_OVERRIDE_FIELDS.includes(field)) {
+      return res.status(400).json({ error: "personId, monthKey, and a valid field are required." });
+    }
+    // value === null clears the override for that one field, reverting to
+    // the auto-computed figure; otherwise it must be a non-negative number.
+    if (value !== null && (typeof value !== "number" || isNaN(value) || value < 0)) {
+      return res.status(400).json({ error: "value must be a non-negative number, or null to clear the override." });
+    }
+    const overrides = (await kv.get(KPI_OVERRIDES_KEY)) || {};
+    if (!overrides[personId]) overrides[personId] = {};
+    if (!overrides[personId][monthKey]) overrides[personId][monthKey] = {};
+    if (value === null) {
+      delete overrides[personId][monthKey][field];
+      if (Object.keys(overrides[personId][monthKey]).length === 0) delete overrides[personId][monthKey];
+      if (Object.keys(overrides[personId]).length === 0) delete overrides[personId];
+    } else {
+      overrides[personId][monthKey][field] = value;
+    }
+    await kv.set(KPI_OVERRIDES_KEY, overrides);
+    return res.status(200).json({ ok: true, overrides });
+  }
+
   // Merged in from the old standalone consultant-teams.js — current team
   // assignment overrides, keyed by consultantId → "james" | "josh".
   // Deliberately public-readable (like the rest of league data) since it's
