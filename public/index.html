@@ -2241,7 +2241,6 @@ function App() {
     }
   }, "Still waiting on: ", teamMissingLabel(latestWeekMissing).join(" · ")))
   ),
-  React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 18, color: INDIGO, marginTop: 8 } }, "Monthly Team Score"),
   monthlyTotals.length === 0 ? /*#__PURE__*/React.createElement(EmptyState, {
     text: "No completed weeks yet — monthly team totals will appear here."
   }) : (() => {
@@ -2254,7 +2253,7 @@ function App() {
         key: mk,
         style: { flex: 1, minWidth: 260 }
       }, /*#__PURE__*/React.createElement(SectionTitle, {
-        eyebrow: mk,
+        eyebrow: "Monthly Team Score",
         title: monthLabel(mk)
       }), /*#__PURE__*/React.createElement("div", {
         style: {
