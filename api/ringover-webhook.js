@@ -90,68 +90,83 @@ export default async function handler(req, res) {
     return res.status(200).json({ logs });
   }
 
+  if (req.method === "GET" && req.query.action === "tally") {
+    // Direct view of the accumulated tally for one ISO week (e.g.
+    // ?action=tally&week=2026-W35), so a real test call's effect can be
+    // confirmed without having to reason about a raw log entry.
+    const week = req.query.week;
+    if (!week) return res.status(400).json({ error: "week query param required, e.g. ?action=tally&week=2026-W35" });
+    const tally = (await kv.get(`${TALLY_PREFIX}${week}`)) || {};
+    return res.status(200).json({ week, tally });
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed." });
   }
 
   const verifiedPayload = verifyAndDecode(req);
 
-  // Always log the attempt (verified or not) so setup problems are visible
-  // via ?action=recent-logs rather than silently failing forever.
+  // Everything below builds up ONE result object -- verification status,
+  // AND the tally outcome (tallied yes/no, why, which consultant, which
+  // week) -- so a single log entry tells the whole story. Previously the
+  // log only recorded whether the signature verified, not whether the
+  // event actually got tallied, which made it impossible to confirm a
+  // real test call actually worked from ?action=recent-logs alone.
+  const result = { verified: !!verifiedPayload, tallied: false, reason: null, consultantId: null, weekKey: null };
+
+  if (!verifiedPayload) {
+    result.reason = "signature did not verify (wrong/missing key, or malformed token)";
+  } else if (verifiedPayload.resource !== "call" || verifiedPayload.event !== "hangup") {
+    result.reason = "not a call.hangup event";
+  } else {
+    const data = verifiedPayload.data || {};
+    if (data.is_internal === true) {
+      result.reason = "internal call, excluded by design";
+    } else {
+      const email = data.user && typeof data.user.email === "string" ? data.user.email.toLowerCase() : null;
+      const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
+      const startTime = data.start_time || data.hangup_time || verifiedPayload.timestamp;
+
+      if (!consultantId) {
+        result.reason = "no consultant mapped for this email";
+      } else if (!startTime) {
+        result.reason = "missing start_time";
+      } else {
+        const durationSeconds = Number(data.duration_in_seconds) || 0;
+        const direction = data.direction === "outbound" ? "outbound" : "inbound";
+        const weekKey = isoWeekKey(new Date(startTime * 1000).toISOString());
+        const tallyKey = `${TALLY_PREFIX}${weekKey}`;
+        const tally = (await kv.get(tallyKey)) || {};
+        if (!tally[consultantId]) {
+          tally[consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
+        }
+        tally[consultantId].calls += 1;
+        tally[consultantId].seconds += durationSeconds;
+        tally[consultantId][`${direction}Calls`] += 1;
+        tally[consultantId][`${direction}Seconds`] += durationSeconds;
+        await kv.set(tallyKey, tally);
+
+        result.tallied = true;
+        result.consultantId = consultantId;
+        result.weekKey = weekKey;
+      }
+    }
+  }
+
+  // Always log the attempt, including the full tally outcome, so setup
+  // problems (or successes) are visible via ?action=recent-logs rather
+  // than requiring a separate check.
   const logs = (await kv.get(RECENT_LOGS_KEY)) || [];
   logs.unshift({
     receivedAt: new Date().toISOString(),
-    verified: !!verifiedPayload,
+    ...result,
     rawBody: req.body,
     payload: verifiedPayload,
   });
   await kv.set(RECENT_LOGS_KEY, logs.slice(0, MAX_LOGS));
 
-  if (!verifiedPayload) {
-    // Don't tell an attacker WHY it failed; 200 either way so Ringover
-    // doesn't treat a bad signature as a delivery failure and retry
-    // forever, but nothing gets tallied without a valid signature.
-    return res.status(200).json({ ok: true, tallied: false });
-  }
-
-  // Only ever tally genuine call-hangup events, even if this URL is ever
-  // accidentally wired to a different event type in the dashboard.
-  if (verifiedPayload.resource !== "call" || verifiedPayload.event !== "hangup") {
-    return res.status(200).json({ ok: true, tallied: false, reason: "not a call.hangup event" });
-  }
-
-  const data = verifiedPayload.data || {};
-
-  // Internal (staff-to-staff) calls are deliberately excluded -- this
-  // tally is meant to reflect client/candidate-facing phone activity only.
-  if (data.is_internal === true) {
-    return res.status(200).json({ ok: true, tallied: false, reason: "internal call, excluded by design" });
-  }
-
-  const email = data.user && typeof data.user.email === "string" ? data.user.email.toLowerCase() : null;
-  const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
-  const durationSeconds = Number(data.duration_in_seconds) || 0;
-  const direction = data.direction === "outbound" ? "outbound" : "inbound"; // Ringover's own two values
-  const startTime = data.start_time || data.hangup_time || verifiedPayload.timestamp;
-
-  if (!consultantId || !startTime) {
-    // Either an unmapped Ringover user (e.g. Scott/Lee aren't consultants
-    // and have no leaderboard entry to tally into) or a malformed event --
-    // both are safe, silent no-ops rather than errors.
-    return res.status(200).json({ ok: true, tallied: false, reason: consultantId ? "missing start_time" : "no consultant mapped for this email" });
-  }
-
-  const weekKey = isoWeekKey(new Date(startTime * 1000).toISOString());
-  const tallyKey = `${TALLY_PREFIX}${weekKey}`;
-  const tally = (await kv.get(tallyKey)) || {};
-  if (!tally[consultantId]) {
-    tally[consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
-  }
-  tally[consultantId].calls += 1;
-  tally[consultantId].seconds += durationSeconds;
-  tally[consultantId][`${direction}Calls`] += 1;
-  tally[consultantId][`${direction}Seconds`] += durationSeconds;
-  await kv.set(tallyKey, tally);
-
-  return res.status(200).json({ ok: true, tallied: true, weekKey, consultantId });
+  // 200 either way (even an unverified signature) so Ringover doesn't
+  // treat it as a delivery failure and retry forever -- nothing gets
+  // tallied without a valid signature regardless of the response code.
+  return res.status(200).json({ ok: true, ...result });
 }
