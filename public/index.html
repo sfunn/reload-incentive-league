@@ -2244,53 +2244,94 @@ function App() {
   React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 18, color: INDIGO, marginTop: 8 } }, "Monthly Team Score"),
   monthlyTotals.length === 0 ? /*#__PURE__*/React.createElement(EmptyState, {
     text: "No completed weeks yet — monthly team totals will appear here."
-  }) : [...monthlyTotals].reverse().map(([mk, totals]) => {
-    const leader = totals.james === totals.josh ? null : totals.james > totals.josh ? "james" : "josh";
-    return /*#__PURE__*/React.createElement(Panel, {
-      key: mk
+  }) : (() => {
+    const reversedMonths = [...monthlyTotals].reverse();
+    const [latestMonthEntry, ...olderMonthEntries] = reversedMonths;
+
+    function monthPanel([mk, totals]) {
+      const leader = totals.james === totals.josh ? null : totals.james > totals.josh ? "james" : "josh";
+      return /*#__PURE__*/React.createElement(Panel, {
+        key: mk,
+        style: { flex: 1, minWidth: 260 }
+      }, /*#__PURE__*/React.createElement(SectionTitle, {
+        eyebrow: mk,
+        title: monthLabel(mk)
+      }), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 24
+        }
+      }, ["james", "josh"].map(teamId => /*#__PURE__*/React.createElement("div", {
+        key: teamId,
+        style: {
+          textAlign: "center",
+          opacity: leader && leader !== teamId ? 0.5 : 1
+        }
+      }, /*#__PURE__*/React.createElement(Badge, {
+        teamId: teamId,
+        size: 40
+      }), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontFamily: "'Work Sans', sans-serif",
+          fontWeight: 600,
+          fontSize: 13,
+          color: TEAMS[teamId].color,
+          marginTop: 6
+        }
+      }, TEAMS[teamId].label), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontFamily: "Georgia, serif",
+          fontSize: 26,
+          color: INDIGO,
+          marginTop: 2
+        }
+      }, totals[teamId]), leader === teamId && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: MELON,
+          fontWeight: 700,
+          marginTop: 2
+        }
+      }, "★ LEADING")))));
+    }
+
+    const winnersPanel = latestWeek && /*#__PURE__*/React.createElement(Panel, {
+      style: { flex: 1, minWidth: 260 }
     }, /*#__PURE__*/React.createElement(SectionTitle, {
-      eyebrow: mk,
-      title: monthLabel(mk)
+      eyebrow: "Weekly prize",
+      title: "Last week's winners"
     }), /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", gap: 16, flexWrap: "wrap" }
+    }, Object.entries(latestWinners).map(([teamId, w]) => /*#__PURE__*/React.createElement("div", {
+      key: teamId,
       style: {
         display: "flex",
         alignItems: "center",
-        justifyContent: "center",
-        gap: 24
+        gap: 10,
+        background: "rgba(255,176,140,0.14)",
+        border: `1px solid ${MELON}`,
+        borderRadius: 8,
+        padding: "10px 14px"
       }
-    }, ["james", "josh"].map(teamId => /*#__PURE__*/React.createElement("div", {
-      key: teamId,
-      style: {
-        textAlign: "center",
-        opacity: leader && leader !== teamId ? 0.5 : 1
-      }
-    }, /*#__PURE__*/React.createElement(Badge, {
-      teamId: teamId,
-      size: 40
-    }), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontFamily: "'Work Sans', sans-serif",
-        fontWeight: 600,
-        fontSize: 13,
-        color: TEAMS[teamId].color,
-        marginTop: 6
-      }
-    }, TEAMS[teamId].label), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontFamily: "Georgia, serif",
-        fontSize: 26,
-        color: INDIGO,
-        marginTop: 2
-      }
-    }, totals[teamId]), leader === teamId && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: MELON,
-        fontWeight: 700,
-        marginTop: 2
-      }
-    }, "★ LEADING")))));
-  }),
+    }, /*#__PURE__*/React.createElement(Trophy, {
+      size: 18,
+      color: MELON
+    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: { fontFamily: "Georgia, serif", fontSize: 14, color: INDIGO }
+    }, w.name), /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11.5, color: TEAMS[teamId].color, fontFamily: "'Work Sans', sans-serif", fontWeight: 600 }
+    }, TEAMS[teamId].label, " · ", w.metricValue, latestWeek.metric === METRIC_RATIO ? "%" : "", " ", METRIC_SHORT[latestWeek.metric] || latestWeek.metric.toLowerCase()))))));
+
+    return React.createElement(React.Fragment, null,
+      React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
+        winnersPanel,
+        latestMonthEntry && monthPanel(latestMonthEntry)
+      ),
+      olderMonthEntries.map(monthPanel)
+    );
+  })(),
   React.createElement("div", { style: { fontFamily: "Georgia, serif", fontSize: 18, color: INDIGO, marginTop: 8 } }, "Quarterly Individual Boards"),
   quarterlyBoards.length === 0 ? /*#__PURE__*/React.createElement(EmptyState, {
     text: "No completed weeks yet — the quarterly individual leaderboard will appear here."
