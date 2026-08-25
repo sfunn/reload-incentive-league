@@ -268,6 +268,34 @@ function pipelinePct(numerator, denominator) {
   const v = pipelinePctOrNull(numerator, denominator);
   return v === null ? "—" : `${Math.round(v)}%`;
 }
+// Aggregates a consultant/coordinator's commission lines by ACTUAL PAYMENT
+// STATUS, not accrual — "paid" here means commission.js's engine already
+// determined the scheduled paidDate has passed (or an admin explicitly
+// marked it Paid), the same status already driving the colour/label on
+// each line's payout cells. Deduplicates by feeId+splitId first, exactly
+// like the existing "Deals this year" list does, so a deal that legitimately
+// split across two bracket bands is never double-counted here either.
+function computePaidCommission(lines) {
+  const dealMap = new Map();
+  (lines || []).forEach((l) => {
+    const key = `${l.feeId}|${l.splitId}`;
+    if (!dealMap.has(key)) dealMap.set(key, l);
+  });
+  const dedupedLines = [...dealMap.values()];
+
+  let totalPaid = 0;
+  const byMonth = {}; // "YYYY-MM" -> total £ paid that month
+  dedupedLines.forEach((l) => {
+    (l.payout || []).forEach((p) => {
+      if (p.status !== "paid" || !p.paidDate) return;
+      totalPaid += p.amount;
+      const d = new Date(p.paidDate);
+      const mk = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      byMonth[mk] = (byMonth[mk] || 0) + p.amount;
+    });
+  });
+  return { totalPaid, byMonth };
+}
 function fmtPipelinePct(v) {
   return v === null || v === undefined ? "—" : `${Math.round(v)}%`;
 }
@@ -2627,7 +2655,7 @@ function App() {
         )
       ),
       isSuperAdmin && React.createElement("div", { style: { marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 } },
-        DEAL_CONSULTANTS.map(c => React.createElement("button", {
+        [...DEAL_CONSULTANTS].sort((a, b) => a.name.localeCompare(b.name)).map(c => React.createElement("button", {
           key: c.id,
           onClick: () => setCommissionViewConsultantId(c.id),
           style: {
@@ -2673,7 +2701,7 @@ function App() {
     !commissionData ? null :
     commissionData.isCoordinator ? React.createElement(React.Fragment, null,
       React.createElement(Panel, null,
-        React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 16 } },
+        React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 16, flexWrap: "wrap" } },
           React.createElement("div", null,
             React.createElement("div", { style: labelStyle }, "Deals coordinated"),
             React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, commissionData.dealCount)
@@ -2685,6 +2713,10 @@ function App() {
           React.createElement("div", null,
             React.createElement("div", { style: labelStyle }, "Total commission earned"),
             React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(commissionData.totalCommission).toLocaleString()}`)
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style: labelStyle }, "Total paid"),
+            React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, `£${Math.round(computePaidCommission(commissionData.lines).totalPaid).toLocaleString()}`)
           )
         ),
         commissionData.placementBreakdown && React.createElement("div", { style: { marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${INDIGO_HAIRLINE}` } },
@@ -2745,6 +2777,25 @@ function App() {
               );
             })
           ))
+        )
+      ),
+      React.createElement(Panel, null,
+        React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Previous months paid" }),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 8 } },
+          (() => {
+            const { byMonth: paidByMonth } = computePaidCommission(commissionData.lines);
+            return Array.from({ length: 12 }, (_, i) => {
+              const mk = `${commissionYear}-${String(i + 1).padStart(2, "0")}`;
+              const amount = paidByMonth[mk] || 0;
+              return React.createElement("div", {
+                key: mk,
+                style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5 }
+              },
+                React.createElement("span", { style: { color: amount > 0 ? INDIGO : INDIGO_MUTED } }, monthLabel(mk)),
+                React.createElement("span", { style: { fontWeight: amount > 0 ? 700 : 400, color: amount > 0 ? INDIGO : INDIGO_MUTED } }, `£${Math.round(amount).toLocaleString()}`)
+              );
+            });
+          })()
         )
       ),
       isSuperAdmin && React.createElement(Panel, null,
@@ -2853,32 +2904,48 @@ function App() {
         ),
         React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", gap: 30, flexWrap: "wrap" } },
           React.createElement("div", { style: { flex: 1, minWidth: 280 } },
-            React.createElement("div", { style: labelStyle }, "Deals this year"),
-            React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 6 } },
-              React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0" } },
-                React.createElement("span", { style: { width: 150, flexShrink: 0, ...labelStyle, marginBottom: 0 } }, "Name"),
-                React.createElement("span", { style: { width: 100, flexShrink: 0, ...labelStyle, marginBottom: 0 } }, "Fee $"),
-                React.createElement("span", { style: { width: 80, ...labelStyle, marginBottom: 0 } }, "Fee £"),
-                React.createElement("span", { style: { width: 80, ...labelStyle, marginBottom: 0 } }, "Start")
-              ),
-              (() => {
-                // A single deal can split into multiple lines across bracket
-                // boundaries — merge those back into one row here, since
-                // this is a deals list, not a bracket ladder, and a deal
-                // shouldn't visibly repeat just because it crossed a band.
-                const dealMap = new Map();
-                commissionData.lines.forEach((l) => {
-                  const key = `${l.feeId}|${l.splitId}`;
-                  if (dealMap.has(key)) {
-                    const existing = dealMap.get(key);
-                    existing.gbpPortion += l.gbpPortion;
-                    existing.usdAmount = (existing.usdAmount || 0) + (l.usdAmount || 0);
-                  } else {
-                    dealMap.set(key, { ...l });
-                  }
-                });
-                const dedupedDeals = [...dealMap.values()];
-                return React.createElement(React.Fragment, null,
+            (() => {
+              // Computed ONCE here and reused below for both the headline
+              // deal-count/revenue stat and the existing per-deal table —
+              // same dedup rule as everywhere else (a deal split across
+              // bracket boundaries is one deal, not two).
+              const dealMap = new Map();
+              commissionData.lines.forEach((l) => {
+                const key = `${l.feeId}|${l.splitId}`;
+                if (dealMap.has(key)) {
+                  const existing = dealMap.get(key);
+                  existing.gbpPortion += l.gbpPortion;
+                  existing.usdAmount = (existing.usdAmount || 0) + (l.usdAmount || 0);
+                } else {
+                  dealMap.set(key, { ...l });
+                }
+              });
+              const dedupedDeals = [...dealMap.values()];
+              const totalUSD = dedupedDeals.reduce((s, l) => s + (l.usdAmount || 0), 0);
+              const totalGBPSum = dedupedDeals.reduce((s, l) => s + (l.gbpPortion || 0), 0);
+
+              return React.createElement(React.Fragment, null,
+                React.createElement("div", { style: { display: "flex", gap: 24, marginBottom: 14 } },
+                  React.createElement("div", null,
+                    React.createElement("div", { style: labelStyle }, "Number of deals"),
+                    React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } }, dedupedDeals.length)
+                  ),
+                  React.createElement("div", null,
+                    React.createElement("div", { style: labelStyle }, "Revenue"),
+                    React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: INDIGO } },
+                      `$${Math.round(totalUSD).toLocaleString()}`,
+                      React.createElement("span", { style: { fontSize: 13, fontWeight: 500, color: INDIGO_MUTED, marginLeft: 6 } }, `£${Math.round(totalGBPSum).toLocaleString()}`)
+                    )
+                  )
+                ),
+                React.createElement("div", { style: labelStyle }, "Deals this year"),
+                React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 6 } },
+                  React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0" } },
+                    React.createElement("span", { style: { width: 150, flexShrink: 0, ...labelStyle, marginBottom: 0 } }, "Name"),
+                    React.createElement("span", { style: { width: 100, flexShrink: 0, ...labelStyle, marginBottom: 0 } }, "Fee $"),
+                    React.createElement("span", { style: { width: 80, ...labelStyle, marginBottom: 0 } }, "Fee £"),
+                    React.createElement("span", { style: { width: 80, ...labelStyle, marginBottom: 0 } }, "Start")
+                  ),
                   dedupedDeals.map((l, i) => React.createElement("div", {
                     key: `simple-${l.feeId}-${l.splitId}-${i}`,
                     style: { display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13 }
@@ -2888,30 +2955,32 @@ function App() {
                     React.createElement("span", { style: { width: 80, fontWeight: 600 } }, `£${Math.round(l.gbpPortion).toLocaleString()}`),
                     React.createElement("span", { style: { width: 80, color: INDIGO_MUTED, fontSize: 12 } }, l.startDate ? toDayMonthYear(l.startDate) : "—")
                   )),
-                  (() => {
-                    const totalUSD = dedupedDeals.reduce((s, l) => s + (l.usdAmount || 0), 0);
-                    const totalGBPSum = dedupedDeals.reduce((s, l) => s + (l.gbpPortion || 0), 0);
-                    return React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0 0", fontWeight: 700 } },
-                      React.createElement("span", { style: { width: 150, flexShrink: 0 } }, "Total"),
-                      React.createElement("span", { style: { width: 100, flexShrink: 0 } }, `$${Math.round(totalUSD).toLocaleString()}`),
-                      React.createElement("span", { style: { width: 80 } }, `£${Math.round(totalGBPSum).toLocaleString()}`),
-                      React.createElement("span", { style: { width: 80 } })
-                    );
-                  })()
-                );
-              })()
-            ),
+                  React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0 0", fontWeight: 700 } },
+                    React.createElement("span", { style: { width: 150, flexShrink: 0 } }, "Total"),
+                    React.createElement("span", { style: { width: 100, flexShrink: 0 } }, `$${Math.round(totalUSD).toLocaleString()}`),
+                    React.createElement("span", { style: { width: 80 } }, `£${Math.round(totalGBPSum).toLocaleString()}`),
+                    React.createElement("span", { style: { width: 80 } })
+                  )
+                )
+              );
+            })(),
             (() => {
               const withheldTotal = commissionData.lines.reduce(
                 (sum, l) => sum + (l.payout || []).filter(p => p.status === "withheld").reduce((s, p) => s + p.amount, 0),
                 0
               );
               const netCommission = commissionData.totalCommission - withheldTotal;
+              const { totalPaid, byMonth: paidByMonth } = computePaidCommission(commissionData.lines);
               return React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", flexDirection: "column", gap: 6 } },
                 React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
                   React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Commission earned"),
                   React.createElement("span", { style: { fontWeight: 700, color: VERDIGRIS } }, `£${Math.round(netCommission).toLocaleString()}`),
                   withheldTotal > 0 && React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, marginLeft: 6 } }, `(£${Math.round(withheldTotal).toLocaleString()} withheld)`)
+                ),
+                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 15 } },
+                  React.createElement("span", { style: { ...labelStyle, width: 140, flexShrink: 0 } }, "Total paid"),
+                  React.createElement("span", { style: { fontWeight: 700, color: INDIGO } }, `£${Math.round(totalPaid).toLocaleString()}`),
+                  React.createElement("span", { style: { fontSize: 11, color: INDIGO_MUTED, marginLeft: 6 } }, `${commissionYear}, actually disbursed only`)
                 ),
                 commissionData.placementBreakdown && React.createElement("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
                   React.createElement("div", { style: labelStyle }, "Placements vs Onsite Fees"),
@@ -2945,6 +3014,25 @@ function App() {
             })
           )
           )
+        )
+      ),
+      React.createElement(Panel, null,
+        React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Previous months paid" }),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", marginTop: 8 } },
+          (() => {
+            const { byMonth: paidByMonth } = computePaidCommission(commissionData.lines);
+            return Array.from({ length: 12 }, (_, i) => {
+              const mk = `${commissionYear}-${String(i + 1).padStart(2, "0")}`;
+              const amount = paidByMonth[mk] || 0;
+              return React.createElement("div", {
+                key: mk,
+                style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5 }
+              },
+                React.createElement("span", { style: { color: amount > 0 ? INDIGO : INDIGO_MUTED } }, monthLabel(mk)),
+                React.createElement("span", { style: { fontWeight: amount > 0 ? 700 : 400, color: amount > 0 ? INDIGO : INDIGO_MUTED } }, `£${Math.round(amount).toLocaleString()}`)
+              );
+            });
+          })()
         )
       ),
       isSuperAdmin && React.createElement(Panel, null,
