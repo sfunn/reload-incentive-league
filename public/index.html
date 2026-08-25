@@ -236,7 +236,15 @@ function weekTeamWinners(weekRows) {
 // against. Placement counts come from a separate, deliberately read-only,
 // counts-only endpoint (never $ amounts) — see api/league.js's
 // ?action=placement-counts.
-function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant, monthKey) {
+// Reads a manually-corrected figure for one person/month/field if an admin
+// has set one, otherwise falls back to the auto-computed value. Only ever
+// affects DISPLAY — the underlying weekly Atlas data and placement counts
+// are never touched, so this can always be safely cleared to revert.
+function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue) {
+  const stored = kpiOverrides && kpiOverrides[personId] && kpiOverrides[personId][monthKey] && kpiOverrides[personId][monthKey][field];
+  return (stored !== undefined && stored !== null) ? { value: stored, isOverridden: true } : { value: computedValue, isOverridden: false };
+}
+function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant, monthKey, kpiOverrides) {
   return people.map(p => {
     const source = p.isTeamLead ? "leadRows" : "rows";
     let cvs = 0, interviews = 0, onsite = 0, offers = 0;
@@ -250,7 +258,16 @@ function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant
       offers += Number(entry.offers) || 0;
     });
     const placements = (placementCountsByConsultant[p.id] || {})[monthKey] || 0;
-    return { ...p, cvs, interviews, onsite, offers, placements };
+    const ovCvs = kpiOverrideValue(kpiOverrides, p.id, monthKey, "cvs", cvs);
+    const ovInterviews = kpiOverrideValue(kpiOverrides, p.id, monthKey, "interviews", interviews);
+    const ovOnsite = kpiOverrideValue(kpiOverrides, p.id, monthKey, "onsite", onsite);
+    const ovOffers = kpiOverrideValue(kpiOverrides, p.id, monthKey, "offers", offers);
+    const ovPlacements = kpiOverrideValue(kpiOverrides, p.id, monthKey, "placements", placements);
+    return {
+      ...p,
+      cvs: ovCvs.value, interviews: ovInterviews.value, onsite: ovOnsite.value, offers: ovOffers.value, placements: ovPlacements.value,
+      overrides: { cvs: ovCvs.isOverridden, interviews: ovInterviews.isOverridden, onsite: ovOnsite.isOverridden, offers: ovOffers.isOverridden, placements: ovPlacements.isOverridden },
+    };
   });
 }
 // Simple mean, skipping null/undefined entries (used to skip months or
@@ -307,7 +324,7 @@ function fmtPipelinePct(v) {
 // person's own monthly percentages, skipping any month with an undefined
 // ratio (0 denominator) — Scott's explicit call, in preference to
 // recomputing the percentage from the pooled yearly sums.
-function computeYearPipelineForPerson(weeksList, person, placementCountsByConsultant, year) {
+function computeYearPipelineForPerson(weeksList, person, placementCountsByConsultant, year, kpiOverrides) {
   const source = person.isTeamLead ? "leadRows" : "rows";
   const months = [];
   for (let m = 1; m <= 12; m++) {
@@ -323,7 +340,16 @@ function computeYearPipelineForPerson(weeksList, person, placementCountsByConsul
       offers += Number(entry.offers) || 0;
     });
     const placements = (placementCountsByConsultant[person.id] || {})[mk] || 0;
-    months.push({ monthKey: mk, cvs, interviews, onsite, offers, placements });
+    const ovCvs = kpiOverrideValue(kpiOverrides, person.id, mk, "cvs", cvs);
+    const ovInterviews = kpiOverrideValue(kpiOverrides, person.id, mk, "interviews", interviews);
+    const ovOnsite = kpiOverrideValue(kpiOverrides, person.id, mk, "onsite", onsite);
+    const ovOffers = kpiOverrideValue(kpiOverrides, person.id, mk, "offers", offers);
+    const ovPlacements = kpiOverrideValue(kpiOverrides, person.id, mk, "placements", placements);
+    months.push({
+      monthKey: mk,
+      cvs: ovCvs.value, interviews: ovInterviews.value, onsite: ovOnsite.value, offers: ovOffers.value, placements: ovPlacements.value,
+      overrides: { cvs: ovCvs.isOverridden, interviews: ovInterviews.isOverridden, onsite: ovOnsite.isOverridden, offers: ovOffers.isOverridden, placements: ovPlacements.isOverridden },
+    });
   }
   const totalRaw = months.reduce((acc, m) => ({
     cvs: acc.cvs + m.cvs,
@@ -344,8 +370,8 @@ function computeYearPipelineForPerson(weeksList, person, placementCountsByConsul
 // "Everyone" here always means the ten real consultants only — never
 // James/Josh's own leadRows figures, matching the established rule that
 // their personal activity never feeds into any team/company-wide figure.
-function computeEveryoneMonthAverage(weeksList, realConsultants, placementCountsByConsultant, monthKey) {
-  const rows = computeMonthPipelineRows(weeksList, realConsultants.map(c => ({ ...c, isTeamLead: false })), placementCountsByConsultant, monthKey);
+function computeEveryoneMonthAverage(weeksList, realConsultants, placementCountsByConsultant, monthKey, kpiOverrides) {
+  const rows = computeMonthPipelineRows(weeksList, realConsultants.map(c => ({ ...c, isTeamLead: false })), placementCountsByConsultant, monthKey, kpiOverrides);
   return {
     cvs: pipelineMean(rows.map(r => r.cvs)),
     interviews: pipelineMean(rows.map(r => r.interviews)),
@@ -358,8 +384,8 @@ function computeEveryoneMonthAverage(weeksList, realConsultants, placementCounts
     pctOfferPlacement: pipelineMean(rows.map(r => pipelinePctOrNull(r.placements, r.offers))),
   };
 }
-function computeEveryoneYearAverage(weeksList, realConsultants, placementCountsByConsultant, year) {
-  const totals = realConsultants.map(c => computeYearPipelineForPerson(weeksList, { ...c, isTeamLead: false }, placementCountsByConsultant, year).total);
+function computeEveryoneYearAverage(weeksList, realConsultants, placementCountsByConsultant, year, kpiOverrides) {
+  const totals = realConsultants.map(c => computeYearPipelineForPerson(weeksList, { ...c, isTeamLead: false }, placementCountsByConsultant, year, kpiOverrides).total);
   return {
     cvs: pipelineMean(totals.map(t => t.cvs)),
     interviews: pipelineMean(totals.map(t => t.interviews)),
@@ -664,6 +690,35 @@ function App() {
       .then(d => setPlacementCounts(d.placementCounts || {}))
       .catch(() => {});
   }, []);
+  const [kpiOverrides, setKpiOverrides] = useState({});
+  const refreshKpiOverrides = useCallback(() => {
+    fetch("/api/league?action=kpi-overrides")
+      .then(r => r.json())
+      .then(d => setKpiOverrides(d.overrides || {}))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshKpiOverrides(); }, [refreshKpiOverrides]);
+  const [kpiOverrideError, setKpiOverrideError] = useState("");
+  const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
+    setKpiOverrideError("");
+    try {
+      const res = await fetch("/api/league?action=set-kpi-override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
+        body: JSON.stringify({ personId, monthKey, field, value }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setKpiOverrideError(data.error || "Couldn't save that correction.");
+        return false;
+      }
+      setKpiOverrides(data.overrides || {});
+      return true;
+    } catch (e) {
+      setKpiOverrideError("Couldn't reach the server to save that correction.");
+      return false;
+    }
+  }, [authUser]);
   const defaultHalf = new Date().getUTCMonth() < 6 ? "H1" : "H2";
   const [teamLeadPeriod, setTeamLeadPeriod] = useState(`${defaultHalf}-${new Date().getUTCFullYear()}`);
   const [teamLeadViewId, setTeamLeadViewId] = useState(null);
@@ -3517,19 +3572,30 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       ),
 
       focusedPerson ? (() => {
-        const { months, total } = computeYearPipelineForPerson(sortedWeeks, focusedPerson, placementCounts, pipelineYear);
-        const yearAvg = computeEveryoneYearAverage(sortedWeeks, consultants, placementCounts, pipelineYear);
+        const { months, total } = computeYearPipelineForPerson(sortedWeeks, focusedPerson, placementCounts, pipelineYear, kpiOverrides);
+        const yearAvg = computeEveryoneYearAverage(sortedWeeks, consultants, placementCounts, pipelineYear, kpiOverrides);
         return React.createElement(React.Fragment, null,
+          isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
           months.map(m => {
-            const monthAvg = computeEveryoneMonthAverage(sortedWeeks, consultants, placementCounts, m.monthKey);
+            const monthAvg = computeEveryoneMonthAverage(sortedWeeks, consultants, placementCounts, m.monthKey, kpiOverrides);
             return React.createElement(RowLine, { key: m.monthKey },
               React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
-              cellWithAvg(78, m.cvs, monthAvg.cvs, false),
-              cellWithAvg(86, m.interviews, monthAvg.interviews, false),
-              cellWithAvg(66, m.onsite, monthAvg.onsite, false),
-              cellWithAvg(66, m.offers, monthAvg.offers, false),
-              cellWithAvg(86, m.placements, monthAvg.placements, false),
+              isAdmin
+                ? React.createElement(EditableKpiCell, { width: 78, value: m.cvs, isOverridden: m.overrides.cvs, avgValue: monthAvg.cvs, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "cvs", v) })
+                : cellWithAvg(78, m.cvs, monthAvg.cvs, false),
+              isAdmin
+                ? React.createElement(EditableKpiCell, { width: 86, value: m.interviews, isOverridden: m.overrides.interviews, avgValue: monthAvg.interviews, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "interviews", v) })
+                : cellWithAvg(86, m.interviews, monthAvg.interviews, false),
+              isAdmin
+                ? React.createElement(EditableKpiCell, { width: 66, value: m.onsite, isOverridden: m.overrides.onsite, avgValue: monthAvg.onsite, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "onsite", v) })
+                : cellWithAvg(66, m.onsite, monthAvg.onsite, false),
+              isAdmin
+                ? React.createElement(EditableKpiCell, { width: 66, value: m.offers, isOverridden: m.overrides.offers, avgValue: monthAvg.offers, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "offers", v) })
+                : cellWithAvg(66, m.offers, monthAvg.offers, false),
+              isAdmin
+                ? React.createElement(EditableKpiCell, { width: 86, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v) })
+                : cellWithAvg(86, m.placements, monthAvg.placements, false),
               cellWithAvg(96, pipelinePctOrNull(m.interviews, m.cvs), monthAvg.pctCvInterview, true),
               cellWithAvg(104, pipelinePctOrNull(m.onsite, m.interviews), monthAvg.pctInterviewOnsite, true),
               cellWithAvg(96, pipelinePctOrNull(m.offers, m.onsite), monthAvg.pctOnsiteOffer, true),
@@ -3551,19 +3617,30 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         );
       })() : (() => {
         const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
-        const rows = computeMonthPipelineRows(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey);
+        const rows = computeMonthPipelineRows(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides);
         return React.createElement(React.Fragment, null,
+          isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
           rows.map(r => React.createElement(RowLine, { key: r.id },
             React.createElement(Cell, { flex: true },
               r.name,
               r.isTeamLead && React.createElement("div", { style: { fontSize: 10, color: MELON_LINK, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" } }, "Team lead")
             ),
-            React.createElement(Cell, { width: 78 }, r.cvs),
-            React.createElement(Cell, { width: 86 }, r.interviews),
-            React.createElement(Cell, { width: 66 }, r.onsite),
-            React.createElement(Cell, { width: 66 }, r.offers),
-            React.createElement(Cell, { width: 86 }, r.placements),
+            isAdmin
+              ? React.createElement(EditableKpiCell, { width: 78, value: r.cvs, isOverridden: r.overrides.cvs, onSave: (v) => saveKpiOverride(r.id, monthKey, "cvs", v) })
+              : React.createElement(Cell, { width: 78 }, r.cvs),
+            isAdmin
+              ? React.createElement(EditableKpiCell, { width: 86, value: r.interviews, isOverridden: r.overrides.interviews, onSave: (v) => saveKpiOverride(r.id, monthKey, "interviews", v) })
+              : React.createElement(Cell, { width: 86 }, r.interviews),
+            isAdmin
+              ? React.createElement(EditableKpiCell, { width: 66, value: r.onsite, isOverridden: r.overrides.onsite, onSave: (v) => saveKpiOverride(r.id, monthKey, "onsite", v) })
+              : React.createElement(Cell, { width: 66 }, r.onsite),
+            isAdmin
+              ? React.createElement(EditableKpiCell, { width: 66, value: r.offers, isOverridden: r.overrides.offers, onSave: (v) => saveKpiOverride(r.id, monthKey, "offers", v) })
+              : React.createElement(Cell, { width: 66 }, r.offers),
+            isAdmin
+              ? React.createElement(EditableKpiCell, { width: 86, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v) })
+              : React.createElement(Cell, { width: 86 }, r.placements),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
@@ -3661,6 +3738,53 @@ function Cell({
       alignSelf: alignSelf || undefined
     }
   }, children);
+}
+// An admin-editable version of a Consultant KPIs raw-count figure. Renders
+// a small number input defaulting to the current value (whether that's
+// auto-computed from Atlas or a manual correction); saving calls back to
+// persist it as a monthly override. `key={value}` on the input forces
+// React to remount it whenever the true value changes underneath (e.g.
+// after a save resolves), so the field never shows stale text. Purely a
+// DISPLAY correction — never touches the underlying weekly Atlas data.
+function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
+  const [saving, setSaving] = useState(false);
+  return React.createElement("div", { style: { width, flexShrink: 0 } },
+    React.createElement("input", {
+      key: value,
+      type: "number",
+      min: 0,
+      step: 1,
+      defaultValue: value,
+      disabled: saving,
+      onBlur: async (e) => {
+        const raw = e.target.value.trim();
+        const num = raw === "" ? 0 : Number(raw);
+        if (num === value || isNaN(num)) { e.target.value = value; return; }
+        setSaving(true);
+        await onSave(num);
+        setSaving(false);
+      },
+      onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
+      style: {
+        width: "100%",
+        fontSize: 13,
+        fontFamily: "'Work Sans', sans-serif",
+        padding: "2px 4px",
+        borderRadius: 4,
+        border: `1px solid ${isOverridden ? MELON : INDIGO_HAIRLINE}`,
+        background: isOverridden ? "rgba(255,176,140,0.14)" : WHITE,
+        color: INDIGO,
+        fontWeight: isOverridden ? 700 : 400,
+        opacity: saving ? 0.5 : 1,
+      }
+    }),
+    avgValue !== null && avgValue !== undefined && React.createElement("div", { style: { fontSize: 10, color: INDIGO_MUTED, fontWeight: 400, marginTop: 1 } }, `avg: ${Math.round(avgValue * 10) / 10}`),
+    isOverridden && React.createElement("button", {
+      onClick: () => onSave(null),
+      title: "Clear this correction and revert to the auto-computed figure",
+      style: { fontSize: 9, color: MELON_LINK, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, textAlign: "left" }
+    }, "revert to auto")
+  );
 }
 const labelStyle = {
   display: "block",
