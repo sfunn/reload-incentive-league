@@ -2690,9 +2690,9 @@ function App() {
       React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", flexDirection: "column", gap: 2 } },
         thisMonthItems.map((item, i) => React.createElement("div", {
           key: i,
-          style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0", color: INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 4, fontSize: 13, padding: "3px 0", color: INDIGO }
         },
-          React.createElement("span", null, item.candidateName || "—"),
+          React.createElement("span", { style: { width: 200, flexShrink: 0 } }, item.candidateName || "—"),
           React.createElement("span", { style: { fontWeight: 600 } }, `£${Math.round(item.amount).toLocaleString()}`)
         ))
       )
