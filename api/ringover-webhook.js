@@ -5,8 +5,9 @@ import jwt from "jsonwebtoken";
 // Ringover "Calls ended" webhook (event: hangup, resource: call) — fires
 // once per call that actually connected and then hung up, carrying the
 // real duration. Point Ringover's "Calls ended" URL field at this exact
-// endpoint. Confirmed against Ringover's own published API docs (2.1.0),
-// not guessed.
+// endpoint. Confirmed against Ringover's own published API docs AND against
+// real captured payloads (via the ?action=recent-logs stub phase) — not
+// guessed.
 //
 // Signature verification (V1, JWT HS512 — Ringover's documented default):
 // the whole event is delivered as a JWT in the X-Ringover-Webhook-Signature
@@ -16,20 +17,43 @@ import jwt from "jsonwebtoken";
 // `payload` claim IS the trusted event body — that's what this handler
 // reads, not req.body directly, so nothing unverified is ever tallied.
 //
-// STILL OPEN, deliberately not guessed:
-//   The exact shape of the payload's nested `data.user` object (Ringover's
-//   own docs show it as an empty placeholder in the call-event sample).
-//   This handler tallies by the raw numeric `data.user_id` for now, and
-//   separately logs the full `data.user` object from the first real
-//   events so it can be inspected via ?action=recent-logs before deciding
-//   whether to match consultants by email (like Atlas) or by a manually
-//   confirmed user_id -> consultantId table.
+// Consultant identification: confirmed from real captured payloads that
+// data.user.email is present and matches exactly the same @reloadsearch.com
+// addresses already used everywhere else in this app — so this reuses the
+// same email -> consultant mapping as auth.js, rather than Ringover's own
+// internal numeric/string user_id, which nothing else in this app knows
+// about. Keep this table in sync with auth.js's EMAIL_TO_CONSULTANT by
+// hand if either ever changes — this codebase duplicates the mapping per
+// file rather than sharing an import, matching every other webhook here.
+//
+// Scope, per Scott's explicit decisions:
+//   - Calls that hit an answering machine/voicemail (is_internal false,
+//     answering_machine_detection "MACHINE") count the SAME as a real
+//     human conversation — both represent genuine calling effort.
+//   - Internal calls (staff calling staff, is_internal true) are EXCLUDED
+//     entirely — this tally is meant to reflect client/candidate-facing
+//     phone activity only.
 // ============================================================================
 
 const RINGOVER_WEBHOOK_KEY = process.env.RINGOVER_WEBHOOK_KEY;
 const RECENT_LOGS_KEY = "ringover-webhook-recent-logs";
 const MAX_LOGS = 20;
-const TALLY_PREFIX = "ringover-tally:"; // ringover-tally:{ISO week} -> { [ringoverUserId]: {...} }
+const TALLY_PREFIX = "ringover-tally:"; // ringover-tally:{ISO week} -> { [consultantId]: {...} }
+
+const EMAIL_TO_CONSULTANT = {
+  "alex@reloadsearch.com": "alex-silverman",
+  "ash@reloadsearch.com": "ash-thiara",
+  "jack@reloadsearch.com": "jack-thompson",
+  "max@reloadsearch.com": "max-hart",
+  "oleg@reloadsearch.com": "oleg-sokyrka",
+  "alexander@reloadsearch.com": "alex-aparo",
+  "jackr@reloadsearch.com": "jack-routledge",
+  "joe@reloadsearch.com": "joe-purton",
+  "joshd@reloadsearch.com": "josh-davis",
+  "natasha@reloadsearch.com": "natasha-barnard",
+  "james@reloadsearch.com": "james-lancer",
+  "josh@reloadsearch.com": "josh-stark",
+};
 
 // Matches league.js's own isoWeekKey exactly, so both files always agree
 // on which real-world Monday–Sunday window a given date falls into.
@@ -59,10 +83,9 @@ function verifyAndDecode(req) {
 
 export default async function handler(req, res) {
   if (req.method === "GET" && req.query.action === "recent-logs") {
-    // TODO before this leaves its verification phase: gate to Super Admin
-    // only, matching every other admin-only read in this codebase. Left
-    // open for now purely to keep setup friction low while confirming the
-    // real data.user shape.
+    // TODO before this goes further: gate to Super Admin only, matching
+    // every other admin-only read in this codebase. Left open for now
+    // purely to keep setup friction low during initial verification.
     const logs = (await kv.get(RECENT_LOGS_KEY)) || [];
     return res.status(200).json({ logs });
   }
@@ -94,30 +117,41 @@ export default async function handler(req, res) {
   // Only ever tally genuine call-hangup events, even if this URL is ever
   // accidentally wired to a different event type in the dashboard.
   if (verifiedPayload.resource !== "call" || verifiedPayload.event !== "hangup") {
-    return res.status(200).json({ ok: true, tallied: false, reason: "not a call.ended event" });
+    return res.status(200).json({ ok: true, tallied: false, reason: "not a call.hangup event" });
   }
 
   const data = verifiedPayload.data || {};
-  const ringoverUserId = data.user_id;
+
+  // Internal (staff-to-staff) calls are deliberately excluded -- this
+  // tally is meant to reflect client/candidate-facing phone activity only.
+  if (data.is_internal === true) {
+    return res.status(200).json({ ok: true, tallied: false, reason: "internal call, excluded by design" });
+  }
+
+  const email = data.user && typeof data.user.email === "string" ? data.user.email.toLowerCase() : null;
+  const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
   const durationSeconds = Number(data.duration_in_seconds) || 0;
   const direction = data.direction === "outbound" ? "outbound" : "inbound"; // Ringover's own two values
   const startTime = data.start_time || data.hangup_time || verifiedPayload.timestamp;
 
-  if (!ringoverUserId || !startTime) {
-    return res.status(200).json({ ok: true, tallied: false, reason: "missing user_id or start_time" });
+  if (!consultantId || !startTime) {
+    // Either an unmapped Ringover user (e.g. Scott/Lee aren't consultants
+    // and have no leaderboard entry to tally into) or a malformed event --
+    // both are safe, silent no-ops rather than errors.
+    return res.status(200).json({ ok: true, tallied: false, reason: consultantId ? "missing start_time" : "no consultant mapped for this email" });
   }
 
   const weekKey = isoWeekKey(new Date(startTime * 1000).toISOString());
   const tallyKey = `${TALLY_PREFIX}${weekKey}`;
   const tally = (await kv.get(tallyKey)) || {};
-  if (!tally[ringoverUserId]) {
-    tally[ringoverUserId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
+  if (!tally[consultantId]) {
+    tally[consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
   }
-  tally[ringoverUserId].calls += 1;
-  tally[ringoverUserId].seconds += durationSeconds;
-  tally[ringoverUserId][`${direction}Calls`] += 1;
-  tally[ringoverUserId][`${direction}Seconds`] += durationSeconds;
+  tally[consultantId].calls += 1;
+  tally[consultantId].seconds += durationSeconds;
+  tally[consultantId][`${direction}Calls`] += 1;
+  tally[consultantId][`${direction}Seconds`] += durationSeconds;
   await kv.set(tallyKey, tally);
 
-  return res.status(200).json({ ok: true, tallied: true, weekKey, ringoverUserId });
+  return res.status(200).json({ ok: true, tallied: true, weekKey, consultantId });
 }
