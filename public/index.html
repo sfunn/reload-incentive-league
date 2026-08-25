@@ -2798,7 +2798,7 @@ function App() {
           )
         );
       })(),
-      React.createElement(Panel, null,
+      React.createElement(Panel, { style: { maxWidth: 480 } },
         React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Payments" }),
         (() => {
           const realNow = new Date().getUTCFullYear();
@@ -3088,7 +3088,7 @@ function App() {
           )
         )
       ),
-      React.createElement(Panel, null,
+      React.createElement(Panel, { style: { maxWidth: 480 } },
         React.createElement(SectionTitle, { eyebrow: commissionYear, title: "Payments" }),
         (() => {
           const realNow = new Date().getUTCFullYear();
