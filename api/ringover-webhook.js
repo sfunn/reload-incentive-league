@@ -1,5 +1,6 @@
 import { kv } from "@vercel/kv";
 import jwt from "jsonwebtoken";
+import { getUserFromRequest } from "./_authHelpers.js";
 
 // ============================================================================
 // Ringover "Calls ended" webhook (event: hangup, resource: call) — fires
@@ -33,12 +34,19 @@ import jwt from "jsonwebtoken";
 //   - Internal calls (staff calling staff, is_internal true) are EXCLUDED
 //     entirely — this tally is meant to reflect client/candidate-facing
 //     phone activity only.
+//
+// Storage: ONE key holding everything ({ [weekKey]: { [consultantId]:
+// {...} } }), matching how the rest of this codebase stores its domain
+// data (reload-league-weeks, etc. are each a single blob, never one KV
+// key per record) — not the per-week-key design this file started with,
+// which doesn't scan efficiently and was inconsistent with everything
+// else here.
 // ============================================================================
 
 const RINGOVER_WEBHOOK_KEY = process.env.RINGOVER_WEBHOOK_KEY;
 const RECENT_LOGS_KEY = "ringover-webhook-recent-logs";
 const MAX_LOGS = 20;
-const TALLY_PREFIX = "ringover-tally:"; // ringover-tally:{ISO week} -> { [consultantId]: {...} }
+const TALLY_KEY = "ringover-tally"; // { [ISO week]: { [consultantId]: {calls, seconds, inboundCalls, inboundSeconds, outboundCalls, outboundSeconds} } }
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -65,6 +73,32 @@ function isoWeekKey(dateStr) {
   const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
   const week = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+// Matches league.js's own isoWeekToDates exactly -- the SUNDAY (end of
+// week) that a given ISO week key covers. league.js stores each week
+// record's own .date field as that Sunday (not the Monday), and buckets
+// months off it that way (w.date === sunday) -- this mirrors that exact
+// convention so a week's totals land in the same calendar month here as
+// they do for CVs/Interviews/etc elsewhere in this app, not a different
+// one just because a week happens to straddle a month boundary.
+function isoWeekSunday(weekKey) {
+  const [yearStr, wStr] = weekKey.split("-W");
+  const year = Number(yearStr);
+  const weekNum = Number(wStr);
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Day = (jan4.getUTCDay() + 6) % 7; // 0 = Monday
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - jan4Day);
+  const monday = new Date(week1Monday);
+  monday.setUTCDate(week1Monday.getUTCDate() + (weekNum - 1) * 7);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  return sunday;
+}
+
+function monthOf(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function verifyAndDecode(req) {
@@ -96,8 +130,46 @@ export default async function handler(req, res) {
     // confirmed without having to reason about a raw log entry.
     const week = req.query.week;
     if (!week) return res.status(400).json({ error: "week query param required, e.g. ?action=tally&week=2026-W35" });
-    const tally = (await kv.get(`${TALLY_PREFIX}${week}`)) || {};
-    return res.status(200).json({ week, tally });
+    const allTally = (await kv.get(TALLY_KEY)) || {};
+    return res.status(200).json({ week, tally: allTally[week] || {} });
+  }
+
+  if (req.method === "GET" && req.query.action === "monthly-tally") {
+    // What the Consultant KPIs page actually consumes: every week folded
+    // into calendar months (same monthOf convention as CVs/Interviews/etc
+    // elsewhere in this app), one KV read regardless of how many weeks of
+    // history exist. Shape: { [monthKey]: { [consultantId]: { calls,
+    // seconds } } }.
+    const allTally = (await kv.get(TALLY_KEY)) || {};
+    const byMonth = {};
+    for (const [weekKey, weekTally] of Object.entries(allTally)) {
+      const monthKey = monthOf(isoWeekSunday(weekKey));
+      if (!byMonth[monthKey]) byMonth[monthKey] = {};
+      for (const [consultantId, stats] of Object.entries(weekTally)) {
+        if (!byMonth[monthKey][consultantId]) byMonth[monthKey][consultantId] = { calls: 0, seconds: 0 };
+        byMonth[monthKey][consultantId].calls += stats.calls || 0;
+        byMonth[monthKey][consultantId].seconds += stats.seconds || 0;
+      }
+    }
+    return res.status(200).json({ byMonth });
+  }
+
+  if (req.method === "POST" && req.query.action === "clear-tally") {
+    // Deletes one week's worth of tallied data from the single blob.
+    // Super Admin only -- this is a destructive action (unlike
+    // set-kpi-override on the KPI page, which only ever corrects one
+    // field and can always be reverted), so it's gated more strictly than
+    // the rest of this file.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required." });
+    }
+    const week = (req.body || {}).week;
+    if (!week) return res.status(400).json({ error: "week is required in the request body, e.g. { \"week\": \"2026-W35\" }" });
+    const allTally = (await kv.get(TALLY_KEY)) || {};
+    delete allTally[week];
+    await kv.set(TALLY_KEY, allTally);
+    return res.status(200).json({ ok: true, week, cleared: true });
   }
 
   if (req.method !== "POST") {
@@ -108,10 +180,7 @@ export default async function handler(req, res) {
 
   // Everything below builds up ONE result object -- verification status,
   // AND the tally outcome (tallied yes/no, why, which consultant, which
-  // week) -- so a single log entry tells the whole story. Previously the
-  // log only recorded whether the signature verified, not whether the
-  // event actually got tallied, which made it impossible to confirm a
-  // real test call actually worked from ?action=recent-logs alone.
+  // week) -- so a single log entry tells the whole story.
   const result = { verified: !!verifiedPayload, tallied: false, reason: null, consultantId: null, weekKey: null };
 
   if (!verifiedPayload) {
@@ -135,16 +204,17 @@ export default async function handler(req, res) {
         const durationSeconds = Number(data.duration_in_seconds) || 0;
         const direction = data.direction === "outbound" ? "outbound" : "inbound";
         const weekKey = isoWeekKey(new Date(startTime * 1000).toISOString());
-        const tallyKey = `${TALLY_PREFIX}${weekKey}`;
-        const tally = (await kv.get(tallyKey)) || {};
-        if (!tally[consultantId]) {
-          tally[consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
+
+        const allTally = (await kv.get(TALLY_KEY)) || {};
+        if (!allTally[weekKey]) allTally[weekKey] = {};
+        if (!allTally[weekKey][consultantId]) {
+          allTally[weekKey][consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
         }
-        tally[consultantId].calls += 1;
-        tally[consultantId].seconds += durationSeconds;
-        tally[consultantId][`${direction}Calls`] += 1;
-        tally[consultantId][`${direction}Seconds`] += durationSeconds;
-        await kv.set(tallyKey, tally);
+        allTally[weekKey][consultantId].calls += 1;
+        allTally[weekKey][consultantId].seconds += durationSeconds;
+        allTally[weekKey][consultantId][`${direction}Calls`] += 1;
+        allTally[weekKey][consultantId][`${direction}Seconds`] += durationSeconds;
+        await kv.set(TALLY_KEY, allTally);
 
         result.tallied = true;
         result.consultantId = consultantId;
