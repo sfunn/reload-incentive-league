@@ -150,8 +150,13 @@ module.exports = async (req, res) => {
         if (!byClient[firm]) byClient[firm] = { firm, totalUSD: 0, totalGBP: 0, deals: 0, onsites: 0 };
         byClient[firm].totalUSD += r.usdAmount;
         if (r.gbpAmount !== null) byClient[firm].totalGBP += r.gbpAmount;
-        byClient[firm].deals += 1;
-        if (!r.hasPlacementName) byClient[firm].onsites += 1;
+        // Deals and onsites are two SEPARATE, non-overlapping counts, not
+        // one nested inside the other — "deals" means genuine placements
+        // only (a real candidateName), "onsites" means onsite-fee-type
+        // records. Revenue (USD/GBP above) still includes both, since
+        // onsite fees are real revenue — only the COUNT semantics split.
+        if (r.hasPlacementName) byClient[firm].deals += 1;
+        else byClient[firm].onsites += 1;
         clientGrandTotal += r.usdAmount;
       }
       const clientBreakdown = Object.values(byClient)
@@ -185,8 +190,10 @@ module.exports = async (req, res) => {
         totals[r.consultantId].totalUSD += usd;
         const gbpForLeaderboard = await convertToGBP(r, allRates);
         if (gbpForLeaderboard !== null) totals[r.consultantId].totalGBP += gbpForLeaderboard;
-        totals[r.consultantId].deals += 1;
-        if (!hasPlacementName) totals[r.consultantId].onsites += 1;
+        // Same separation as byClient/bySource: deals = genuine placements
+        // only, onsites = onsite-fee-type records, never both at once.
+        if (hasPlacementName) totals[r.consultantId].deals += 1;
+        else totals[r.consultantId].onsites += 1;
       }
 
       // Source breakdown — visible to everyone, same as the leaderboard.
@@ -202,8 +209,8 @@ module.exports = async (req, res) => {
       if (r.source) {
         const gbp = await convertToGBP(r, allRates);
         if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, onsites: 0, valueUSD: 0, valueGBP: 0 };
-        bySource[r.source].deals += 1;
-        if (!hasPlacementName) bySource[r.source].onsites += 1;
+        if (hasPlacementName) bySource[r.source].deals += 1;
+        else bySource[r.source].onsites += 1;
         bySource[r.source].valueUSD += usd;
         if (gbp !== null) bySource[r.source].valueGBP += gbp;
       }
