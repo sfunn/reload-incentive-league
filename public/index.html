@@ -387,11 +387,15 @@ function computeYearPipelineForPerson(weeksList, person, placementCountsByConsul
   };
   return { months, total };
 }
-// "Everyone" here always means the ten real consultants only — never
-// James/Josh's own leadRows figures, matching the established rule that
-// their personal activity never feeds into any team/company-wide figure.
-function computeEveryoneMonthAverage(weeksList, realConsultants, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
-  const rows = computeMonthPipelineRows(weeksList, realConsultants.map(c => ({ ...c, isTeamLead: false })), placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth);
+// "Everyone" here means all 12 people shown on this page -- the ten
+// consultants AND James/Josh's own personal figures -- per Scott's
+// explicit decision (reversing the earlier company-wide-average rule
+// used elsewhere in this app, which is deliberately UNCHANGED: this
+// average is local to the Consultant KPIs page only). Each person keeps
+// their own real isTeamLead flag so James/Josh's figures are correctly
+// read from leadRows, not silently zeroed by being misread from rows.
+function computeEveryoneMonthAverage(weeksList, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
+  const rows = computeMonthPipelineRows(weeksList, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth);
   return {
     cvs: pipelineMean(rows.map(r => r.cvs)),
     interviews: pipelineMean(rows.map(r => r.interviews)),
@@ -406,8 +410,8 @@ function computeEveryoneMonthAverage(weeksList, realConsultants, placementCounts
     pctOfferPlacement: pipelineMean(rows.map(r => pipelinePctOrNull(r.placements, r.offers))),
   };
 }
-function computeEveryoneYearAverage(weeksList, realConsultants, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth) {
-  const totals = realConsultants.map(c => computeYearPipelineForPerson(weeksList, { ...c, isTeamLead: false }, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth).total);
+function computeEveryoneYearAverage(weeksList, everyonePeople, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth) {
+  const totals = everyonePeople.map(p => computeYearPipelineForPerson(weeksList, p, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth).total);
   return {
     cvs: pipelineMean(totals.map(t => t.cvs)),
     interviews: pipelineMean(totals.map(t => t.interviews)),
@@ -3606,12 +3610,12 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
 
       focusedPerson ? (() => {
         const { months, total } = computeYearPipelineForPerson(sortedWeeks, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
-        const yearAvg = computeEveryoneYearAverage(sortedWeeks, consultants, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
+        const yearAvg = computeEveryoneYearAverage(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
         return React.createElement(React.Fragment, null,
           isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
           months.map(m => {
-            const monthAvg = computeEveryoneMonthAverage(sortedWeeks, consultants, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
+            const monthAvg = computeEveryoneMonthAverage(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
             return React.createElement(RowLine, { key: m.monthKey },
               React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
               isAdmin
