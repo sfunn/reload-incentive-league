@@ -147,10 +147,11 @@ module.exports = async (req, res) => {
       for (const r of withUSD) {
         if (r.usdAmount === null || !r.consultantId) continue;
         const firm = r.clientCompanyName || "Unknown";
-        if (!byClient[firm]) byClient[firm] = { firm, totalUSD: 0, totalGBP: 0, deals: 0 };
+        if (!byClient[firm]) byClient[firm] = { firm, totalUSD: 0, totalGBP: 0, deals: 0, onsites: 0 };
         byClient[firm].totalUSD += r.usdAmount;
         if (r.gbpAmount !== null) byClient[firm].totalGBP += r.gbpAmount;
         byClient[firm].deals += 1;
+        if (!r.hasPlacementName) byClient[firm].onsites += 1;
         clientGrandTotal += r.usdAmount;
       }
       const clientBreakdown = Object.values(byClient)
@@ -188,10 +189,17 @@ module.exports = async (req, res) => {
       // leaderboard total until every deal has a source recorded. GBP is
       // tracked the same "never guess, just may understate slightly until
       // the rate is set" way as usdAmount already is everywhere else.
+      // Onsites uses the same genuine-placement-vs-onsite-fee distinction
+      // as commission.js's own Placements-vs-Onsite-Fees split (Pillar 4):
+      // a record only counts as a genuine placement if it links to a real
+      // candidate name; everything else is an onsite-fee-type record.
       if (r.source) {
         const gbp = await convertToGBP(r, allRates);
-        if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, valueUSD: 0, valueGBP: 0 };
+        const placement = r.placementId ? placements[r.placementId] : null;
+        const hasPlacementName = !!(placement && placement.candidateName);
+        if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, onsites: 0, valueUSD: 0, valueGBP: 0 };
         bySource[r.source].deals += 1;
+        if (!hasPlacementName) bySource[r.source].onsites += 1;
         bySource[r.source].valueUSD += usd;
         if (gbp !== null) bySource[r.source].valueGBP += gbp;
       }
