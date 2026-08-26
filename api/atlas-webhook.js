@@ -2,13 +2,16 @@ import { kv } from "@vercel/kv";
 import { Webhook } from "svix";
 
 // ============================================================================
-// CONFIG — confirm/adjust these two things once you know for sure:
-// 1. INTERVIEW_STAGES below — confirm with Atlas/your team whether "Candidates
-//    to IV stage" means only "1st Stage Interview", or also "HR call"/"HRX".
-//    If it's more than one stage, add them all to the array.
-// 2. EMAIL_TO_CONSULTANT — already filled in with real Atlas emails.
+// CONFIG:
+// 1. EMAIL_TO_CONSULTANT below — already filled in with real Atlas emails.
 // ============================================================================
 const CVS_OUT_STAGE = "CV Sent";
+// CONFIRMED with Scott: any of these three stages counts toward a
+// candidate's Interview KPI (HR call, HRX, and 1st Stage Interview are all
+// genuinely "reached interview stage"), but the dedup logic just below
+// caps it at ONE count per candidate+project no matter how many of these
+// stages they pass through — that dedup is the actual answer to "should
+// this count only once", not restricting which stage names qualify.
 const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
 // Confirmed directly against Atlas's own pipeline stage names — kept as
 // arrays (like INTERVIEW_STAGES above) so a future variant name can be
