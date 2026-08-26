@@ -2608,7 +2608,7 @@ function App() {
       React.createElement(React.Fragment, null,
         React.createElement(TableHeader, { cols: [
           { label: "#", width: 24 },
-          { label: "Consultant", flex: true },
+          { label: "Consultant", width: 220 },
           { label: "USD", width: 90 },
           { label: "GBP", width: 90 },
           { label: "Deals", width: 55 },
@@ -2625,7 +2625,7 @@ function App() {
             }
           },
             React.createElement("span", { style: { width: 24, flexShrink: 0, color: INDIGO_MUTED } }, i + 1),
-            React.createElement("span", { style: { flex: 1 } }, r.consultantName || r.consultantId),
+            React.createElement("span", { style: { width: 220, flexShrink: 0 } }, r.consultantName || r.consultantId),
             React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `$${Math.round(r.totalUSD).toLocaleString()}`),
             React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(r.totalGBP).toLocaleString()}`),
             React.createElement("span", { style: { width: 55, flexShrink: 0 } }, r.deals),
@@ -2633,10 +2633,10 @@ function App() {
             React.createElement("span", { style: { width: 55, flexShrink: 0 } }, `${r.percentage.toFixed(1)}%`)
           )),
           React.createElement("div", {
-            style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 14, padding: "9px 0 0", marginTop: 4, color: INDIGO }
+            style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 14, padding: "9px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
           },
             React.createElement("span", { style: { width: 24, flexShrink: 0 } }),
-            React.createElement("span", { style: { flex: 1 } }, "Total"),
+            React.createElement("span", { style: { width: 220, flexShrink: 0 } }, "Total"),
             React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `$${Math.round(dealsLeaderboard.reduce((s, r) => s + r.totalUSD, 0)).toLocaleString()}`),
             React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(dealsLeaderboard.reduce((s, r) => s + r.totalGBP, 0)).toLocaleString()}`),
             React.createElement("span", { style: { width: 55, flexShrink: 0 } }, dealsLeaderboard.reduce((s, r) => s + r.deals, 0)),
@@ -2672,7 +2672,7 @@ function App() {
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, `${s.percentage.toFixed(1)}%`)
         )),
         React.createElement("div", {
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, color: INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
         },
           React.createElement("span", { style: { flex: 1 } }, "Total"),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`),
@@ -2707,7 +2707,7 @@ function App() {
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, `${c.percentage.toFixed(1)}%`)
         )),
         React.createElement("div", {
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, color: INDIGO }
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
         },
           React.createElement("span", { style: { flex: 1 } }, "Total"),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `$${Math.round(clientGrandTotal).toLocaleString()}`),
@@ -2973,7 +2973,7 @@ function App() {
               React.createElement("span", { style: { width: 55, flexShrink: 0 } }, `${sourceGrandTotalGBP > 0 ? ((s.valueGBP / sourceGrandTotalGBP) * 100).toFixed(1) : "0.0"}%`)
             )),
             React.createElement("div", {
-              style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, color: INDIGO }
+              style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
             },
               React.createElement("span", { style: { flex: 1 } }, "Total"),
               React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `£${Math.round(sourceGrandTotalGBP).toLocaleString()}`),
@@ -3284,7 +3284,7 @@ React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap"
                     React.createElement("span", { style: { width: 50, flexShrink: 0 } }, `${sourceGrandTotalUSD > 0 ? ((s.valueUSD / sourceGrandTotalUSD) * 100).toFixed(1) : "0.0"}%`)
                   )),
                   React.createElement("div", {
-                    style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, color: INDIGO }
+                    style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
                   },
                     React.createElement("span", { style: { flex: 1 } }, "Total"),
                     React.createElement("span", { style: { width: 75, flexShrink: 0 } }, `$${Math.round(sourceGrandTotalUSD).toLocaleString()}`),
