@@ -50,6 +50,26 @@ async function convertToUSD(record, allRates) {
   return record.shareAmount * rate;
 }
 
+// Same conversion logic as commission.js's convertToGBP, duplicated here
+// exactly (matching how every API file in this codebase keeps its own
+// copy of small helpers instead of importing across routes, and matching
+// the project's explicit preference for hardcoded, narrowly-scoped logic
+// over generalized logic for anything financial) — run the SAME monthly
+// rates in reverse for GBP itself, and via USD as a bridge for EUR only.
+async function convertToGBP(record, allRates) {
+  if (record.currency === "GBP") return record.shareAmount;
+  const gbpRate = getRateForCurrency(record, allRates, "GBP");
+  if (!gbpRate) return null; // no GBP rate set for any applicable month yet
+  if (record.currency === "USD") return record.shareAmount / gbpRate;
+  if (record.currency === "EUR") {
+    const eurRate = getRateForCurrency(record, allRates, "EUR");
+    if (!eurRate) return null;
+    const usdEquivalent = record.shareAmount * eurRate;
+    return usdEquivalent / gbpRate;
+  }
+  return null;
+}
+
 // Which year a deal counts toward — for the leaderboard, the admin table,
 // and commission — is based on the candidate's START DATE, not the
 // signed/fee date. That way editing a fee's recorded date in Atlas (e.g.
@@ -102,6 +122,7 @@ module.exports = async (req, res) => {
           return {
             ...r,
             usdAmount: await convertToUSD(r, allRates),
+            gbpAmount: await convertToGBP(r, allRates),
             candidateName: (placement && placement.candidateName) || r.notes || null,
             hasPlacementName: !!(placement && placement.candidateName),
             clientCompanyName: (placement && placement.clientCompanyName) || r.projectClientName || null,
@@ -116,14 +137,20 @@ module.exports = async (req, res) => {
       // Firm/Client breakdown — Super Admin only. Uses the Client field
       // captured from Atlas's placement webhook. Deals with no linked
       // placement yet (or from an unmapped owner) fall into "Unknown" so
-      // the percentages still add up to the full total.
+      // the percentages still add up to the full total. GBP is tracked
+      // alongside USD the same way it already is on individual deal rows —
+      // a deal missing its GBP rate for the month simply doesn't add to
+      // totalGBP (silently understating it slightly until that rate is
+      // set), same "never guess" behavior as usdAmount already has.
       const byClient = {};
       let clientGrandTotal = 0;
       for (const r of withUSD) {
         if (r.usdAmount === null || !r.consultantId) continue;
         const firm = r.clientCompanyName || "Unknown";
-        if (!byClient[firm]) byClient[firm] = { firm, totalUSD: 0 };
+        if (!byClient[firm]) byClient[firm] = { firm, totalUSD: 0, totalGBP: 0, deals: 0 };
         byClient[firm].totalUSD += r.usdAmount;
+        if (r.gbpAmount !== null) byClient[firm].totalGBP += r.gbpAmount;
+        byClient[firm].deals += 1;
         clientGrandTotal += r.usdAmount;
       }
       const clientBreakdown = Object.values(byClient)
@@ -158,15 +185,22 @@ module.exports = async (req, res) => {
       // Source breakdown — visible to everyone, same as the leaderboard.
       // Deals without a source set yet just aren't counted here (rather
       // than guessing), so this total may be a bit less than the full
-      // leaderboard total until every deal has a source recorded.
+      // leaderboard total until every deal has a source recorded. GBP is
+      // tracked the same "never guess, just may understate slightly until
+      // the rate is set" way as usdAmount already is everywhere else.
       if (r.source) {
-        if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, valueUSD: 0 };
+        const gbp = await convertToGBP(r, allRates);
+        if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, valueUSD: 0, valueGBP: 0 };
         bySource[r.source].deals += 1;
         bySource[r.source].valueUSD += usd;
+        if (gbp !== null) bySource[r.source].valueGBP += gbp;
       }
     }
     const leaderboard = Object.values(totals).sort((a, b) => b.totalUSD - a.totalUSD);
-    const sourceBreakdown = Object.values(bySource).sort((a, b) => b.valueUSD - a.valueUSD);
+    const sourceGrandTotalUSD = Object.values(bySource).reduce((s, r) => s + r.valueUSD, 0);
+    const sourceBreakdown = Object.values(bySource)
+      .map((s) => ({ ...s, percentage: sourceGrandTotalUSD > 0 ? (s.valueUSD / sourceGrandTotalUSD) * 100 : 0 }))
+      .sort((a, b) => b.valueUSD - a.valueUSD);
     return res.status(200).json({ year, leaderboard, sourceBreakdown });
   }
 
