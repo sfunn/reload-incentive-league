@@ -3750,6 +3750,8 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       })() : (() => {
         const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
         const rows = computeMonthPipelineRows(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides, ringoverByMonth);
+        const monthAvg = computeEveryoneMonthAverage(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides, ringoverByMonth);
+        const fmtAvgCount = (v) => v === null || v === undefined ? "—" : Math.round(v * 10) / 10;
         return React.createElement(React.Fragment, null,
           isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
@@ -3783,7 +3785,21 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.placements, r.offers))
-          ))
+          )),
+          React.createElement(RowLine, { key: "average", highlighted: true },
+            React.createElement(Cell, { flex: true, bold: true }, "Average"),
+            React.createElement(Cell, { width: 66, bold: true }, fmtAvgCount(monthAvg.calls)),
+            React.createElement(Cell, { width: 78, bold: true }, fmtAvgCount(monthAvg.phoneHours)),
+            React.createElement(Cell, { width: 78, bold: true }, fmtAvgCount(monthAvg.cvs)),
+            React.createElement(Cell, { width: 86, bold: true }, fmtAvgCount(monthAvg.interviews)),
+            React.createElement(Cell, { width: 66, bold: true }, fmtAvgCount(monthAvg.onsite)),
+            React.createElement(Cell, { width: 66, bold: true }, fmtAvgCount(monthAvg.offers)),
+            React.createElement(Cell, { width: 96, bold: true }, fmtAvgCount(monthAvg.placements)),
+            React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, fmtPipelinePct(monthAvg.pctCvInterview)),
+            React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, fmtPipelinePct(monthAvg.pctInterviewOnsite)),
+            React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, fmtPipelinePct(monthAvg.pctOnsiteOffer)),
+            React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, fmtPipelinePct(monthAvg.pctOfferPlacement))
+          )
         );
       })()
     );
