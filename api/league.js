@@ -233,8 +233,20 @@ module.exports = async (req, res) => {
     // or anything commission-related. A genuine placement here means
     // exactly what it means everywhere else in this codebase: a real
     // placement-linked candidate name, never a notes-derived onsite fee.
-    // Bucketed by month using the placement's START DATE, same convention
-    // as the year-bucketing rule used for the Yearly Deal Table.
+    //
+    // Bucketed by "Deals Agreed" — the fee's own feeDate, the SAME date
+    // already shown as "Date Signed" on the Yearly Deal Table and
+    // Commission pages. Deliberately NOT the placement's start date:
+    // Scott's call, since this feeds the Consultant KPIs page, where
+    // every other figure (CVs, Interviews, Onsite, Offers) is activity
+    // that happened THAT month. A candidate can be signed in March and
+    // not start until June — using start date would have shown zero
+    // placement activity in March (when the deal was actually agreed)
+    // and an unrelated placement landing in June, breaking the
+    // Offer:Placement ratio's month-to-month meaning. This intentionally
+    // does NOT change how deals.js/commission.js attribute a deal to a
+    // YEAR for commission and leaderboard purposes — that's a separate,
+    // deliberate choice (start date) unaffected by this.
     const [records, placements] = await Promise.all([
       kv.get(RECORDS_KEY).then((v) => v || []),
       kv.get(PLACEMENTS_KEY).then((v) => v || {}),
@@ -249,7 +261,7 @@ module.exports = async (req, res) => {
       const dedupeKey = `${r.consultantId}|${r.placementId}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
-      const mk = monthKeyFromDateStr(placement.startDate || r.feeDate);
+      const mk = monthKeyFromDateStr(r.feeDate);
       if (!byConsultantMonth[r.consultantId]) byConsultantMonth[r.consultantId] = {};
       byConsultantMonth[r.consultantId][mk] = (byConsultantMonth[r.consultantId][mk] || 0) + 1;
     }
