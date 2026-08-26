@@ -2947,8 +2947,8 @@ function App() {
           dedupedDeals.forEach((l) => {
             if (!l.source) return;
             if (!bySource[l.source]) bySource[l.source] = { source: l.source, deals: 0, onsites: 0, valueGBP: 0 };
-            bySource[l.source].deals += 1;
-            if (!l.hasPlacementName) bySource[l.source].onsites += 1;
+            if (l.hasPlacementName) bySource[l.source].deals += 1;
+            else bySource[l.source].onsites += 1;
             bySource[l.source].valueGBP += l.commission || 0;
           });
           const sourceRows = Object.values(bySource).sort((a, b) => b.valueGBP - a.valueGBP);
@@ -3254,8 +3254,8 @@ React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap"
               dedupedDeals.forEach((l) => {
                 if (!l.source) return;
                 if (!bySource[l.source]) bySource[l.source] = { source: l.source, deals: 0, onsites: 0, valueUSD: 0, valueGBP: 0 };
-                bySource[l.source].deals += 1;
-                if (!l.hasPlacementName) bySource[l.source].onsites += 1;
+                if (l.hasPlacementName) bySource[l.source].deals += 1;
+                else bySource[l.source].onsites += 1;
                 bySource[l.source].valueUSD += l.usdAmount || 0;
                 bySource[l.source].valueGBP += l.gbpPortion || 0;
               });
