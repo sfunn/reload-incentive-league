@@ -3604,7 +3604,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
 },
   React.createElement("div", {
     style: { fontSize: 12.5, color: INDIGO_MUTED }
-  }, "Onsite and Offer counts only start from when this tracking went live — months before that always show zero here, even if real activity happened. Placements are genuine placements only, bucketed by their real start date. \"avg\" figures are the average across all ten consultants for the same period."),
+  }, "Onsite and Offer counts only start from when this tracking went live — months before that always show zero here, even if real activity happened. Deals Agreed are genuine placements only, bucketed by the date the deal was signed (the same date shown as \"Date Signed\" elsewhere), not the candidate's eventual start date. \"avg\" figures are the average across all ten consultants for the same period."),
 
   !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : (() => {
     const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
@@ -3634,11 +3634,11 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       { label: "Interviews", width: 86 },
       { label: "Onsite", width: 66 },
       { label: "Offers", width: 66 },
-      { label: "Placements", width: 86 },
+      { label: "Deals Agreed", width: 96 },
       { label: "CV : Interview", width: 96 },
       { label: "Interview : Onsite", width: 104 },
       { label: "Onsite : Offer", width: 96 },
-      { label: "Offer : Placement", width: 104 },
+      { label: "Offer : Agreed", width: 104 },
     ];
 
     // Renders one cell showing the person's own value, with a small muted
@@ -3724,8 +3724,8 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 ? React.createElement(EditableKpiCell, { width: 66, value: m.offers, isOverridden: m.overrides.offers, avgValue: monthAvg.offers, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "offers", v) })
                 : cellWithAvg(66, m.offers, monthAvg.offers, false),
               isAdmin
-                ? React.createElement(EditableKpiCell, { width: 86, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v) })
-                : cellWithAvg(86, m.placements, monthAvg.placements, false),
+                ? React.createElement(EditableKpiCell, { width: 96, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v) })
+                : cellWithAvg(96, m.placements, monthAvg.placements, false),
               cellWithAvg(96, pipelinePctOrNull(m.interviews, m.cvs), monthAvg.pctCvInterview, true),
               cellWithAvg(104, pipelinePctOrNull(m.onsite, m.interviews), monthAvg.pctInterviewOnsite, true),
               cellWithAvg(96, pipelinePctOrNull(m.offers, m.onsite), monthAvg.pctOnsiteOffer, true),
@@ -3740,7 +3740,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             cellWithAvg(86, total.interviews, yearAvg.interviews, false, true),
             cellWithAvg(66, total.onsite, yearAvg.onsite, false, true),
             cellWithAvg(66, total.offers, yearAvg.offers, false, true),
-            cellWithAvg(86, total.placements, yearAvg.placements, false, true),
+            cellWithAvg(96, total.placements, yearAvg.placements, false, true),
             cellWithAvg(96, total.pctCvInterview, yearAvg.pctCvInterview, true, true),
             cellWithAvg(104, total.pctInterviewOnsite, yearAvg.pctInterviewOnsite, true, true),
             cellWithAvg(96, total.pctOnsiteOffer, yearAvg.pctOnsiteOffer, true, true),
@@ -3777,8 +3777,8 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               ? React.createElement(EditableKpiCell, { width: 66, value: r.offers, isOverridden: r.overrides.offers, onSave: (v) => saveKpiOverride(r.id, monthKey, "offers", v) })
               : React.createElement(Cell, { width: 66 }, r.offers),
             isAdmin
-              ? React.createElement(EditableKpiCell, { width: 86, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v) })
-              : React.createElement(Cell, { width: 86 }, r.placements),
+              ? React.createElement(EditableKpiCell, { width: 96, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v) })
+              : React.createElement(Cell, { width: 96 }, r.placements),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
