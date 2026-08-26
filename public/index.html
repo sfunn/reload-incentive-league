@@ -3128,9 +3128,13 @@ React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap"
               // Computed ONCE here and reused below for both the headline
               // deal-count/revenue stat and the existing per-deal table —
               // same dedup rule as everywhere else (a deal split across
-              // bracket boundaries is one deal, not two).
+              // bracket boundaries is one deal, not two). "Deals This
+              // Year" means genuine placements only, matching the
+              // standing rule for this word everywhere in this app —
+              // onsite fees are already shown separately just below
+              // ("Placements vs Onsite Fees"), not mixed into this list.
               const dealMap = new Map();
-              commissionData.lines.forEach((l) => {
+              commissionData.lines.filter((l) => l.hasPlacementName).forEach((l) => {
                 const key = `${l.feeId}|${l.splitId}`;
                 if (dealMap.has(key)) {
                   const existing = dealMap.get(key);
