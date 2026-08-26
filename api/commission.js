@@ -415,7 +415,7 @@ module.exports = async (req, res) => {
         year,
         isCoordinator: true,
         flatRate,
-        dealCount: lines.length,
+        dealCount: placementBreakdown.placements.count, // genuine placements only, never onsite fees -- matches every other "deals" count in this app
         totalCommission,
         target: (personSettings.targets && personSettings.targets[year]) || null,
         lines: linesWithSchedule,
