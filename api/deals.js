@@ -176,11 +176,17 @@ module.exports = async (req, res) => {
     for (const r of yearRecords) {
       const usd = await convertToUSD(r, allRates);
       if (usd === null) continue;
+      const placement = r.placementId ? placements[r.placementId] : null;
+      const hasPlacementName = !!(placement && placement.candidateName);
       if (!EXCLUDED_FROM_LEADERBOARD.has(r.consultantId)) {
         if (!totals[r.consultantId]) {
-          totals[r.consultantId] = { consultantId: r.consultantId, consultantName: r.consultantName, totalUSD: 0 };
+          totals[r.consultantId] = { consultantId: r.consultantId, consultantName: r.consultantName, totalUSD: 0, totalGBP: 0, deals: 0, onsites: 0 };
         }
         totals[r.consultantId].totalUSD += usd;
+        const gbpForLeaderboard = await convertToGBP(r, allRates);
+        if (gbpForLeaderboard !== null) totals[r.consultantId].totalGBP += gbpForLeaderboard;
+        totals[r.consultantId].deals += 1;
+        if (!hasPlacementName) totals[r.consultantId].onsites += 1;
       }
 
       // Source breakdown — visible to everyone, same as the leaderboard.
@@ -195,8 +201,6 @@ module.exports = async (req, res) => {
       // candidate name; everything else is an onsite-fee-type record.
       if (r.source) {
         const gbp = await convertToGBP(r, allRates);
-        const placement = r.placementId ? placements[r.placementId] : null;
-        const hasPlacementName = !!(placement && placement.candidateName);
         if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, onsites: 0, valueUSD: 0, valueGBP: 0 };
         bySource[r.source].deals += 1;
         if (!hasPlacementName) bySource[r.source].onsites += 1;
@@ -204,7 +208,10 @@ module.exports = async (req, res) => {
         if (gbp !== null) bySource[r.source].valueGBP += gbp;
       }
     }
-    const leaderboard = Object.values(totals).sort((a, b) => b.totalUSD - a.totalUSD);
+    const leaderboardGrandTotalUSD = Object.values(totals).reduce((s, r) => s + r.totalUSD, 0);
+    const leaderboard = Object.values(totals)
+      .map((t) => ({ ...t, percentage: leaderboardGrandTotalUSD > 0 ? (t.totalUSD / leaderboardGrandTotalUSD) * 100 : 0 }))
+      .sort((a, b) => b.totalUSD - a.totalUSD);
     const sourceGrandTotalUSD = Object.values(bySource).reduce((s, r) => s + r.valueUSD, 0);
     const sourceBreakdown = Object.values(bySource)
       .map((s) => ({ ...s, percentage: sourceGrandTotalUSD > 0 ? (s.valueUSD / sourceGrandTotalUSD) * 100 : 0 }))
