@@ -163,45 +163,38 @@ module.exports = async (req, res) => {
         .map((c) => ({ ...c, percentage: clientGrandTotal > 0 ? (c.totalUSD / clientGrandTotal) * 100 : 0 }))
         .sort((a, b) => b.totalUSD - a.totalUSD);
 
-      // "Revenue on starters" — Scott & Lee only. This is a REVENUE total
-      // (deliberately broader than the "Deals" definition used elsewhere),
-      // so it includes both genuine placements AND onsite fees — Scott's
-      // call, since both are real money. What "started" means differs by
-      // type though: a genuine placement uses its REAL start date (never
-      // falling back to feeDate — no confirmed start date means it hasn't
-      // started, full stop); an onsite fee has no meaningful "start"
-      // event of its own, so it uses the same feeDate ("Date Signed")
-      // already used for "Deals Agreed" elsewhere. This is a live,
-      // date-driven filter, not a stored value — it updates on its own as
-      // dates pass, no webhook or manual step needed. Deals and onsites
-      // stay two separate counts, same convention as every other panel on
-      // this page, even though their revenue is combined into one total.
-      // % is against this year's total revenue (clientGrandTotal).
-      const todayStr = new Date().toISOString().slice(0, 10);
-      let startersUSD = 0, startersGBP = 0, startersDeals = 0, startersOnsites = 0;
-      for (const r of withUSD) {
-        if (r.usdAmount === null || !r.consultantId) continue;
-        let started;
+      // "Revenue on starters" — Scott & Lee only. Simple rule: for each
+      // deal (genuine placement OR onsite fee), work out ONE relevant
+      // date — a placement's real start date, or an onsite fee's feeDate
+      // ("Date Signed") — and count it if that date has passed. Add up
+      // the SAME already-converted usdAmount/gbpAmount every other total
+      // on this page already uses; nothing gets re-converted here. Dates
+      // are parsed as real Date objects and compared as timestamps, not
+      // as raw strings, so this can't be thrown off by inconsistent
+      // date formatting (e.g. "2026-3-5" vs "2026-03-05" would compare
+      // wrong as strings but correctly once parsed). Live filter, not a
+      // stored value — updates on its own as dates pass.
+      const todayTs = Date.now();
+      function hasPassedIfSet(dateStr) {
+        if (!dateStr) return false;
+        const ts = new Date(dateStr).getTime();
+        return !isNaN(ts) && ts <= todayTs;
+      }
+      const starterRecords = withUSD.filter((r) => {
+        if (r.usdAmount === null || !r.consultantId) return false;
         if (r.hasPlacementName) {
           const placement = r.placementId ? placements[r.placementId] : null;
-          const startDate = placement && placement.startDate;
-          started = !!startDate && startDate <= todayStr;
-        } else {
-          started = !!r.feeDate && r.feeDate <= todayStr;
+          return hasPassedIfSet(placement && placement.startDate);
         }
-        if (!started) continue;
-        startersUSD += r.usdAmount;
-        if (r.gbpAmount !== null) startersGBP += r.gbpAmount;
-        if (r.hasPlacementName) startersDeals += 1;
-        else startersOnsites += 1;
-      }
+        return hasPassedIfSet(r.feeDate);
+      });
       const starters = {
-        usd: startersUSD,
-        gbp: startersGBP,
-        deals: startersDeals,
-        onsites: startersOnsites,
-        percentage: clientGrandTotal > 0 ? (startersUSD / clientGrandTotal) * 100 : 0,
+        usd: starterRecords.reduce((s, r) => s + r.usdAmount, 0),
+        gbp: starterRecords.reduce((s, r) => s + (r.gbpAmount || 0), 0),
+        deals: starterRecords.filter((r) => r.hasPlacementName).length,
+        onsites: starterRecords.filter((r) => !r.hasPlacementName).length,
       };
+      starters.percentage = clientGrandTotal > 0 ? (starters.usd / clientGrandTotal) * 100 : 0;
 
       return res.status(200).json({ year, records: withUSD, clientBreakdown, clientGrandTotal, starters });
     }
