@@ -163,7 +163,47 @@ module.exports = async (req, res) => {
         .map((c) => ({ ...c, percentage: clientGrandTotal > 0 ? (c.totalUSD / clientGrandTotal) * 100 : 0 }))
         .sort((a, b) => b.totalUSD - a.totalUSD);
 
-      return res.status(200).json({ year, records: withUSD, clientBreakdown, clientGrandTotal });
+      // "Revenue on starters" — Scott & Lee only. This is a REVENUE total
+      // (deliberately broader than the "Deals" definition used elsewhere),
+      // so it includes both genuine placements AND onsite fees — Scott's
+      // call, since both are real money. What "started" means differs by
+      // type though: a genuine placement uses its REAL start date (never
+      // falling back to feeDate — no confirmed start date means it hasn't
+      // started, full stop); an onsite fee has no meaningful "start"
+      // event of its own, so it uses the same feeDate ("Date Signed")
+      // already used for "Deals Agreed" elsewhere. This is a live,
+      // date-driven filter, not a stored value — it updates on its own as
+      // dates pass, no webhook or manual step needed. Deals and onsites
+      // stay two separate counts, same convention as every other panel on
+      // this page, even though their revenue is combined into one total.
+      // % is against this year's total revenue (clientGrandTotal).
+      const todayStr = new Date().toISOString().slice(0, 10);
+      let startersUSD = 0, startersGBP = 0, startersDeals = 0, startersOnsites = 0;
+      for (const r of withUSD) {
+        if (r.usdAmount === null || !r.consultantId) continue;
+        let started;
+        if (r.hasPlacementName) {
+          const placement = r.placementId ? placements[r.placementId] : null;
+          const startDate = placement && placement.startDate;
+          started = !!startDate && startDate <= todayStr;
+        } else {
+          started = !!r.feeDate && r.feeDate <= todayStr;
+        }
+        if (!started) continue;
+        startersUSD += r.usdAmount;
+        if (r.gbpAmount !== null) startersGBP += r.gbpAmount;
+        if (r.hasPlacementName) startersDeals += 1;
+        else startersOnsites += 1;
+      }
+      const starters = {
+        usd: startersUSD,
+        gbp: startersGBP,
+        deals: startersDeals,
+        onsites: startersOnsites,
+        percentage: clientGrandTotal > 0 ? (startersUSD / clientGrandTotal) * 100 : 0,
+      };
+
+      return res.status(200).json({ year, records: withUSD, clientBreakdown, clientGrandTotal, starters });
     }
 
     // Public leaderboard: totals per consultant, in USD, for the given year.
