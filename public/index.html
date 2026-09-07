@@ -2652,10 +2652,10 @@ function App() {
       )
     ),
     React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
-      sourceBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 380 } },
+      sourceBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 420 } },
         React.createElement(SectionTitle, { title: "Deal Source Breakdown" }),
         React.createElement(TableHeader, { cols: [
-          { label: "Source", flex: true },
+          { label: "Source", width: 110 },
           { label: "USD", width: 85 },
           { label: "GBP", width: 85 },
           { label: "Deals", width: 55 },
@@ -2666,7 +2666,7 @@ function App() {
           key: s.source,
           style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, color: INDIGO }
         },
-          React.createElement("span", { style: { flex: 1 } }, s.source),
+          React.createElement("span", { style: { width: 110, flexShrink: 0 } }, s.source),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `$${Math.round(s.valueUSD).toLocaleString()}`),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `£${Math.round(s.valueGBP).toLocaleString()}`),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, s.deals),
@@ -2676,7 +2676,7 @@ function App() {
         React.createElement("div", {
           style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
         },
-          React.createElement("span", { style: { flex: 1 } }, "Total"),
+          React.createElement("span", { style: { width: 110, flexShrink: 0 } }, "Total"),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `$${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueUSD, 0)).toLocaleString()}`),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `£${Math.round(sourceBreakdown.reduce((s, r) => s + r.valueGBP, 0)).toLocaleString()}`),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, sourceBreakdown.reduce((s, r) => s + r.deals, 0)),
@@ -2687,10 +2687,25 @@ function App() {
           "Only counts deals that have a Source recorded — set on each deal from the admin table or the consultant's own Commission page."
         )
       ),
-      isSuperAdmin && clientBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 380 } },
+      starters && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 420 } },
+        React.createElement(SectionTitle, { title: "Revenue on Starters" }),
+        React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED, marginTop: 4, marginBottom: 14 } },
+          `How much of ${dealsYear}'s signed revenue is from candidates who have actually started — updates automatically as start dates pass, no manual step needed.`
+        ),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 16, marginBottom: 6 } },
+          React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: INDIGO } }, `$${Math.round(starters.usd).toLocaleString()}`),
+          React.createElement("div", { style: { fontSize: 18, color: INDIGO_MUTED } }, `£${Math.round(starters.gbp).toLocaleString()}`)
+        ),
+        React.createElement("div", { style: { fontSize: 13, color: INDIGO_MUTED } },
+          `${starters.deals} deal${starters.deals !== 1 ? "s" : ""} · ${starters.onsites} onsite${starters.onsites !== 1 ? "s" : ""} started · ${starters.percentage.toFixed(1)}% of ${dealsYear}'s total revenue`
+        )
+      )
+    ),
+    isSuperAdmin && clientBreakdown.length > 0 && React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
+      React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 420 } },
         React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
         React.createElement(TableHeader, { cols: [
-          { label: "Client", flex: true },
+          { label: "Client", width: 110 },
           { label: "USD", width: 85 },
           { label: "GBP", width: 85 },
           { label: "Deals", width: 55 },
@@ -2701,7 +2716,7 @@ function App() {
           key: c.firm,
           style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, color: c.firm === "Unknown" ? INDIGO_MUTED : INDIGO }
         },
-          React.createElement("span", { style: { flex: 1 } }, c.firm),
+          React.createElement("span", { style: { width: 110, flexShrink: 0 } }, c.firm),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `$${Math.round(c.totalUSD).toLocaleString()}`),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `£${Math.round(c.totalGBP).toLocaleString()}`),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, c.deals),
@@ -2711,26 +2726,13 @@ function App() {
         React.createElement("div", {
           style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
         },
-          React.createElement("span", { style: { flex: 1 } }, "Total"),
+          React.createElement("span", { style: { width: 110, flexShrink: 0 } }, "Total"),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `$${Math.round(clientGrandTotal).toLocaleString()}`),
           React.createElement("span", { style: { width: 85, flexShrink: 0 } }, `£${Math.round(clientBreakdown.reduce((s, r) => s + r.totalGBP, 0)).toLocaleString()}`),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, clientBreakdown.reduce((s, r) => s + r.deals, 0)),
           React.createElement("span", { style: { width: 60, flexShrink: 0 } }, clientBreakdown.reduce((s, r) => s + r.onsites, 0)),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, "100%")
         )
-      )
-    ),
-    starters && React.createElement(Panel, { style: { maxWidth: 420 } },
-      React.createElement(SectionTitle, { title: "Revenue on Starters" }),
-      React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED, marginTop: 4, marginBottom: 14 } },
-        `How much of ${dealsYear}'s signed revenue is from candidates who have actually started — updates automatically as start dates pass, no manual step needed.`
-      ),
-      React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 16, marginBottom: 6 } },
-        React.createElement("div", { style: { fontSize: 24, fontWeight: 700, color: INDIGO } }, `$${Math.round(starters.usd).toLocaleString()}`),
-        React.createElement("div", { style: { fontSize: 18, color: INDIGO_MUTED } }, `£${Math.round(starters.gbp).toLocaleString()}`)
-      ),
-      React.createElement("div", { style: { fontSize: 13, color: INDIGO_MUTED } },
-        `${starters.deals} deal${starters.deals !== 1 ? "s" : ""} · ${starters.onsites} onsite${starters.onsites !== 1 ? "s" : ""} started · ${starters.percentage.toFixed(1)}% of ${dealsYear}'s total revenue`
       )
     ),
     isSuperAdmin && React.createElement(Panel, null,
