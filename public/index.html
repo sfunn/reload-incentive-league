@@ -1149,6 +1149,7 @@ function App() {
       const data = await res.json();
       setDealsLeaderboard(data.leaderboard || []);
       setSourceBreakdown(data.sourceBreakdown || []);
+      setStarters(data.starters || null);
     } catch (e) {
       setDealsError("Couldn't reach deal data.");
     } finally {
@@ -1246,7 +1247,6 @@ function App() {
       setDealDetails(data.records || []);
       setClientBreakdown(data.clientBreakdown || []);
       setClientGrandTotal(data.clientGrandTotal || 0);
-      setStarters(data.starters || null);
     } catch (e) {
       // silent — the leaderboard fetch above already shows a connection error if relevant
     } finally {
@@ -2720,8 +2720,8 @@ function App() {
         )
       )
     ),
-    isSuperAdmin && starters && React.createElement(Panel, { style: { maxWidth: 420 } },
-      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Revenue on Starters" }),
+    starters && React.createElement(Panel, { style: { maxWidth: 420 } },
+      React.createElement(SectionTitle, { title: "Revenue on Starters" }),
       React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED, marginTop: 4, marginBottom: 14 } },
         `How much of ${dealsYear}'s signed revenue is from candidates who have actually started — updates automatically as start dates pass, no manual step needed.`
       ),
