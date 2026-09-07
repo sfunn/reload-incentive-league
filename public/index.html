@@ -2652,7 +2652,7 @@ function App() {
       )
     ),
     React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
-      sourceBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 420 } },
+      sourceBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
         React.createElement(SectionTitle, { title: "Deal Source Breakdown" }),
         React.createElement(TableHeader, { cols: [
           { label: "Source", width: 110 },
@@ -2687,7 +2687,7 @@ function App() {
           "Only counts deals that have a Source recorded — set on each deal from the admin table or the consultant's own Commission page."
         )
       ),
-      starters && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 420 } },
+      starters && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
         React.createElement(SectionTitle, { title: "Revenue on Starters" }),
         React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED, marginTop: 4, marginBottom: 14 } },
           `How much of ${dealsYear}'s signed revenue is from candidates who have actually started — updates automatically as start dates pass, no manual step needed.`
@@ -2702,7 +2702,7 @@ function App() {
       )
     ),
     isSuperAdmin && clientBreakdown.length > 0 && React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
-      React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 420 } },
+      React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
         React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
         React.createElement(TableHeader, { cols: [
           { label: "Client", width: 110 },
