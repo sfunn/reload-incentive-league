@@ -105,6 +105,17 @@ module.exports = async (req, res) => {
     const allRates = (await kv.get(FX_KEY)) || {};
     const placements = (await kv.get(PLACEMENTS_KEY)) || {};
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
+    // Shared by both the detail (Super Admin) and public branches below —
+    // parses dates as real Date objects and compares timestamps, so it
+    // can't be thrown off by inconsistent date formatting (e.g.
+    // "2026-3-5" vs "2026-03-05" would compare wrong as raw strings but
+    // correctly once parsed).
+    const todayTs = Date.now();
+    function hasPassedIfSet(dateStr) {
+      if (!dateStr) return false;
+      const ts = new Date(dateStr).getTime();
+      return !isNaN(ts) && ts <= todayTs;
+    }
 
     // Super Admin only: full detail view, including unconverted deals
     // (missing an FX rate for their month) so they know a rate needs setting.
@@ -163,40 +174,7 @@ module.exports = async (req, res) => {
         .map((c) => ({ ...c, percentage: clientGrandTotal > 0 ? (c.totalUSD / clientGrandTotal) * 100 : 0 }))
         .sort((a, b) => b.totalUSD - a.totalUSD);
 
-      // "Revenue on starters" — Scott & Lee only. Simple rule: for each
-      // deal (genuine placement OR onsite fee), work out ONE relevant
-      // date — a placement's real start date, or an onsite fee's feeDate
-      // ("Date Signed") — and count it if that date has passed. Add up
-      // the SAME already-converted usdAmount/gbpAmount every other total
-      // on this page already uses; nothing gets re-converted here. Dates
-      // are parsed as real Date objects and compared as timestamps, not
-      // as raw strings, so this can't be thrown off by inconsistent
-      // date formatting (e.g. "2026-3-5" vs "2026-03-05" would compare
-      // wrong as strings but correctly once parsed). Live filter, not a
-      // stored value — updates on its own as dates pass.
-      const todayTs = Date.now();
-      function hasPassedIfSet(dateStr) {
-        if (!dateStr) return false;
-        const ts = new Date(dateStr).getTime();
-        return !isNaN(ts) && ts <= todayTs;
-      }
-      const starterRecords = withUSD.filter((r) => {
-        if (r.usdAmount === null || !r.consultantId) return false;
-        if (r.hasPlacementName) {
-          const placement = r.placementId ? placements[r.placementId] : null;
-          return hasPassedIfSet(placement && placement.startDate);
-        }
-        return hasPassedIfSet(r.feeDate);
-      });
-      const starters = {
-        usd: starterRecords.reduce((s, r) => s + r.usdAmount, 0),
-        gbp: starterRecords.reduce((s, r) => s + (r.gbpAmount || 0), 0),
-        deals: starterRecords.filter((r) => r.hasPlacementName).length,
-        onsites: starterRecords.filter((r) => !r.hasPlacementName).length,
-      };
-      starters.percentage = clientGrandTotal > 0 ? (starters.usd / clientGrandTotal) * 100 : 0;
-
-      return res.status(200).json({ year, records: withUSD, clientBreakdown, clientGrandTotal, starters });
+      return res.status(200).json({ year, records: withUSD, clientBreakdown, clientGrandTotal });
     }
 
     // Public leaderboard: totals per consultant, in USD, for the given year.
@@ -206,6 +184,8 @@ module.exports = async (req, res) => {
     const yearRecords = records.filter((r) => effectiveYear(r, placements) === year && r.consultantId);
     const totals = {};
     const bySource = {};
+    let yearTotalUSD = 0;
+    const starters = { usd: 0, gbp: 0, deals: 0, onsites: 0 };
     // Scott and Lee's own deals count toward Source and Client Breakdown
     // (so those totals reflect everything, not just the tracked consultants)
     // but they're deliberately left off the individual leaderboard ranking —
@@ -239,13 +219,32 @@ module.exports = async (req, res) => {
       // as commission.js's own Placements-vs-Onsite-Fees split (Pillar 4):
       // a record only counts as a genuine placement if it links to a real
       // candidate name; everything else is an onsite-fee-type record.
+      const gbp = await convertToGBP(r, allRates);
       if (r.source) {
-        const gbp = await convertToGBP(r, allRates);
         if (!bySource[r.source]) bySource[r.source] = { source: r.source, deals: 0, onsites: 0, valueUSD: 0, valueGBP: 0 };
         if (hasPlacementName) bySource[r.source].deals += 1;
         else bySource[r.source].onsites += 1;
         bySource[r.source].valueUSD += usd;
         if (gbp !== null) bySource[r.source].valueGBP += gbp;
+      }
+
+      // "Revenue on starters" — visible to everyone. This is a REVENUE
+      // total (deliberately broader than the "Deals" definition used
+      // elsewhere), so it includes both genuine placements AND onsite
+      // fees. What "started" means differs by type: a genuine placement
+      // uses its REAL start date (never falling back to feeDate — no
+      // confirmed start date means it hasn't started, full stop); an
+      // onsite fee has no meaningful "start" event of its own, so it uses
+      // feeDate ("Date Signed") instead. Live filter, not a stored value.
+      yearTotalUSD += usd;
+      let started;
+      if (hasPlacementName) started = hasPassedIfSet(placement && placement.startDate);
+      else started = hasPassedIfSet(r.feeDate);
+      if (started) {
+        starters.usd += usd;
+        if (gbp !== null) starters.gbp += gbp;
+        if (hasPlacementName) starters.deals += 1;
+        else starters.onsites += 1;
       }
     }
     const leaderboardGrandTotalUSD = Object.values(totals).reduce((s, r) => s + r.totalUSD, 0);
@@ -256,7 +255,8 @@ module.exports = async (req, res) => {
     const sourceBreakdown = Object.values(bySource)
       .map((s) => ({ ...s, percentage: sourceGrandTotalUSD > 0 ? (s.valueUSD / sourceGrandTotalUSD) * 100 : 0 }))
       .sort((a, b) => b.valueUSD - a.valueUSD);
-    return res.status(200).json({ year, leaderboard, sourceBreakdown });
+    starters.percentage = yearTotalUSD > 0 ? (starters.usd / yearTotalUSD) * 100 : 0;
+    return res.status(200).json({ year, leaderboard, sourceBreakdown, starters });
   }
 
   if (req.method === "POST") {
