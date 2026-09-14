@@ -635,6 +635,19 @@ function App() {
   const [clientBreakdown, setClientBreakdown] = useState([]);
   const [clientGrandTotal, setClientGrandTotal] = useState(0);
   const [starters, setStarters] = useState(null);
+  // --- Area tracking state (viewing open to everyone; editing further
+  // down stays Super Admin only) ---
+  const [areaClient, setAreaClient] = useState("");
+  const [areaAvailableClients, setAreaAvailableClients] = useState([]);
+  const [areaYear, setAreaYear] = useState("current"); // "current" (matches dealsYear) or "all"
+  const [areaList, setAreaList] = useState([]);
+  const [areaConcentration, setAreaConcentration] = useState(null);
+  const [unmappedTexts, setUnmappedTexts] = useState([]);
+  const [areaLoading, setAreaLoading] = useState(false);
+  const [newAreaName, setNewAreaName] = useState("");
+  const [renamingArea, setRenamingArea] = useState(null); // the area currently being renamed, or null
+  const [renameValue, setRenameValue] = useState("");
+  const [mappingChoice, setMappingChoice] = useState({}); // { [rawText]: chosenAreaOrNewName }
   const [dealsLoading, setDealsLoading] = useState(false);
   const [dealsError, setDealsError] = useState("");
   const [dealDetails, setDealDetails] = useState([]);
@@ -1260,6 +1273,92 @@ function App() {
       loadUserAccounts();
     }
   }, [isSuperAdmin, dealsYear]);
+
+  // --- Area tracking fetch/actions — viewing is open to everyone logged
+  // in; editing (the write functions further down) stays Super Admin only,
+  // enforced both here (buttons hidden) and on the backend (401 if tried
+  // anyway) ---
+  const loadAreaClientList = useCallback(async () => {
+    if (!authUser) return;
+    try {
+      const res = await fetch("/api/deals?action=area-list", { headers: { Authorization: `Bearer ${authUser.token}` } });
+      const data = await res.json();
+      const clients = Object.keys(data.areas || {}).sort();
+      setAreaAvailableClients(clients);
+      if (!areaClient && clients.length > 0) {
+        const preferred = clients.find((c) => c === "Citadel Securities") || clients.find((c) => c === "Citadel") || clients[0];
+        setAreaClient(preferred);
+      }
+    } catch (e) {
+      // silent — secondary panel, doesn't block the rest of the page
+    }
+  }, [authUser]);
+  useEffect(() => { loadAreaClientList(); }, [loadAreaClientList]);
+
+  const loadAreaData = useCallback(async (client) => {
+    if (!authUser || !client) return;
+    setAreaLoading(true);
+    try {
+      const yearParam = areaYear === "all" ? "all" : dealsYear;
+      const [listRes, concRes, unmappedRes] = await Promise.all([
+        fetch(`/api/deals?action=area-list&client=${encodeURIComponent(client)}`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+        fetch(`/api/deals?action=area-concentration&client=${encodeURIComponent(client)}&year=${yearParam}`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+        fetch(`/api/deals?action=area-unmapped&client=${encodeURIComponent(client)}`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+      ]);
+      const listData = await listRes.json();
+      const concData = await concRes.json();
+      const unmappedData = await unmappedRes.json();
+      setAreaList(listData.areas || []);
+      setAreaConcentration(concData);
+      setUnmappedTexts(unmappedData.unmappedTexts || []);
+    } catch (e) {
+      // silent — area tracking is a secondary panel, doesn't block the rest of the page
+    } finally {
+      setAreaLoading(false);
+    }
+  }, [authUser, dealsYear, areaYear]);
+  useEffect(() => {
+    if (areaClient) loadAreaData(areaClient);
+  }, [areaClient, dealsYear, areaYear]);
+
+  async function areaAdd(client, area) {
+    if (!area || !area.trim()) return;
+    await fetch("/api/deals?action=area-add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ client, area: area.trim() }),
+    });
+    setNewAreaName("");
+    loadAreaData(client);
+  }
+  async function areaRemove(client, area) {
+    await fetch("/api/deals?action=area-remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ client, area }),
+    });
+    loadAreaData(client);
+  }
+  async function areaRename(client, oldName, newName) {
+    if (!newName || !newName.trim()) return;
+    await fetch("/api/deals?action=area-rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ client, oldName, newName: newName.trim() }),
+    });
+    setRenamingArea(null);
+    setRenameValue("");
+    loadAreaData(client);
+  }
+  async function areaConfirmMapping(client, rawText, canonicalArea) {
+    if (!canonicalArea) return;
+    await fetch("/api/deals?action=area-confirm-mapping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ client, rawText, canonicalArea }),
+    });
+    loadAreaData(client);
+  }
   function renderDealDetailsTable(records, showSourceAndCoordinator) {
     return dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
     records.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
@@ -2732,6 +2831,114 @@ function App() {
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, clientBreakdown.reduce((s, r) => s + r.deals, 0)),
           React.createElement("span", { style: { width: 60, flexShrink: 0 } }, clientBreakdown.reduce((s, r) => s + r.onsites, 0)),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, "100%")
+        )
+      )
+    ),
+    areaAvailableClients.length > 0 && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { title: "Area Concentration" }),
+      React.createElement("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 10, marginBottom: 16 } },
+        React.createElement("select", {
+          value: areaClient,
+          onChange: (e) => setAreaClient(e.target.value),
+          style: { padding: "6px 10px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5, color: INDIGO, fontFamily: "'Work Sans', sans-serif" }
+        },
+          areaAvailableClients.map((c) => React.createElement("option", { key: c, value: c }, c))
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          React.createElement("button", {
+            onClick: () => setAreaYear("current"),
+            style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${areaYear === "current" ? MELON : INDIGO_HAIRLINE}`, background: areaYear === "current" ? MELON : WHITE, color: areaYear === "current" ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+          }, dealsYear),
+          React.createElement("button", {
+            onClick: () => setAreaYear("all"),
+            style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${areaYear === "all" ? MELON : INDIGO_HAIRLINE}`, background: areaYear === "all" ? MELON : WHITE, color: areaYear === "all" ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+          }, "All Time")
+        )
+      ),
+      areaLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+      !areaConcentration ? null :
+      React.createElement(React.Fragment, null,
+        // --- Area breakdown table ---
+        React.createElement(TableHeader, { cols: [
+          { label: "Area", width: 140 },
+          { label: "GBP", width: 90 },
+          { label: "Deals", width: 60 },
+          { label: "", flex: true },
+        ] }),
+        areaConcentration.byArea.map((a) => React.createElement("div", {
+          key: a.area,
+          style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, color: INDIGO }
+        },
+          renamingArea === a.area
+            ? React.createElement("input", {
+                value: renameValue, autoFocus: true,
+                onChange: (e) => setRenameValue(e.target.value),
+                onKeyDown: (e) => { if (e.key === "Enter") areaRename(areaClient, a.area, renameValue); if (e.key === "Escape") setRenamingArea(null); },
+                style: { width: 140, flexShrink: 0, padding: "2px 6px", fontSize: 13.5, border: `1px solid ${MELON}`, borderRadius: 4 }
+              })
+            : React.createElement("span", { style: { width: 140, flexShrink: 0 } }, a.area),
+          React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(a.gbp).toLocaleString()}`),
+          React.createElement("span", { style: { width: 60, flexShrink: 0 } }, a.deals),
+          isSuperAdmin && React.createElement("div", { style: { flex: 1, display: "flex", gap: 10, fontSize: 12 } },
+            renamingArea === a.area
+              ? React.createElement(React.Fragment, null,
+                  React.createElement("button", { onClick: () => areaRename(areaClient, a.area, renameValue), style: { color: MELON_LINK, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 } }, "Save"),
+                  React.createElement("button", { onClick: () => setRenamingArea(null), style: { color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 } }, "Cancel")
+                )
+              : React.createElement(React.Fragment, null,
+                  React.createElement("button", { onClick: () => { setRenamingArea(a.area); setRenameValue(a.area); }, style: { color: MELON_LINK, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 } }, "Rename"),
+                  React.createElement("button", { onClick: () => areaRemove(areaClient, a.area), style: { color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 } }, "Remove")
+                )
+          )
+        )),
+        React.createElement("div", {
+          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
+        },
+          React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
+          React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(areaConcentration.totalGBP).toLocaleString()}`),
+          React.createElement("span", { style: { width: 60, flexShrink: 0 } }, areaConcentration.totalDeals)
+        ),
+        React.createElement("div", { style: { marginTop: 8, fontSize: 12.5, color: INDIGO_MUTED } },
+          `${areaConcentration.untaggedCount} deal${areaConcentration.untaggedCount !== 1 ? "s" : ""} with no notes recorded yet · ${areaConcentration.unmappedCount} deal${areaConcentration.unmappedCount !== 1 ? "s" : ""} with a note that doesn't match any area below`
+        ),
+
+        // --- Add a new area (Super Admin only — editing, not viewing) ---
+        isSuperAdmin && React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16, marginBottom: 20 } },
+          React.createElement("input", {
+            value: newAreaName, placeholder: "Add a new area…",
+            onChange: (e) => setNewAreaName(e.target.value),
+            onKeyDown: (e) => { if (e.key === "Enter") areaAdd(areaClient, newAreaName); },
+            style: { flex: 1, maxWidth: 240, padding: "6px 10px", fontSize: 13.5, border: `1px solid ${INDIGO_HAIRLINE}`, borderRadius: 6 }
+          }),
+          React.createElement("button", {
+            onClick: () => areaAdd(areaClient, newAreaName),
+            style: { padding: "6px 14px", borderRadius: 6, border: "none", background: MELON, color: WHITE, fontSize: 13, cursor: "pointer" }
+          }, "Add area")
+        ),
+
+        // --- Unmapped notes review (Super Admin only — editing, not viewing;
+        // the untagged/unmapped COUNT above stays visible to everyone) ---
+        isSuperAdmin && unmappedTexts.length > 0 && React.createElement("div", { style: { marginTop: 10, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: INDIGO, marginBottom: 10 } }, "Unmapped notes needing a decision"),
+          unmappedTexts.map((rawText) => React.createElement("div", {
+            key: rawText,
+            style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }
+          },
+            React.createElement("span", { style: { fontSize: 13, color: INDIGO, minWidth: 160 } }, `"${rawText}"`),
+            React.createElement("select", {
+              value: mappingChoice[rawText] || "",
+              onChange: (e) => setMappingChoice({ ...mappingChoice, [rawText]: e.target.value }),
+              style: { padding: "4px 8px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13 }
+            },
+              React.createElement("option", { value: "" }, "Choose an area…"),
+              areaList.map((a) => React.createElement("option", { key: a, value: a }, a))
+            ),
+            React.createElement("button", {
+              onClick: () => areaConfirmMapping(areaClient, rawText, mappingChoice[rawText]),
+              disabled: !mappingChoice[rawText],
+              style: { padding: "4px 12px", borderRadius: 6, border: "none", background: mappingChoice[rawText] ? MELON : INDIGO_HAIRLINE, color: mappingChoice[rawText] ? WHITE : INDIGO_MUTED, fontSize: 12.5, cursor: mappingChoice[rawText] ? "pointer" : "default" }
+            }, "Confirm")
+          ))
         )
       )
     ),
