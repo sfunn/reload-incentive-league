@@ -2800,8 +2800,8 @@ function App() {
         )
       )
     ),
-    isSuperAdmin && clientBreakdown.length > 0 && React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
-      React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
+    (isSuperAdmin && clientBreakdown.length > 0 || areaAvailableClients.length > 0) && React.createElement("div", { style: { display: "flex", gap: 20, flexWrap: "wrap" } },
+      isSuperAdmin && clientBreakdown.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
         React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Client Breakdown" }),
         React.createElement(TableHeader, { cols: [
           { label: "Client", width: 110 },
@@ -2832,17 +2832,16 @@ function App() {
           React.createElement("span", { style: { width: 60, flexShrink: 0 } }, clientBreakdown.reduce((s, r) => s + r.onsites, 0)),
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, "100%")
         )
-      )
-    ),
-    areaAvailableClients.length > 0 && React.createElement(Panel, null,
-      React.createElement(SectionTitle, { title: "Area Concentration" }),
-      React.createElement("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 10, marginBottom: 16 } },
-        React.createElement("select", {
-          value: areaClient,
-          onChange: (e) => setAreaClient(e.target.value),
-          style: { padding: "6px 10px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5, color: INDIGO, fontFamily: "'Work Sans', sans-serif" }
-        },
-          areaAvailableClients.map((c) => React.createElement("option", { key: c, value: c }, c))
+      ),
+      areaAvailableClients.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
+        React.createElement(SectionTitle, { title: "Area Concentration" }),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 10, marginBottom: 16 } },
+          React.createElement("select", {
+            value: areaClient,
+            onChange: (e) => setAreaClient(e.target.value),
+            style: { padding: "6px 10px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5, color: INDIGO, fontFamily: "'Work Sans', sans-serif" }
+          },
+            areaAvailableClients.map((c) => React.createElement("option", { key: c, value: c }, c))
         ),
         React.createElement("div", { style: { display: "flex", gap: 6 } },
           React.createElement("button", {
@@ -2861,8 +2860,8 @@ function App() {
         // --- Area breakdown table ---
         React.createElement(TableHeader, { cols: [
           { label: "Area", width: 140 },
-          { label: "GBP", width: 90 },
           { label: "Deals", width: 60 },
+          { label: "%", width: 60 },
           { label: "", flex: true },
         ] }),
         areaConcentration.byArea.map((a) => React.createElement("div", {
@@ -2877,8 +2876,8 @@ function App() {
                 style: { width: 140, flexShrink: 0, padding: "2px 6px", fontSize: 13.5, border: `1px solid ${MELON}`, borderRadius: 4 }
               })
             : React.createElement("span", { style: { width: 140, flexShrink: 0 } }, a.area),
-          React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(a.gbp).toLocaleString()}`),
           React.createElement("span", { style: { width: 60, flexShrink: 0 } }, a.deals),
+          React.createElement("span", { style: { width: 60, flexShrink: 0 } }, `${areaConcentration.totalDeals > 0 ? ((a.deals / areaConcentration.totalDeals) * 100).toFixed(1) : "0.0"}%`),
           isSuperAdmin && React.createElement("div", { style: { flex: 1, display: "flex", gap: 10, fontSize: 12 } },
             renamingArea === a.area
               ? React.createElement(React.Fragment, null,
@@ -2934,6 +2933,7 @@ function App() {
           ))
         )
       )
+    )
     ),
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
