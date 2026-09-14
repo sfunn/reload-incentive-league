@@ -4,6 +4,57 @@ const { getUserFromRequest } = require("./_authHelpers");
 const RECORDS_KEY = "atlas-fee-records";
 const FX_KEY = "atlas-fx-rates";
 const PLACEMENTS_KEY = "atlas-placements";
+const CLIENT_AREAS_KEY = "deal-client-areas"; // { [clientCompanyName]: string[] } -- SHARED with the Directors site, same KV key
+const AREA_VARIANT_MAP_KEY = "deal-area-variant-map"; // { [clientCompanyName]: { [normalizedRawText]: canonicalAreaName } } -- SHARED with the Directors site, same KV key
+
+// ============================================================================
+// Area tracking — copied verbatim from the Directors site's own spec so the
+// resolution logic is byte-identical between the two sites. Both read and
+// write the SAME two KV keys above; this is one feature with two front
+// doors, not two separate copies that could silently diverge.
+// ============================================================================
+function normalizeAreaKey(text) {
+  return (text || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+// Only resolves when EXACTLY one canonical area is genuinely close —
+// refuses to guess if two areas could both plausibly be what was meant.
+function findFuzzyAreaMatch(normalizedText, canonicalAreas) {
+  if (normalizedText.length < 5) return null;
+  const withinRange = [];
+  for (const area of canonicalAreas || []) {
+    const normalizedArea = normalizeAreaKey(area);
+    if (normalizedArea.length < 5) continue;
+    const distance = levenshteinDistance(normalizedText, normalizedArea);
+    const threshold = Math.max(1, Math.floor(Math.max(normalizedText.length, normalizedArea.length) * 0.2));
+    if (distance > 0 && distance <= threshold) withinRange.push(area);
+  }
+  return withinRange.length === 1 ? withinRange[0] : null;
+}
+
+function resolveAreaForDeal(rawNotes, canonicalAreas, variantMap) {
+  const trimmed = (rawNotes || "").trim();
+  if (!trimmed) return { area: null, source: "none" };
+  const normalized = normalizeAreaKey(trimmed);
+  const exactMatch = (canonicalAreas || []).find((a) => normalizeAreaKey(a) === normalized);
+  if (exactMatch) return { area: exactMatch, source: "atlas" };
+  const mapped = (variantMap || {})[normalized];
+  if (mapped) return { area: mapped, source: "atlas" };
+  const fuzzyMatch = findFuzzyAreaMatch(normalized, canonicalAreas);
+  if (fuzzyMatch) return { area: fuzzyMatch, source: "atlas-fuzzy" };
+  return { area: null, source: "unmapped", rawText: trimmed };
+}
 
 function monthKeyFromDateStr(dateStr) {
   const d = dateStr ? new Date(dateStr) : new Date();
@@ -101,6 +152,85 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "GET") {
+    // --- Area tracking reads — viewing is open to everyone logged in.
+    // Editing (the POST actions further down) stays Super Admin only. ---
+    if (req.query.action === "area-list" || req.query.action === "area-concentration" || req.query.action === "area-unmapped") {
+      // Viewing is open to everyone logged in — only editing (the POST
+      // actions below) stays Super Admin only.
+      const user = await getUserFromRequest(req);
+      if (!user) {
+        return res.status(401).json({ error: "Login required" });
+      }
+      const clientAreas = (await kv.get(CLIENT_AREAS_KEY)) || {};
+
+      if (req.query.action === "area-list") {
+        const client = req.query.client;
+        if (client) return res.status(200).json({ client, areas: clientAreas[client] || [] });
+        return res.status(200).json({ areas: clientAreas });
+      }
+
+      const client = req.query.client;
+      if (!client) return res.status(400).json({ error: "client query param is required" });
+      const variantMap = (await kv.get(AREA_VARIANT_MAP_KEY)) || {};
+      const records = (await kv.get(RECORDS_KEY)) || [];
+      const allRates = (await kv.get(FX_KEY)) || {};
+      const placements = (await kv.get(PLACEMENTS_KEY)) || {};
+      const areasForClient = clientAreas[client] || [];
+      const variantMapForClient = variantMap[client] || {};
+
+      // Genuine placements for this client only — onsite fees never get an
+      // area at all, per spec.
+      const clientPlacementRecords = records.filter((r) => {
+        const placement = r.placementId ? placements[r.placementId] : null;
+        const hasPlacementName = !!(placement && placement.candidateName);
+        if (!hasPlacementName) return false;
+        const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+        return clientCompanyName === client;
+      });
+
+      if (req.query.action === "area-unmapped") {
+        const unmappedTexts = new Set();
+        for (const r of clientPlacementRecords) {
+          const resolved = resolveAreaForDeal(r.notes, areasForClient, variantMapForClient);
+          if (resolved.source === "unmapped") unmappedTexts.add(resolved.rawText);
+        }
+        return res.status(200).json({ client, unmappedTexts: [...unmappedTexts] });
+      }
+
+      // area-concentration: per year, or "all" combining every year.
+      const yearParam = req.query.year;
+      const scopedRecords = yearParam === "all"
+        ? clientPlacementRecords
+        : clientPlacementRecords.filter((r) => effectiveYear(r, placements) === (yearParam ? parseInt(yearParam, 10) : new Date().getUTCFullYear()));
+
+      const byArea = {};
+      let totalGBP = 0, totalDeals = 0, untaggedCount = 0, unmappedCount = 0;
+      for (const r of scopedRecords) {
+        const gbp = await convertToGBP(r, allRates);
+        const resolved = resolveAreaForDeal(r.notes, areasForClient, variantMapForClient);
+        totalDeals += 1;
+        if (gbp !== null) totalGBP += gbp;
+        if (resolved.source === "none") {
+          untaggedCount += 1;
+        } else if (resolved.source === "unmapped") {
+          unmappedCount += 1;
+        } else {
+          if (!byArea[resolved.area]) byArea[resolved.area] = { area: resolved.area, gbp: 0, deals: 0 };
+          byArea[resolved.area].deals += 1;
+          if (gbp !== null) byArea[resolved.area].gbp += gbp;
+        }
+      }
+      return res.status(200).json({
+        client,
+        year: yearParam === "all" ? "all" : (yearParam ? parseInt(yearParam, 10) : new Date().getUTCFullYear()),
+        totalGBP,
+        totalDeals,
+        untaggedCount,
+        unmappedCount,
+        byArea: Object.values(byArea).sort((a, b) => b.gbp - a.gbp),
+      });
+    }
+
     const records = (await kv.get(RECORDS_KEY)) || [];
     const allRates = (await kv.get(FX_KEY)) || {};
     const placements = (await kv.get(PLACEMENTS_KEY)) || {};
@@ -124,23 +254,33 @@ module.exports = async (req, res) => {
       if (!user || !user.isSuperAdmin) {
         return res.status(401).json({ error: "Super Admin access required" });
       }
+      const clientAreas = (await kv.get(CLIENT_AREAS_KEY)) || {};
+      const variantMap = (await kv.get(AREA_VARIANT_MAP_KEY)) || {};
       const yearRecords = records
         .filter((r) => effectiveYear(r, placements) === year)
         .sort((a, b) => orderDateOf(a, placements).localeCompare(orderDateOf(b, placements)));
       const withUSD = await Promise.all(
         yearRecords.map(async (r) => {
           const placement = r.placementId ? placements[r.placementId] : null;
+          const hasPlacementName = !!(placement && placement.candidateName);
+          const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+          // An onsite fee never gets an area at all, per spec — only
+          // resolved for genuine placements.
+          const resolvedArea = hasPlacementName
+            ? resolveAreaForDeal(r.notes, clientAreas[clientCompanyName], variantMap[clientCompanyName]).area
+            : null;
           return {
             ...r,
             usdAmount: await convertToUSD(r, allRates),
             gbpAmount: await convertToGBP(r, allRates),
             candidateName: (placement && placement.candidateName) || r.notes || null,
-            hasPlacementName: !!(placement && placement.candidateName),
-            clientCompanyName: (placement && placement.clientCompanyName) || r.projectClientName || null,
+            hasPlacementName,
+            clientCompanyName,
             placementStartDate: (placement && placement.startDate) || r.feeDate || null,
             monthOverrides: r.monthOverrides || {},
             coordinatorId: r.coordinatorId || null,
             source: r.source || null,
+            resolvedArea,
           };
         })
       );
@@ -262,6 +402,68 @@ module.exports = async (req, res) => {
   if (req.method === "POST") {
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ error: "Not authorized" });
+
+    // --- Area tracking writes (Super Admin only) ---
+    if (["area-add", "area-remove", "area-rename", "area-confirm-mapping"].includes(req.query.action)) {
+      if (!user.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+
+      if (req.query.action === "area-add") {
+        const { client, area } = req.body || {};
+        if (!client || !area) return res.status(400).json({ error: "client and area are required" });
+        const clientAreas = (await kv.get(CLIENT_AREAS_KEY)) || {};
+        if (!clientAreas[client]) clientAreas[client] = [];
+        // Compare normalized, not exact — two differently-cased entries
+        // that normalize the same would make resolveAreaForDeal's exact
+        // match silently pick whichever came first in the list.
+        const alreadyExists = clientAreas[client].some((a) => normalizeAreaKey(a) === normalizeAreaKey(area));
+        if (!alreadyExists) clientAreas[client].push(area);
+        await kv.set(CLIENT_AREAS_KEY, clientAreas);
+        return res.status(200).json({ ok: true, areas: clientAreas[client] });
+      }
+
+      if (req.query.action === "area-remove") {
+        const { client, area } = req.body || {};
+        if (!client || !area) return res.status(400).json({ error: "client and area are required" });
+        const clientAreas = (await kv.get(CLIENT_AREAS_KEY)) || {};
+        clientAreas[client] = (clientAreas[client] || []).filter((a) => normalizeAreaKey(a) !== normalizeAreaKey(area));
+        await kv.set(CLIENT_AREAS_KEY, clientAreas);
+        return res.status(200).json({ ok: true, areas: clientAreas[client] });
+      }
+
+      if (req.query.action === "area-rename") {
+        const { client, oldName, newName } = req.body || {};
+        if (!client || !oldName || !newName) return res.status(400).json({ error: "client, oldName, and newName are required" });
+        const clientAreas = (await kv.get(CLIENT_AREAS_KEY)) || {};
+        const variantMap = (await kv.get(AREA_VARIANT_MAP_KEY)) || {};
+        const list = clientAreas[client] || [];
+        const newNameAlreadyExists = list.some((a) => normalizeAreaKey(a) === normalizeAreaKey(newName));
+        // Remove the old name; only add the new one if it isn't already
+        // there (merge, don't duplicate).
+        clientAreas[client] = list.filter((a) => normalizeAreaKey(a) !== normalizeAreaKey(oldName));
+        if (!newNameAlreadyExists) clientAreas[client].push(newName);
+        // Rewrite any variant-map entries that pointed at the old name so
+        // they point at the new one instead — otherwise deals resolved via
+        // a confirmed mapping would silently keep showing the retired name.
+        if (variantMap[client]) {
+          for (const key of Object.keys(variantMap[client])) {
+            if (variantMap[client][key] === oldName) variantMap[client][key] = newName;
+          }
+        }
+        await kv.set(CLIENT_AREAS_KEY, clientAreas);
+        await kv.set(AREA_VARIANT_MAP_KEY, variantMap);
+        return res.status(200).json({ ok: true, areas: clientAreas[client] });
+      }
+
+      if (req.query.action === "area-confirm-mapping") {
+        const { client, rawText, canonicalArea } = req.body || {};
+        if (!client || !rawText || !canonicalArea) return res.status(400).json({ error: "client, rawText, and canonicalArea are required" });
+        const variantMap = (await kv.get(AREA_VARIANT_MAP_KEY)) || {};
+        if (!variantMap[client]) variantMap[client] = {};
+        variantMap[client][normalizeAreaKey(rawText)] = canonicalArea;
+        await kv.set(AREA_VARIANT_MAP_KEY, variantMap);
+        return res.status(200).json({ ok: true });
+      }
+    }
 
     const { feeId, splitId, paid, paidDate, monthOverrides, source, coordinatorId, recalibrateToMonth } = req.body || {};
     if (!feeId || !splitId) {
