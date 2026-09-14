@@ -2891,13 +2891,6 @@ function App() {
                 )
           )
         )),
-        React.createElement("div", {
-          style: { display: "flex", alignItems: "baseline", gap: 10, fontSize: 13.5, padding: "8px 0 0", marginTop: 4, fontWeight: 700, color: INDIGO }
-        },
-          React.createElement("span", { style: { width: 140, flexShrink: 0 } }, "Total"),
-          React.createElement("span", { style: { width: 90, flexShrink: 0 } }, `£${Math.round(areaConcentration.totalGBP).toLocaleString()}`),
-          React.createElement("span", { style: { width: 60, flexShrink: 0 } }, areaConcentration.totalDeals)
-        ),
         React.createElement("div", { style: { marginTop: 8, fontSize: 12.5, color: INDIGO_MUTED } },
           `${areaConcentration.untaggedCount} deal${areaConcentration.untaggedCount !== 1 ? "s" : ""} with no notes recorded yet · ${areaConcentration.unmappedCount} deal${areaConcentration.unmappedCount !== 1 ? "s" : ""} with a note that doesn't match any area below`
         ),
