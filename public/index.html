@@ -639,6 +639,7 @@ function App() {
   // down stays Super Admin only) ---
   const [areaClient, setAreaClient] = useState("");
   const [areaAvailableClients, setAreaAvailableClients] = useState([]);
+  const [explorerAvailableClients, setExplorerAvailableClients] = useState([]);
   const [areaYear, setAreaYear] = useState("current"); // "current" (matches dealsYear) or "all"
   const [areaList, setAreaList] = useState([]);
   const [areaConcentration, setAreaConcentration] = useState(null);
@@ -1296,18 +1297,19 @@ function App() {
   const loadAreaClientList = useCallback(async () => {
     if (!authUser) return;
     try {
-      const res = await fetch("/api/deals?action=area-list", { headers: { Authorization: `Bearer ${authUser.token}` } });
+      const yearParam = areaYear === "all" ? "all" : dealsYear;
+      const res = await fetch(`/api/deals?action=area-list&year=${yearParam}`, { headers: { Authorization: `Bearer ${authUser.token}` } });
       const data = await res.json();
       const clients = Object.keys(data.areas || {}).sort();
       setAreaAvailableClients(clients);
-      if (!areaClient && clients.length > 0) {
+      if (!clients.includes(areaClient) && clients.length > 0) {
         const preferred = clients.find((c) => c === "Citadel Securities") || clients.find((c) => c === "Citadel") || clients[0];
         setAreaClient(preferred);
       }
     } catch (e) {
       // silent — secondary panel, doesn't block the rest of the page
     }
-  }, [authUser]);
+  }, [authUser, areaYear, dealsYear]);
   useEffect(() => { loadAreaClientList(); }, [loadAreaClientList]);
 
   const loadAreaData = useCallback(async (client) => {
@@ -1381,17 +1383,38 @@ function App() {
   }, [explorerClient]);
 
   const loadExplorerEmployerList = useCallback(async () => {
-    if (!authUser) return;
+    if (!authUser || !isSuperAdmin) return;
     try {
       const res = await fetch("/api/deals?action=employer-list", { headers: { Authorization: `Bearer ${authUser.token}` } });
       const data = await res.json();
       setExplorerEmployerList(data.employers || []);
     } catch (e) {}
-  }, [authUser]);
+  }, [authUser, isSuperAdmin]);
   useEffect(() => { loadExplorerEmployerList(); }, [loadExplorerEmployerList]);
 
+  // Client chips shown here reflect whichever year is currently selected IN
+  // THIS panel (explorerYear) — a client with no placements in the selected
+  // year simply doesn't appear, matching how "By Area" already requires a
+  // real client. This is deliberately independent from the Area
+  // Concentration panel's OWN client list, since the two panels have
+  // separate year selectors and could be showing different years at once.
+  const loadExplorerClientList = useCallback(async () => {
+    if (!authUser || !isSuperAdmin) return;
+    try {
+      const yearParam = explorerYear === "all" ? "all" : explorerYear;
+      const res = await fetch(`/api/deals?action=area-list&year=${yearParam}`, { headers: { Authorization: `Bearer ${authUser.token}` } });
+      const data = await res.json();
+      const clients = Object.keys(data.areas || {}).sort();
+      setExplorerAvailableClients(clients);
+      // "All Clients" and per-client selections are always valid regardless
+      // of which clients have data this year — never force-reset the
+      // explorer's own selection just because the year changed.
+    } catch (e) {}
+  }, [authUser, isSuperAdmin, explorerYear]);
+  useEffect(() => { loadExplorerClientList(); }, [loadExplorerClientList]);
+
   const loadExplorerData = useCallback(async () => {
-    if (!authUser) return;
+    if (!authUser || !isSuperAdmin) return;
     if (explorerMode === "area" && explorerClient === "all") {
       setExplorerData(null);
       return;
@@ -3061,8 +3084,8 @@ function App() {
       )
     )
     ),
-    React.createElement(Panel, null,
-      React.createElement(SectionTitle, { title: "Where Candidates Came From" }),
+    isSuperAdmin && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Where Candidates Came From" }),
       React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 10, marginBottom: 14 } },
         ["employer", "area", "candidate"].map((m) => React.createElement("button", {
           key: m,
@@ -3075,7 +3098,7 @@ function App() {
           onClick: () => setExplorerClient("all"),
           style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${explorerClient === "all" ? MELON : INDIGO_HAIRLINE}`, background: explorerClient === "all" ? MELON : WHITE, color: explorerClient === "all" ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
         }, "All Clients"),
-        areaAvailableClients.map((c) => React.createElement("button", {
+        explorerAvailableClients.map((c) => React.createElement("button", {
           key: c,
           onClick: () => setExplorerClient(c),
           style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${explorerClient === c ? MELON : INDIGO_HAIRLINE}`, background: explorerClient === c ? MELON : WHITE, color: explorerClient === c ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
