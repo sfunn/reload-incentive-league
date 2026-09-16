@@ -222,12 +222,12 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "GET") {
-    // --- "Where Candidates Came From" reads — viewing open to everyone
-    // logged in. Editing (POST actions further down) stays Super Admin
-    // only. Employer list is GLOBAL, never scoped to a client, unlike areas.
+    // --- "Where Candidates Came From" reads — Super Admin only (unlike
+    // Area Concentration, which stays visible to everyone). Employer list
+    // is GLOBAL, never scoped to a client, unlike areas.
     if (["employer-list", "employer-unmapped", "explorer-employers", "explorer-candidates"].includes(req.query.action)) {
       const user = await getUserFromRequest(req);
-      if (!user) return res.status(401).json({ error: "Login required" });
+      if (!user || !user.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
 
       const employers = (await kv.get(EMPLOYERS_LIST_KEY)) || [];
       if (req.query.action === "employer-list") {
@@ -356,15 +356,32 @@ module.exports = async (req, res) => {
         // has an area list OR has at least one genuine placement, so a
         // client can be picked and started fresh even before its first
         // area is ever added (otherwise it could never appear at all).
+        // Optional year param: if given (and not "all"), only clients with
+        // a genuine placement IN THAT YEAR specifically appear — so the
+        // client list reflects whichever year is currently selected,
+        // rather than every client that's ever had a placement at all.
         const placements = (await kv.get(PLACEMENTS_KEY)) || {};
         const records = (await kv.get(RECORDS_KEY)) || [];
+        const yearParam = req.query.year;
         const allAreas = { ...clientAreas };
+        const clientsWithPlacementsThisScope = new Set();
         for (const r of records) {
           const placement = r.placementId ? placements[r.placementId] : null;
           const hasPlacementName = !!(placement && placement.candidateName);
           if (!hasPlacementName) continue;
+          if (yearParam && yearParam !== "all" && effectiveYear(r, placements) !== parseInt(yearParam, 10)) continue;
           const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
-          if (clientCompanyName && !allAreas[clientCompanyName]) allAreas[clientCompanyName] = [];
+          if (clientCompanyName) clientsWithPlacementsThisScope.add(clientCompanyName);
+        }
+        if (yearParam && yearParam !== "all") {
+          // Year-scoped: only clients with a genuine placement in THAT year.
+          const scopedAreas = {};
+          for (const c of clientsWithPlacementsThisScope) scopedAreas[c] = allAreas[c] || [];
+          return res.status(200).json({ areas: scopedAreas });
+        }
+        // No year param, or "all": every client ever, same as before.
+        for (const c of clientsWithPlacementsThisScope) {
+          if (!allAreas[c]) allAreas[c] = [];
         }
         return res.status(200).json({ areas: allAreas });
       }
