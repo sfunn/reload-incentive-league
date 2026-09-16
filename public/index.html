@@ -1302,8 +1302,12 @@ function App() {
       const data = await res.json();
       const clients = Object.keys(data.areas || {}).sort();
       setAreaAvailableClients(clients);
-      if (!clients.includes(areaClient) && clients.length > 0) {
-        const preferred = clients.find((c) => c === "Citadel Securities") || clients.find((c) => c === "Citadel") || clients[0];
+      // This panel only ever shows Citadel / Citadel Securities tabs, so
+      // the selected client must always be one of those two, never
+      // whatever else happens to be first in the full client list.
+      const visibleClients = clients.filter((c) => c === "Citadel" || c === "Citadel Securities");
+      if (!visibleClients.includes(areaClient) && visibleClients.length > 0) {
+        const preferred = visibleClients.find((c) => c === "Citadel Securities") || visibleClients.find((c) => c === "Citadel");
         setAreaClient(preferred);
       }
     } catch (e) {
@@ -2982,11 +2986,11 @@ function App() {
           React.createElement("span", { style: { width: 55, flexShrink: 0 } }, "100%")
         )
       ),
-      areaAvailableClients.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
-        React.createElement(SectionTitle, { title: "Area Concentration" }),
+      areaAvailableClients.filter((c) => c === "Citadel" || c === "Citadel Securities").length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
+        React.createElement(SectionTitle, { title: "Citadel Area Concentration" }),
         React.createElement("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 10, marginBottom: 16 } },
           React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
-            areaAvailableClients.map((c) => React.createElement("button", {
+            areaAvailableClients.filter((c) => c === "Citadel" || c === "Citadel Securities").map((c) => React.createElement("button", {
               key: c,
               onClick: () => setAreaClient(c),
               style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${areaClient === c ? MELON : INDIGO_HAIRLINE}`, background: areaClient === c ? MELON : WHITE, color: areaClient === c ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
