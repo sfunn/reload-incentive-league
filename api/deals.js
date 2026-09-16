@@ -6,6 +6,8 @@ const FX_KEY = "atlas-fx-rates";
 const PLACEMENTS_KEY = "atlas-placements";
 const CLIENT_AREAS_KEY = "deal-client-areas"; // { [clientCompanyName]: string[] } -- SHARED with the Directors site, same KV key
 const AREA_VARIANT_MAP_KEY = "deal-area-variant-map"; // { [clientCompanyName]: { [normalizedRawText]: canonicalAreaName } } -- SHARED with the Directors site, same KV key
+const EMPLOYERS_LIST_KEY = "previous-employers-list"; // string[] -- SHARED with the Directors site, same KV key
+const EMPLOYER_VARIANT_MAP_KEY = "previous-employer-variant-map"; // { [normalizedRawText]: canonicalEmployerName } -- SHARED with the Directors site, same KV key, deliberately GLOBAL (not per-client, unlike areas)
 
 // ============================================================================
 // Area tracking — copied verbatim from the Directors site's own spec so the
@@ -54,6 +56,74 @@ function resolveAreaForDeal(rawNotes, canonicalAreas, variantMap) {
   const fuzzyMatch = findFuzzyAreaMatch(normalized, canonicalAreas);
   if (fuzzyMatch) return { area: fuzzyMatch, source: "atlas-fuzzy" };
   return { area: null, source: "unmapped", rawText: trimmed };
+}
+
+// ============================================================================
+// "Where Candidates Came From" — parses a single Atlas notes field into its
+// two independent parts (area, previous employer). Copied verbatim from the
+// Directors site's own spec so both sites agree on every note, always.
+//
+// Critical backward-compatibility rule: any note written before this feature
+// existed (no "|", no standalone word "from") resolves EXACTLY as it always
+// did — the whole note is the area, employer is none. Nothing needs
+// re-entering.
+// ============================================================================
+function parseNote(rawNotes) {
+  const text = (rawNotes || "").trim();
+  if (!text) return { areaText: null, employerText: null };
+
+  if (text.includes("|")) {
+    const segments = text.split("|").map((s) => s.trim()).filter((s) => s.length > 0);
+    let areaText = null, employerText = null, foundLabel = false;
+    for (const seg of segments) {
+      const areaMatch = seg.match(/^area:?\s*/i);
+      const fromMatch = seg.match(/^from:?\s*/i);
+      if (areaMatch) {
+        areaText = seg.slice(areaMatch[0].length).trim() || null;
+        foundLabel = true;
+      } else if (fromMatch) {
+        employerText = seg.slice(fromMatch[0].length).trim() || null;
+        foundLabel = true;
+      }
+    }
+    // No segment carried a recognizable label at all, and there's only one
+    // real segment to begin with — this isn't genuine pipe-delimited usage,
+    // fall back to the same backward-compatible rule as a plain note.
+    if (!foundLabel && segments.length === 1) {
+      return { areaText: text, employerText: null };
+    }
+    return { areaText, employerText };
+  }
+
+  // No "|" — look for the word "from" as a genuine standalone word, not a
+  // substring inside another word (e.g. "Fromage Desk" must not match).
+  const fromWordMatch = text.match(/\bfrom\b:?\s*/i);
+  if (fromWordMatch) {
+    const idx = fromWordMatch.index;
+    const employerText = text.slice(idx + fromWordMatch[0].length).trim() || null;
+    let areaText = text.slice(0, idx).trim();
+    areaText = areaText.replace(/^area:?\s*/i, "").trim() || null;
+    return { areaText, employerText };
+  }
+
+  // Neither a label nor "from" anywhere — the entire note is the area,
+  // unchanged, exactly as it always resolved before this feature existed.
+  return { areaText: text, employerText: null };
+}
+
+// Identical precedence and safety rules to resolveAreaForDeal, just against
+// the GLOBAL employer list (never scoped to a client, unlike areas).
+function resolveEmployerForDeal(employerText, canonicalEmployers, variantMap) {
+  const trimmed = (employerText || "").trim();
+  if (!trimmed) return { employer: null, source: "none" };
+  const normalized = normalizeAreaKey(trimmed);
+  const exactMatch = (canonicalEmployers || []).find((e) => normalizeAreaKey(e) === normalized);
+  if (exactMatch) return { employer: exactMatch, source: "atlas" };
+  const mapped = (variantMap || {})[normalized];
+  if (mapped) return { employer: mapped, source: "atlas" };
+  const fuzzyMatch = findFuzzyAreaMatch(normalized, canonicalEmployers);
+  if (fuzzyMatch) return { employer: fuzzyMatch, source: "atlas-fuzzy" };
+  return { employer: null, source: "unmapped", rawText: trimmed };
 }
 
 function monthKeyFromDateStr(dateStr) {
@@ -152,6 +222,122 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "GET") {
+    // --- "Where Candidates Came From" reads — viewing open to everyone
+    // logged in. Editing (POST actions further down) stays Super Admin
+    // only. Employer list is GLOBAL, never scoped to a client, unlike areas.
+    if (["employer-list", "employer-unmapped", "explorer-employers", "explorer-candidates"].includes(req.query.action)) {
+      const user = await getUserFromRequest(req);
+      if (!user) return res.status(401).json({ error: "Login required" });
+
+      const employers = (await kv.get(EMPLOYERS_LIST_KEY)) || [];
+      if (req.query.action === "employer-list") {
+        return res.status(200).json({ employers });
+      }
+
+      const employerVariantMap = (await kv.get(EMPLOYER_VARIANT_MAP_KEY)) || {};
+      const records = (await kv.get(RECORDS_KEY)) || [];
+      const placements = (await kv.get(PLACEMENTS_KEY)) || {};
+      const allRates = (await kv.get(FX_KEY)) || {};
+
+      // Genuine placements only, optionally scoped to one client — "all"
+      // or no client param means every client.
+      const clientParam = req.query.client;
+      const genuineRecords = records.filter((r) => {
+        const placement = r.placementId ? placements[r.placementId] : null;
+        const hasPlacementName = !!(placement && placement.candidateName);
+        if (!hasPlacementName) return false;
+        if (clientParam && clientParam !== "all") {
+          const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+          if (clientCompanyName !== clientParam) return false;
+        }
+        return true;
+      });
+
+      if (req.query.action === "employer-unmapped") {
+        const unmappedTexts = new Set();
+        for (const r of genuineRecords) {
+          const { employerText } = parseNote(r.notes);
+          const resolved = resolveEmployerForDeal(employerText, employers, employerVariantMap);
+          if (resolved.source === "unmapped") unmappedTexts.add(resolved.rawText);
+        }
+        return res.status(200).json({ unmappedTexts: [...unmappedTexts] });
+      }
+
+      const yearParam = req.query.year;
+      const currentYear = new Date().getUTCFullYear();
+      const scopedRecords = yearParam === "all"
+        ? genuineRecords
+        : genuineRecords.filter((r) => effectiveYear(r, placements) === (yearParam ? parseInt(yearParam, 10) : currentYear));
+
+      if (req.query.action === "explorer-employers") {
+        const byEmployer = {};
+        let totalDeals = 0, untaggedCount = 0, unmappedCount = 0;
+        for (const r of scopedRecords) {
+          const { employerText } = parseNote(r.notes);
+          const resolved = resolveEmployerForDeal(employerText, employers, employerVariantMap);
+          totalDeals += 1;
+          if (resolved.source === "none") {
+            untaggedCount += 1;
+          } else if (resolved.source === "unmapped") {
+            unmappedCount += 1;
+          } else {
+            const gbp = await convertToGBP(r, allRates);
+            if (!byEmployer[resolved.employer]) byEmployer[resolved.employer] = { employer: resolved.employer, gbp: 0, deals: 0 };
+            byEmployer[resolved.employer].deals += 1;
+            if (gbp !== null) byEmployer[resolved.employer].gbp += gbp;
+          }
+        }
+        return res.status(200).json({
+          client: clientParam || "all",
+          year: yearParam === "all" ? "all" : (yearParam ? parseInt(yearParam, 10) : currentYear),
+          totalDeals, untaggedCount, unmappedCount,
+          byEmployer: Object.values(byEmployer).sort((a, b) => b.deals - a.deals),
+        });
+      }
+
+      if (req.query.action === "explorer-candidates") {
+        // Only in Candidate mode: dedupe repeated fee records sharing the
+        // same placement. If exactly one carries a "from" note, keep that
+        // one; otherwise keep any single representative. This never
+        // touches Employer/Area mode's own totals — those sum every real
+        // fee record, since each one is genuinely separate revenue.
+        const byPlacement = new Map();
+        for (const r of scopedRecords) {
+          const key = r.placementId;
+          const { employerText } = parseNote(r.notes);
+          if (!byPlacement.has(key)) {
+            byPlacement.set(key, r);
+          } else {
+            const existing = byPlacement.get(key);
+            const existingHasEmployer = !!parseNote(existing.notes).employerText;
+            if (!existingHasEmployer && employerText) byPlacement.set(key, r);
+          }
+        }
+        const candidates = [];
+        const clientAreasForCandidates = (await kv.get(CLIENT_AREAS_KEY)) || {};
+        const areaVariantMapForCandidates = (await kv.get(AREA_VARIANT_MAP_KEY)) || {};
+        for (const r of byPlacement.values()) {
+          const placement = r.placementId ? placements[r.placementId] : null;
+          const { areaText, employerText } = parseNote(r.notes);
+          const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+          const resolvedArea = resolveAreaForDeal(areaText, clientAreasForCandidates[clientCompanyName], areaVariantMapForCandidates[clientCompanyName]).area;
+          const resolvedEmployer = resolveEmployerForDeal(employerText, employers, employerVariantMap).employer;
+          candidates.push({
+            candidateName: placement.candidateName,
+            client: clientCompanyName,
+            area: resolvedArea,
+            employer: resolvedEmployer,
+            startDate: placement.startDate || null,
+          });
+        }
+        return res.status(200).json({
+          client: clientParam || "all",
+          year: yearParam === "all" ? "all" : (yearParam ? parseInt(yearParam, 10) : currentYear),
+          candidates,
+        });
+      }
+    }
+
     // --- Area tracking reads — viewing is open to everyone logged in.
     // Editing (the POST actions further down) stays Super Admin only. ---
     if (req.query.action === "area-list" || req.query.action === "area-concentration" || req.query.action === "area-unmapped") {
@@ -166,7 +352,21 @@ module.exports = async (req, res) => {
       if (req.query.action === "area-list") {
         const client = req.query.client;
         if (client) return res.status(200).json({ client, areas: clientAreas[client] || [] });
-        return res.status(200).json({ areas: clientAreas });
+        // No client specified — return every client that either already
+        // has an area list OR has at least one genuine placement, so a
+        // client can be picked and started fresh even before its first
+        // area is ever added (otherwise it could never appear at all).
+        const placements = (await kv.get(PLACEMENTS_KEY)) || {};
+        const records = (await kv.get(RECORDS_KEY)) || [];
+        const allAreas = { ...clientAreas };
+        for (const r of records) {
+          const placement = r.placementId ? placements[r.placementId] : null;
+          const hasPlacementName = !!(placement && placement.candidateName);
+          if (!hasPlacementName) continue;
+          const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+          if (clientCompanyName && !allAreas[clientCompanyName]) allAreas[clientCompanyName] = [];
+        }
+        return res.status(200).json({ areas: allAreas });
       }
 
       const client = req.query.client;
@@ -191,7 +391,7 @@ module.exports = async (req, res) => {
       if (req.query.action === "area-unmapped") {
         const unmappedTexts = new Set();
         for (const r of clientPlacementRecords) {
-          const resolved = resolveAreaForDeal(r.notes, areasForClient, variantMapForClient);
+          const resolved = resolveAreaForDeal(parseNote(r.notes).areaText, areasForClient, variantMapForClient);
           if (resolved.source === "unmapped") unmappedTexts.add(resolved.rawText);
         }
         return res.status(200).json({ client, unmappedTexts: [...unmappedTexts] });
@@ -207,7 +407,7 @@ module.exports = async (req, res) => {
       let totalGBP = 0, totalDeals = 0, untaggedCount = 0, unmappedCount = 0;
       for (const r of scopedRecords) {
         const gbp = await convertToGBP(r, allRates);
-        const resolved = resolveAreaForDeal(r.notes, areasForClient, variantMapForClient);
+        const resolved = resolveAreaForDeal(parseNote(r.notes).areaText, areasForClient, variantMapForClient);
         totalDeals += 1;
         if (gbp !== null) totalGBP += gbp;
         if (resolved.source === "none") {
@@ -267,7 +467,7 @@ module.exports = async (req, res) => {
           // An onsite fee never gets an area at all, per spec — only
           // resolved for genuine placements.
           const resolvedArea = hasPlacementName
-            ? resolveAreaForDeal(r.notes, clientAreas[clientCompanyName], variantMap[clientCompanyName]).area
+            ? resolveAreaForDeal(parseNote(r.notes).areaText, clientAreas[clientCompanyName], variantMap[clientCompanyName]).area
             : null;
           return {
             ...r,
@@ -402,6 +602,47 @@ module.exports = async (req, res) => {
   if (req.method === "POST") {
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ error: "Not authorized" });
+
+    // --- Employer management writes (Super Admin only) — global list,
+    // never scoped to a client, unlike areas. ---
+    if (["employer-add", "employer-rename", "employer-confirm-mapping"].includes(req.query.action)) {
+      if (!user.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+
+      if (req.query.action === "employer-add") {
+        const { employer } = req.body || {};
+        if (!employer) return res.status(400).json({ error: "employer is required" });
+        const employers = (await kv.get(EMPLOYERS_LIST_KEY)) || [];
+        const alreadyExists = employers.some((e) => normalizeAreaKey(e) === normalizeAreaKey(employer));
+        if (!alreadyExists) employers.push(employer);
+        await kv.set(EMPLOYERS_LIST_KEY, employers);
+        return res.status(200).json({ ok: true, employers });
+      }
+
+      if (req.query.action === "employer-rename") {
+        const { oldName, newName } = req.body || {};
+        if (!oldName || !newName) return res.status(400).json({ error: "oldName and newName are required" });
+        const employers = (await kv.get(EMPLOYERS_LIST_KEY)) || [];
+        const employerVariantMap = (await kv.get(EMPLOYER_VARIANT_MAP_KEY)) || {};
+        const newNameAlreadyExists = employers.some((e) => normalizeAreaKey(e) === normalizeAreaKey(newName));
+        const updatedEmployers = employers.filter((e) => normalizeAreaKey(e) !== normalizeAreaKey(oldName));
+        if (!newNameAlreadyExists) updatedEmployers.push(newName);
+        for (const key of Object.keys(employerVariantMap)) {
+          if (employerVariantMap[key] === oldName) employerVariantMap[key] = newName;
+        }
+        await kv.set(EMPLOYERS_LIST_KEY, updatedEmployers);
+        await kv.set(EMPLOYER_VARIANT_MAP_KEY, employerVariantMap);
+        return res.status(200).json({ ok: true, employers: updatedEmployers });
+      }
+
+      if (req.query.action === "employer-confirm-mapping") {
+        const { rawText, canonicalEmployer } = req.body || {};
+        if (!rawText || !canonicalEmployer) return res.status(400).json({ error: "rawText and canonicalEmployer are required" });
+        const employerVariantMap = (await kv.get(EMPLOYER_VARIANT_MAP_KEY)) || {};
+        employerVariantMap[normalizeAreaKey(rawText)] = canonicalEmployer;
+        await kv.set(EMPLOYER_VARIANT_MAP_KEY, employerVariantMap);
+        return res.status(200).json({ ok: true });
+      }
+    }
 
     // --- Area tracking writes (Super Admin only) ---
     if (["area-add", "area-remove", "area-rename", "area-confirm-mapping"].includes(req.query.action)) {
