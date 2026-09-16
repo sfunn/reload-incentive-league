@@ -648,6 +648,21 @@ function App() {
   const [renamingArea, setRenamingArea] = useState(null); // the area currently being renamed, or null
   const [renameValue, setRenameValue] = useState("");
   const [mappingChoice, setMappingChoice] = useState({}); // { [rawText]: chosenAreaOrNewName }
+  // --- "Where Candidates Came From" unified explorer state ---
+  const [explorerMode, setExplorerMode] = useState("employer"); // "employer" | "area" | "candidate"
+  const [explorerClient, setExplorerClient] = useState(() => {
+    try { return localStorage.getItem("explorer-client") || "all"; } catch (e) { return "all"; }
+  });
+  const [explorerYear, setExplorerYear] = useState(new Date().getUTCFullYear());
+  const [explorerData, setExplorerData] = useState(null);
+  const [explorerLoading, setExplorerLoading] = useState(false);
+  const [explorerEmployerList, setExplorerEmployerList] = useState([]);
+  const [explorerUnmappedTexts, setExplorerUnmappedTexts] = useState([]);
+  const [explorerNewEmployerName, setExplorerNewEmployerName] = useState("");
+  const [explorerRenamingEmployer, setExplorerRenamingEmployer] = useState(null);
+  const [explorerRenameValue, setExplorerRenameValue] = useState("");
+  const [explorerMappingChoice, setExplorerMappingChoice] = useState({});
+  const [explorerSort, setExplorerSort] = useState({ employer: null, area: null, candidate: null }); // { column, direction } per mode, independent
   const [dealsLoading, setDealsLoading] = useState(false);
   const [dealsError, setDealsError] = useState("");
   const [dealDetails, setDealDetails] = useState([]);
@@ -1359,6 +1374,117 @@ function App() {
     });
     loadAreaData(client);
   }
+
+  // --- "Where Candidates Came From" unified explorer ---
+  useEffect(() => {
+    try { localStorage.setItem("explorer-client", explorerClient); } catch (e) {}
+  }, [explorerClient]);
+
+  const loadExplorerEmployerList = useCallback(async () => {
+    if (!authUser) return;
+    try {
+      const res = await fetch("/api/deals?action=employer-list", { headers: { Authorization: `Bearer ${authUser.token}` } });
+      const data = await res.json();
+      setExplorerEmployerList(data.employers || []);
+    } catch (e) {}
+  }, [authUser]);
+  useEffect(() => { loadExplorerEmployerList(); }, [loadExplorerEmployerList]);
+
+  const loadExplorerData = useCallback(async () => {
+    if (!authUser) return;
+    if (explorerMode === "area" && explorerClient === "all") {
+      setExplorerData(null);
+      return;
+    }
+    setExplorerLoading(true);
+    try {
+      const yearParam = explorerYear;
+      if (explorerMode === "employer") {
+        const [dataRes, unmappedRes] = await Promise.all([
+          fetch(`/api/deals?action=explorer-employers&client=${encodeURIComponent(explorerClient)}&year=${yearParam}`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+          fetch(`/api/deals?action=employer-unmapped`, { headers: { Authorization: `Bearer ${authUser.token}` } }),
+        ]);
+        const data = await dataRes.json();
+        const unmappedData = await unmappedRes.json();
+        setExplorerData(data);
+        setExplorerUnmappedTexts(unmappedData.unmappedTexts || []);
+      } else if (explorerMode === "area") {
+        const res = await fetch(`/api/deals?action=area-concentration&client=${encodeURIComponent(explorerClient)}&year=${yearParam}`, { headers: { Authorization: `Bearer ${authUser.token}` } });
+        const data = await res.json();
+        setExplorerData(data);
+      } else if (explorerMode === "candidate") {
+        const res = await fetch(`/api/deals?action=explorer-candidates&client=${encodeURIComponent(explorerClient)}&year=${yearParam}`, { headers: { Authorization: `Bearer ${authUser.token}` } });
+        const data = await res.json();
+        setExplorerData(data);
+      }
+    } catch (e) {
+      // silent — secondary panel, doesn't block the rest of the page
+    } finally {
+      setExplorerLoading(false);
+    }
+  }, [authUser, explorerMode, explorerClient, explorerYear]);
+  useEffect(() => { loadExplorerData(); }, [loadExplorerData]);
+
+  async function explorerEmployerAdd(employer) {
+    if (!employer || !employer.trim()) return;
+    await fetch("/api/deals?action=employer-add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ employer: employer.trim() }),
+    });
+    setExplorerNewEmployerName("");
+    loadExplorerEmployerList();
+    loadExplorerData();
+  }
+  async function explorerEmployerRename(oldName, newName) {
+    if (!newName || !newName.trim()) return;
+    await fetch("/api/deals?action=employer-rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ oldName, newName: newName.trim() }),
+    });
+    setExplorerRenamingEmployer(null);
+    setExplorerRenameValue("");
+    loadExplorerEmployerList();
+    loadExplorerData();
+  }
+  async function explorerEmployerConfirmMapping(rawText, canonicalEmployer) {
+    if (!canonicalEmployer) return;
+    await fetch("/api/deals?action=employer-confirm-mapping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+      body: JSON.stringify({ rawText, canonicalEmployer }),
+    });
+    loadExplorerData();
+  }
+
+  // Generic sort helper — each mode keeps its own independent sort state.
+  function explorerSortedRows(rows, mode, accessors) {
+    const sort = explorerSort[mode];
+    if (!sort) return rows;
+    const { column, direction } = sort;
+    const accessor = accessors[column];
+    if (!accessor) return rows;
+    const sorted = [...rows].sort((a, b) => {
+      const av = accessor(a), bv = accessor(b);
+      if (typeof av === "string") return av.localeCompare(bv);
+      return (av || 0) - (bv || 0);
+    });
+    return direction === "desc" ? sorted.reverse() : sorted;
+  }
+  function explorerToggleSort(mode, column) {
+    setExplorerSort((prev) => {
+      const current = prev[mode];
+      const direction = current && current.column === column && current.direction === "asc" ? "desc" : "asc";
+      return { ...prev, [mode]: { column, direction } };
+    });
+  }
+  function explorerSortArrow(mode, column) {
+    const sort = explorerSort[mode];
+    if (!sort || sort.column !== column) return "";
+    return sort.direction === "asc" ? " ▲" : " ▼";
+  }
+
   function renderDealDetailsTable(records, showSourceAndCoordinator) {
     return dealDetailsLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
     records.length === 0 ? React.createElement(EmptyState, { text: "No deals recorded yet for this year." }) :
@@ -2836,13 +2962,13 @@ function App() {
       areaAvailableClients.length > 0 && React.createElement(Panel, { style: { flex: 1, minWidth: 320, maxWidth: 580 } },
         React.createElement(SectionTitle, { title: "Area Concentration" }),
         React.createElement("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 10, marginBottom: 16 } },
-          React.createElement("select", {
-            value: areaClient,
-            onChange: (e) => setAreaClient(e.target.value),
-            style: { padding: "6px 10px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13.5, color: INDIGO, fontFamily: "'Work Sans', sans-serif" }
-          },
-            areaAvailableClients.map((c) => React.createElement("option", { key: c, value: c }, c))
-        ),
+          React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+            areaAvailableClients.map((c) => React.createElement("button", {
+              key: c,
+              onClick: () => setAreaClient(c),
+              style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${areaClient === c ? MELON : INDIGO_HAIRLINE}`, background: areaClient === c ? MELON : WHITE, color: areaClient === c ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+            }, c))
+          ),
         React.createElement("div", { style: { display: "flex", gap: 6 } },
           React.createElement("button", {
             onClick: () => setAreaYear("current"),
@@ -2934,6 +3060,185 @@ function App() {
         )
       )
     )
+    ),
+    React.createElement(Panel, null,
+      React.createElement(SectionTitle, { title: "Where Candidates Came From" }),
+      React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 10, marginBottom: 14 } },
+        ["employer", "area", "candidate"].map((m) => React.createElement("button", {
+          key: m,
+          onClick: () => setExplorerMode(m),
+          style: { padding: "6px 14px", borderRadius: 20, border: `1px solid ${explorerMode === m ? INDIGO : INDIGO_HAIRLINE}`, background: explorerMode === m ? INDIGO : WHITE, color: explorerMode === m ? WHITE : INDIGO, fontSize: 13, fontWeight: 600, cursor: "pointer" }
+        }, m === "employer" ? "By Employer" : m === "area" ? "By Area" : "By Candidate"))
+      ),
+      React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 } },
+        React.createElement("button", {
+          onClick: () => setExplorerClient("all"),
+          style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${explorerClient === "all" ? MELON : INDIGO_HAIRLINE}`, background: explorerClient === "all" ? MELON : WHITE, color: explorerClient === "all" ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+        }, "All Clients"),
+        areaAvailableClients.map((c) => React.createElement("button", {
+          key: c,
+          onClick: () => setExplorerClient(c),
+          style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${explorerClient === c ? MELON : INDIGO_HAIRLINE}`, background: explorerClient === c ? MELON : WHITE, color: explorerClient === c ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+        }, c))
+      ),
+      React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 } },
+        dealsYearOptions.map((y) => React.createElement("button", {
+          key: y,
+          onClick: () => setExplorerYear(y),
+          style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${explorerYear === y ? MELON : INDIGO_HAIRLINE}`, background: explorerYear === y ? MELON : WHITE, color: explorerYear === y ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+        }, y)),
+        React.createElement("button", {
+          onClick: () => setExplorerYear("all"),
+          style: { padding: "6px 12px", borderRadius: 20, border: `1px solid ${explorerYear === "all" ? MELON : INDIGO_HAIRLINE}`, background: explorerYear === "all" ? MELON : WHITE, color: explorerYear === "all" ? WHITE : INDIGO, fontSize: 13, cursor: "pointer" }
+        }, "All Time")
+      ),
+
+      explorerMode === "area" && explorerClient === "all"
+        ? React.createElement("div", { style: { padding: "16px 0", fontSize: 13.5, color: INDIGO_MUTED } },
+            "An area only ever means something within one client's own structure, so there's no honest way to combine areas across different clients — pick a specific client above to see this."
+          )
+      : explorerLoading ? React.createElement("div", { style: { padding: 16, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")
+      : !explorerData || (explorerMode === "employer" && !Array.isArray(explorerData.byEmployer)) || (explorerMode === "area" && !Array.isArray(explorerData.byArea)) || (explorerMode === "candidate" && !Array.isArray(explorerData.candidates)) ? null
+      : explorerMode === "employer" ? (() => {
+          const rows = explorerSortedRows(explorerData.byEmployer, "employer", {
+            employer: (r) => r.employer,
+            deals: (r) => r.deals,
+            percent: (r) => explorerData.totalDeals > 0 ? r.deals / explorerData.totalDeals : 0,
+          });
+          const sortableHeader = (label, column, width) => React.createElement("span", {
+            key: column, onClick: () => explorerToggleSort("employer", column),
+            style: { width, flexShrink: 0, cursor: "pointer", userSelect: "none" }
+          }, label + explorerSortArrow("employer", column));
+          return React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { display: "flex", gap: 10, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: INDIGO_MUTED, borderBottom: `1px solid ${INDIGO_HAIRLINE}`, paddingBottom: 8 } },
+              sortableHeader("Employer", "employer", 180),
+              sortableHeader("Deals", "deals", 60),
+              sortableHeader("%", "percent", 60)
+            ),
+            rows.map((r) => React.createElement("div", {
+              key: r.employer,
+              style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, color: INDIGO }
+            },
+              explorerRenamingEmployer === r.employer
+                ? React.createElement("input", {
+                    value: explorerRenameValue, autoFocus: true,
+                    onChange: (e) => setExplorerRenameValue(e.target.value),
+                    onKeyDown: (ev) => { if (ev.key === "Enter") explorerEmployerRename(r.employer, explorerRenameValue); if (ev.key === "Escape") setExplorerRenamingEmployer(null); },
+                    style: { width: 180, flexShrink: 0, padding: "2px 6px", fontSize: 13.5, border: `1px solid ${MELON}`, borderRadius: 4 }
+                  })
+                : React.createElement("span", { style: { width: 180, flexShrink: 0 } }, r.employer),
+              React.createElement("span", { style: { width: 60, flexShrink: 0 } }, r.deals),
+              React.createElement("span", { style: { width: 60, flexShrink: 0 } }, `${explorerData.totalDeals > 0 ? ((r.deals / explorerData.totalDeals) * 100).toFixed(1) : "0.0"}%`),
+              isSuperAdmin && (explorerRenamingEmployer === r.employer
+                ? React.createElement(React.Fragment, null,
+                    React.createElement("button", { onClick: () => explorerEmployerRename(r.employer, explorerRenameValue), style: { color: MELON_LINK, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0, marginRight: 10 } }, "Save"),
+                    React.createElement("button", { onClick: () => setExplorerRenamingEmployer(null), style: { color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 } }, "Cancel")
+                  )
+                : React.createElement("button", { onClick: () => { setExplorerRenamingEmployer(r.employer); setExplorerRenameValue(r.employer); }, style: { color: MELON_LINK, background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 } }, "rename"))
+            )),
+            React.createElement("div", { style: { marginTop: 8, fontSize: 12.5, color: INDIGO_MUTED } },
+              `${explorerData.untaggedCount} deal${explorerData.untaggedCount !== 1 ? "s" : ""} with no notes recorded yet · ${explorerData.unmappedCount} deal${explorerData.unmappedCount !== 1 ? "s" : ""} with a note that doesn't match any employer below`
+            ),
+            isSuperAdmin && React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16, marginBottom: 20 } },
+              React.createElement("input", {
+                value: explorerNewEmployerName, placeholder: "Add a new employer…",
+                onChange: (e) => setExplorerNewEmployerName(e.target.value),
+                onKeyDown: (e) => { if (e.key === "Enter") explorerEmployerAdd(explorerNewEmployerName); },
+                style: { flex: 1, maxWidth: 240, padding: "6px 10px", fontSize: 13.5, border: `1px solid ${INDIGO_HAIRLINE}`, borderRadius: 6 }
+              }),
+              React.createElement("button", {
+                onClick: () => explorerEmployerAdd(explorerNewEmployerName),
+                style: { padding: "6px 14px", borderRadius: 6, border: "none", background: MELON, color: WHITE, fontSize: 13, cursor: "pointer" }
+              }, "Add employer")
+            ),
+            isSuperAdmin && explorerUnmappedTexts.length > 0 && React.createElement("div", { style: { marginTop: 10, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+              React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: INDIGO, marginBottom: 10 } }, "Unmapped employer text needing a decision"),
+              explorerUnmappedTexts.map((rawText) => React.createElement("div", {
+                key: rawText,
+                style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }
+              },
+                React.createElement("span", { style: { fontSize: 13, color: INDIGO, minWidth: 160 } }, `"${rawText}"`),
+                React.createElement("select", {
+                  value: explorerMappingChoice[rawText] || "",
+                  onChange: (e) => setExplorerMappingChoice({ ...explorerMappingChoice, [rawText]: e.target.value }),
+                  style: { padding: "4px 8px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 13 }
+                },
+                  React.createElement("option", { value: "" }, "Choose an employer…"),
+                  explorerEmployerList.map((emp) => React.createElement("option", { key: emp, value: emp }, emp))
+                ),
+                React.createElement("button", {
+                  onClick: () => explorerEmployerConfirmMapping(rawText, explorerMappingChoice[rawText]),
+                  disabled: !explorerMappingChoice[rawText],
+                  style: { padding: "4px 12px", borderRadius: 6, border: "none", background: explorerMappingChoice[rawText] ? MELON : INDIGO_HAIRLINE, color: explorerMappingChoice[rawText] ? WHITE : INDIGO_MUTED, fontSize: 12.5, cursor: explorerMappingChoice[rawText] ? "pointer" : "default" }
+                }, "Confirm")
+              ))
+            )
+          );
+        })()
+      : explorerMode === "area" ? (() => {
+          const rows = explorerSortedRows(explorerData.byArea, "area", {
+            area: (r) => r.area,
+            deals: (r) => r.deals,
+            percent: (r) => explorerData.totalDeals > 0 ? r.deals / explorerData.totalDeals : 0,
+          });
+          const sortableHeader = (label, column, width) => React.createElement("span", {
+            key: column, onClick: () => explorerToggleSort("area", column),
+            style: { width, flexShrink: 0, cursor: "pointer", userSelect: "none" }
+          }, label + explorerSortArrow("area", column));
+          return React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { display: "flex", gap: 10, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: INDIGO_MUTED, borderBottom: `1px solid ${INDIGO_HAIRLINE}`, paddingBottom: 8 } },
+              sortableHeader("Area", "area", 180),
+              sortableHeader("Deals", "deals", 60),
+              sortableHeader("%", "percent", 60)
+            ),
+            rows.map((r) => React.createElement("div", {
+              key: r.area,
+              style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, color: INDIGO }
+            },
+              React.createElement("span", { style: { width: 180, flexShrink: 0 } }, r.area),
+              React.createElement("span", { style: { width: 60, flexShrink: 0 } }, r.deals),
+              React.createElement("span", { style: { width: 60, flexShrink: 0 } }, `${explorerData.totalDeals > 0 ? ((r.deals / explorerData.totalDeals) * 100).toFixed(1) : "0.0"}%`)
+            )),
+            React.createElement("div", { style: { marginTop: 8, fontSize: 12.5, color: INDIGO_MUTED } },
+              `${explorerData.untaggedCount} deal${explorerData.untaggedCount !== 1 ? "s" : ""} with no notes recorded yet · ${explorerData.unmappedCount} deal${explorerData.unmappedCount !== 1 ? "s" : ""} with a note that doesn't match any area — manage areas from the Area Concentration panel.`
+            )
+          );
+        })()
+      : (() => {
+          const rows = explorerSortedRows(explorerData.candidates, "candidate", {
+            candidateName: (r) => r.candidateName || "",
+            client: (r) => r.client || "",
+            area: (r) => r.area || "",
+            employer: (r) => r.employer || "",
+            startDate: (r) => r.startDate || "",
+          });
+          const showClientColumn = explorerClient === "all";
+          const sortableHeader = (label, column, width) => React.createElement("span", {
+            key: column, onClick: () => explorerToggleSort("candidate", column),
+            style: { width, flexShrink: 0, cursor: "pointer", userSelect: "none" }
+          }, label + explorerSortArrow("candidate", column));
+          return React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { display: "flex", gap: 10, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: INDIGO_MUTED, borderBottom: `1px solid ${INDIGO_HAIRLINE}`, paddingBottom: 8 } },
+              sortableHeader("Candidate", "candidateName", 160),
+              showClientColumn && sortableHeader("Client", "client", 130),
+              sortableHeader("Area", "area", 110),
+              sortableHeader("Previous Employer", "employer", 150),
+              sortableHeader("Start Date", "startDate", 100)
+            ),
+            rows.length === 0
+              ? React.createElement(EmptyState, { text: "No candidates match these filters." })
+              : rows.map((r, i) => React.createElement("div", {
+                  key: i,
+                  style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, padding: "6px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}`, color: INDIGO }
+                },
+                  React.createElement("span", { style: { width: 160, flexShrink: 0 } }, r.candidateName),
+                  showClientColumn && React.createElement("span", { style: { width: 130, flexShrink: 0, color: INDIGO_MUTED } }, r.client),
+                  React.createElement("span", { style: { width: 110, flexShrink: 0, color: r.area ? INDIGO : INDIGO_MUTED } }, r.area || "—"),
+                  React.createElement("span", { style: { width: 150, flexShrink: 0, color: r.employer ? INDIGO : INDIGO_MUTED } }, r.employer || "—"),
+                  React.createElement("span", { style: { width: 100, flexShrink: 0, color: INDIGO_MUTED } }, r.startDate || "—")
+                ))
+          );
+        })()
     ),
     isSuperAdmin && React.createElement(Panel, null,
       React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Deal details, exchange rates & payouts" }),
