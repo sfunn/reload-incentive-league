@@ -35,6 +35,36 @@ const INTERVIEW_COUNTED_KEY = "atlas-interview-counted"; // { "candidateId:proje
 const ONSITE_COUNTED_KEY = "atlas-onsite-counted";
 const OFFER_COUNTED_KEY = "atlas-offer-counted";
 
+// Scott's rule: CitSec Options is excluded from every consultant KPI
+// number entirely — it never counts toward CVs Out, Interviews, Onsite,
+// or Offers for anyone. Cached by project id (shared KV key with
+// atlas-fee-webhook.js, which does the same lookup for its own purposes)
+// so a project's name is only ever fetched from Atlas once, not on every
+// single stage move for every candidate in that project.
+const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache"; // { [projectId]: projectName }
+const EXCLUDED_PROJECT_NAME = "citsec options"; // compared lowercase/trimmed
+async function lookupProjectName(projectId) {
+  if (!projectId) return null;
+  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
+  if (projectId in cache) return cache[projectId];
+  let name = null;
+  try {
+    const res = await fetch(
+      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (res.ok) {
+      const json = await res.json();
+      name = (json.data && json.data.name) || null;
+    }
+  } catch (e) {
+    console.error("[atlas-webhook] project name lookup failed:", e.message);
+  }
+  cache[projectId] = name;
+  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
+  return name;
+}
+
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -127,6 +157,12 @@ export default async function handler(req, res) {
   if (!newStage || !candidateId || !projectId || !movedAt) {
     console.log("[atlas-webhook] skipped: missing fields. data was:", JSON.stringify(payload.data));
     return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
+  }
+
+  const projectName = await lookupProjectName(projectId);
+  if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
+    console.log("[atlas-webhook] skipped: CitSec Options project is excluded from all KPI numbers");
+    return res.status(200).json({ ok: true, skipped: true, reason: "excluded project (CitSec Options)" });
   }
 
   let metric = null;
