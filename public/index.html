@@ -244,19 +244,18 @@ function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue
   const stored = kpiOverrides && kpiOverrides[personId] && kpiOverrides[personId][monthKey] && kpiOverrides[personId][monthKey][field];
   return (stored !== undefined && stored !== null) ? { value: stored, isOverridden: true } : { value: computedValue, isOverridden: false };
 }
-function computeMonthPipelineRows(weeksList, people, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
+// cvs/interviews/onsite/offers now come pre-computed from the backend's
+// own ?action=kpi-live-monthly (see api/league.js) — it already resolves
+// the Weekly-Incentive-vs-live-Atlas precedence and sums by month, so this
+// function just looks the result up per person, the same simple pattern
+// already used for placementCountsByConsultant and ringoverByMonth below.
+function computeMonthPipelineRows(kpiLiveMonthly, people, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
   return people.map(p => {
-    const source = p.isTeamLead ? "leadRows" : "rows";
-    let cvs = 0, interviews = 0, onsite = 0, offers = 0;
-    weeksList.forEach(w => {
-      if (monthOf(w.date) !== monthKey) return;
-      const entry = (w[source] || {})[p.id];
-      if (!entry) return;
-      cvs += Number(entry.cvs) || 0;
-      interviews += Number(entry.interviews) || 0;
-      onsite += Number(entry.onsite) || 0;
-      offers += Number(entry.offers) || 0;
-    });
+    const liveEntry = ((kpiLiveMonthly || {})[monthKey] || {})[p.id] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+    const cvs = Number(liveEntry.cvsOut) || 0;
+    const interviews = Number(liveEntry.interviews) || 0;
+    const onsite = Number(liveEntry.onsite) || 0;
+    const offers = Number(liveEntry.offers) || 0;
     const placements = (placementCountsByConsultant[p.id] || {})[monthKey] || 0;
     const ringoverStats = ((ringoverByMonth || {})[monthKey] || {})[p.id] || { calls: 0, seconds: 0 };
     const calls = ringoverStats.calls;
@@ -333,21 +332,15 @@ function fmtPipelinePct(v) {
 // person's own monthly percentages, skipping any month with an undefined
 // ratio (0 denominator) — Scott's explicit call, in preference to
 // recomputing the percentage from the pooled yearly sums.
-function computeYearPipelineForPerson(weeksList, person, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth) {
-  const source = person.isTeamLead ? "leadRows" : "rows";
+function computeYearPipelineForPerson(kpiLiveMonthly, person, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth) {
   const months = [];
   for (let m = 1; m <= 12; m++) {
     const mk = `${year}-${String(m).padStart(2, "0")}`;
-    let cvs = 0, interviews = 0, onsite = 0, offers = 0;
-    weeksList.forEach(w => {
-      if (monthOf(w.date) !== mk) return;
-      const entry = (w[source] || {})[person.id];
-      if (!entry) return;
-      cvs += Number(entry.cvs) || 0;
-      interviews += Number(entry.interviews) || 0;
-      onsite += Number(entry.onsite) || 0;
-      offers += Number(entry.offers) || 0;
-    });
+    const liveEntry = ((kpiLiveMonthly || {})[mk] || {})[person.id] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+    const cvs = Number(liveEntry.cvsOut) || 0;
+    const interviews = Number(liveEntry.interviews) || 0;
+    const onsite = Number(liveEntry.onsite) || 0;
+    const offers = Number(liveEntry.offers) || 0;
     const placements = (placementCountsByConsultant[person.id] || {})[mk] || 0;
     const ringoverStats = ((ringoverByMonth || {})[mk] || {})[person.id] || { calls: 0, seconds: 0 };
     const calls = ringoverStats.calls;
@@ -394,8 +387,8 @@ function computeYearPipelineForPerson(weeksList, person, placementCountsByConsul
 // average is local to the Consultant KPIs page only). Each person keeps
 // their own real isTeamLead flag so James/Josh's figures are correctly
 // read from leadRows, not silently zeroed by being misread from rows.
-function computeEveryoneMonthAverage(weeksList, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
-  const rows = computeMonthPipelineRows(weeksList, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth);
+function computeEveryoneMonthAverage(kpiLiveMonthly, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
+  const rows = computeMonthPipelineRows(kpiLiveMonthly, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth);
   return {
     cvs: pipelineMean(rows.map(r => r.cvs)),
     interviews: pipelineMean(rows.map(r => r.interviews)),
@@ -410,8 +403,8 @@ function computeEveryoneMonthAverage(weeksList, everyonePeople, placementCountsB
     pctOfferPlacement: pipelineMean(rows.map(r => pipelinePctOrNull(r.placements, r.offers))),
   };
 }
-function computeEveryoneYearAverage(weeksList, everyonePeople, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth) {
-  const totals = everyonePeople.map(p => computeYearPipelineForPerson(weeksList, p, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth).total);
+function computeEveryoneYearAverage(kpiLiveMonthly, everyonePeople, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth) {
+  const totals = everyonePeople.map(p => computeYearPipelineForPerson(kpiLiveMonthly, p, placementCountsByConsultant, year, kpiOverrides, ringoverByMonth).total);
   return {
     cvs: pipelineMean(totals.map(t => t.cvs)),
     interviews: pipelineMean(totals.map(t => t.interviews)),
@@ -763,6 +756,18 @@ function App() {
       .then(d => setRingoverByMonth(d.byMonth || {}))
       .catch(() => {});
   }, []);
+  // Feeds CVs Out / Interviews / Onsite / Offers on the Consultant KPIs
+  // page automatically — the backend already resolves Weekly-Incentive-
+  // recorded-vs-live-Atlas precedence and sums by month (see api/league.js
+  // ?action=kpi-live-monthly), so this is just the fetch, no client-side
+  // aggregation needed. Refetches whenever the selected year changes.
+  const [kpiLiveMonthly, setKpiLiveMonthly] = useState({});
+  useEffect(() => {
+    fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
+      .then(r => r.json())
+      .then(d => setKpiLiveMonthly(d.monthly || {}))
+      .catch(() => {});
+  }, [pipelineYear]);
   const [kpiOverrideError, setKpiOverrideError] = useState("");
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
@@ -1016,6 +1021,12 @@ function App() {
           cvs: Number(r.cvs) || 0,
           metricValue: Number(r.metricValue) || 0,
           interviews: Number(r.interviews) || 0,
+          // Onsite/Offers are pulled alongside cvs/interviews now (see
+          // pullFromAtlas) but were previously dropped here entirely —
+          // stored so the Consultant KPIs page's own live computation sees
+          // real numbers for this week, not a silent zero.
+          onsite: Number(r.onsite) || 0,
+          offers: Number(r.offers) || 0,
           team: c.team,
           excluded: !!r.excluded
         };
@@ -1082,13 +1093,20 @@ function App() {
           matched += 1;
           const cvs = t.cvsOut || 0;
           const interviews = t.interviews || 0;
+          // Onsite and Offers are pulled here too now, regardless of which
+          // metric this week is scored on — they don't feed the League
+          // Table's own scoring, but they DO need to be stored on the row
+          // so the Consultant KPIs page (which reads this same saved row)
+          // shows real numbers instead of silently defaulting to zero.
+          const onsite = t.onsite || 0;
+          const offers = t.offers || 0;
           if (effectiveMetric === METRIC_CVS_OUT) {
-            next[c.id] = { ...next[c.id], cvs: String(cvs), interviews: String(interviews) };
+            next[c.id] = { ...next[c.id], cvs: String(cvs), interviews: String(interviews), onsite: String(onsite), offers: String(offers) };
           } else if (effectiveMetric === METRIC_RATIO) {
             const pct = cvs > 0 ? Math.round(interviews / cvs * 100) : 0;
-            next[c.id] = { ...next[c.id], cvs: String(cvs), metricValue: String(pct) };
+            next[c.id] = { ...next[c.id], cvs: String(cvs), metricValue: String(pct), onsite: String(onsite), offers: String(offers) };
           } else {
-            next[c.id] = { ...next[c.id], cvs: String(cvs), metricValue: String(interviews) };
+            next[c.id] = { ...next[c.id], cvs: String(cvs), metricValue: String(interviews), onsite: String(onsite), offers: String(offers) };
           }
         });
         return next;
@@ -4245,13 +4263,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       ),
 
       focusedPerson ? (() => {
-        const { months, total } = computeYearPipelineForPerson(sortedWeeks, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
-        const yearAvg = computeEveryoneYearAverage(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
+        const { months, total } = computeYearPipelineForPerson(kpiLiveMonthly, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
+        const yearAvg = computeEveryoneYearAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
         return React.createElement(React.Fragment, null,
           isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
           months.map(m => {
-            const monthAvg = computeEveryoneMonthAverage(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
+            const monthAvg = computeEveryoneMonthAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
             return React.createElement(RowLine, { key: m.monthKey },
               React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
               isAdmin
@@ -4298,8 +4316,8 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         );
       })() : (() => {
         const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
-        const rows = computeMonthPipelineRows(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides, ringoverByMonth);
-        const monthAvg = computeEveryoneMonthAverage(sortedWeeks, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides, ringoverByMonth);
+        const rows = computeMonthPipelineRows(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides, ringoverByMonth);
+        const monthAvg = computeEveryoneMonthAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, monthKey, kpiOverrides, ringoverByMonth);
         const fmtAvgCount = (v) => v === null || v === undefined ? "—" : Math.round(v * 10) / 10;
         return React.createElement(React.Fragment, null,
           isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
