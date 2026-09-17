@@ -1043,7 +1043,12 @@ function App() {
         rows: {
           ...w.rows,
           ...newRowsPart
-        }
+        },
+        // A director explicitly editing this week is a genuine correction
+        // now, not just an automatic snapshot anymore — clear the flag so
+        // the KPI page's own live computation treats it as authoritative
+        // going forward, instead of skipping it as a stale auto-snapshot.
+        autoFinalized: false,
       } : w);
     } else {
       const existing = weeks.find(w => w.date === formDate);
@@ -1053,7 +1058,8 @@ function App() {
           rows: {
             ...w.rows,
             ...newRowsPart
-          }
+          },
+          autoFinalized: false,
         } : w);
       } else {
         if (!formMetric.trim()) return;
