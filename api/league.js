@@ -253,6 +253,15 @@ module.exports = async (req, res) => {
     const weeklyIncentiveByWeekKey = {};
     for (const w of weeks) {
       if (!w.date) continue;
+      // An auto-finalized week is just a snapshot taken the instant the
+      // week rolled over — it is NOT a deliberate correction, and treating
+      // it as authoritative would permanently lock in whatever the tally
+      // happened to be at that exact moment, silently dropping any webhook
+      // event for that week that arrived even slightly later. Only a
+      // genuinely manually-created/edited week record should ever
+      // override the live tally; an auto-finalized one is skipped
+      // entirely here, same as if no record existed at all.
+      if (w.autoFinalized) continue;
       const wk = isoWeekKey(w.date);
       weeklyIncentiveByWeekKey[wk] = { rows: w.rows || {}, leadRows: w.leadRows || {} };
     }
