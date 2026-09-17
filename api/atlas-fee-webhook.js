@@ -62,6 +62,37 @@ async function lookupProjectClientName(projectId) {
   }
 }
 
+// Scott's rule: CitSec Options is excluded from every consultant KPI
+// number entirely, including "Deals Agreed" on the Consultant KPIs page,
+// which is computed from these fee records over in league.js. Storing the
+// project's own name on every record (not just when there's no placement)
+// is what makes that filter possible downstream. Cached by project id
+// (shared KV key with atlas-webhook.js's own identical lookup) so a
+// project's name is only ever fetched from Atlas once, not on every fee
+// event tied to that same project.
+const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache"; // { [projectId]: projectName }
+async function lookupProjectName(projectId) {
+  if (!projectId) return null;
+  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
+  if (projectId in cache) return cache[projectId];
+  let name = null;
+  try {
+    const res = await fetch(
+      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (res.ok) {
+      const json = await res.json();
+      name = (json.data && json.data.name) || null;
+    }
+  } catch (e) {
+    console.error("[atlas-fee-webhook] project name lookup failed:", e.message);
+  }
+  cache[projectId] = name;
+  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
+  return name;
+}
+
 // Fee/split "share" is treated as a percentage (e.g. "50" meaning 50%) when
 // present. If a split has no share (or there's only one split), it gets
 // full credit for the fee amount.
@@ -123,6 +154,10 @@ export default async function handler(req, res) {
   // supply the client name via the normal join, so this avoids an
   // unnecessary API call on the common case.
   const projectClientName = placementId ? null : await lookupProjectClientName(projectId);
+  // Unlike the client-name lookup above, this one always runs regardless
+  // of placement — every record needs its own project name so the
+  // CitSec Options exclusion can be applied downstream in league.js.
+  const projectName = await lookupProjectName(projectId);
 
   // Load existing records, strip out any prior entries for this fee (so
   // financial.feeUpdated replaces cleanly instead of duplicating), then
@@ -187,6 +222,7 @@ export default async function handler(req, res) {
       placementId: placementId || null,
       notes: notes || null,
       projectClientName: projectClientName || null,
+      projectName: projectName || null,
       paid: prior.paid,
       paidMarkedAt: prior.paidMarkedAt,
       monthOverrides: prior.monthOverrides || {},
