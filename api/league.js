@@ -228,6 +228,90 @@ module.exports = async (req, res) => {
     return res.status(200).json({ week, tally });
   }
 
+  if (req.method === "GET" && action === "kpi-live-monthly") {
+    // Feeds the Consultant KPIs page's CVs Out / Interviews / Onsite /
+    // Offers columns automatically — no manual "Pull from Atlas" needed for
+    // any of the four. Precedence, per ISO week per person:
+    //   1. A Weekly Incentive record for that exact week+person, if one
+    //      exists at all (whether auto-finalized or set up in Matchday
+    //      Setup) — its stored numbers are authoritative, since a director
+    //      may have corrected them there. This is deliberately all-or-
+    //      nothing per entry, not per field: there's no way to tell "this
+    //      field is a genuine zero" from "this field was simply never
+    //      pulled" on old data, so once a week+person has a Weekly
+    //      Incentive record at all, that record wins outright rather than
+    //      guessing per field.
+    //   2. Otherwise, the live Atlas tally for that week (covers weeks
+    //      nobody has set up in Matchday Setup yet, including the current,
+    //      in-progress week).
+    //   3. Otherwise zero.
+    // Summed into calendar months by each week's own Monday, matching how
+    // the Weekly Incentive side already buckets weeks into months.
+    const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
+    const weeks = (await kv.get(WEEKS_KEY)) || [];
+
+    const weeklyIncentiveByWeekKey = {};
+    for (const w of weeks) {
+      if (!w.date) continue;
+      const wk = isoWeekKey(w.date);
+      weeklyIncentiveByWeekKey[wk] = { rows: w.rows || {}, leadRows: w.leadRows || {} };
+    }
+
+    const tallyKeys = await kv.keys(`${TALLY_PREFIX}${year}-*`);
+    const liveTallyByWeekKey = {};
+    for (const key of tallyKeys) {
+      liveTallyByWeekKey[key.slice(TALLY_PREFIX.length)] = (await kv.get(key)) || {};
+    }
+
+    const relevantWeekKeys = new Set([
+      ...Object.keys(weeklyIncentiveByWeekKey).filter((wk) => wk.startsWith(`${year}-`)),
+      ...Object.keys(liveTallyByWeekKey),
+    ]);
+
+    const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
+    const monthly = {};
+
+    for (const wk of relevantWeekKeys) {
+      const { monday } = isoWeekToDates(wk);
+      const monthKey = monthKeyFromDateStr(monday);
+      if (!monthly[monthKey]) monthly[monthKey] = {};
+
+      const wiEntry = weeklyIncentiveByWeekKey[wk];
+      const liveEntry = liveTallyByWeekKey[wk] || {};
+
+      for (const personId of ALL_PEOPLE_IDS) {
+        const isTeamLead = personId in TEAM_LEAD_BY_CONSULTANT;
+        const wiSource = wiEntry && (isTeamLead ? wiEntry.leadRows : wiEntry.rows);
+        const wiPersonEntry = wiSource && wiSource[personId];
+        const livePersonEntry = liveEntry[personId];
+
+        const resolved = wiPersonEntry
+          ? {
+              cvsOut: Number(wiPersonEntry.cvs) || 0,
+              interviews: Number(wiPersonEntry.interviews) || 0,
+              onsite: Number(wiPersonEntry.onsite) || 0,
+              offers: Number(wiPersonEntry.offers) || 0,
+            }
+          : livePersonEntry
+          ? {
+              cvsOut: livePersonEntry.cvsOut || 0,
+              interviews: livePersonEntry.interviews || 0,
+              onsite: livePersonEntry.onsite || 0,
+              offers: livePersonEntry.offers || 0,
+            }
+          : { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+
+        if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+        monthly[monthKey][personId].cvsOut += resolved.cvsOut;
+        monthly[monthKey][personId].interviews += resolved.interviews;
+        monthly[monthKey][personId].onsite += resolved.onsite;
+        monthly[monthKey][personId].offers += resolved.offers;
+      }
+    }
+
+    return res.status(200).json({ year, monthly });
+  }
+
   if (req.method === "GET" && action === "placement-counts") {
     // Deliberately COUNTS ONLY — never returns fee amounts, currency,
     // or anything commission-related. A genuine placement here means
