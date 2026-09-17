@@ -253,8 +253,14 @@ module.exports = async (req, res) => {
     ]);
     const seen = new Set(); // dedupe key: consultantId|placementId
     const byConsultantMonth = {};
+    // Scott's rule: CitSec Options is excluded from every consultant KPI
+    // number, including Deals Agreed here. Only affects records created
+    // after this field started being captured — existing records from
+    // before this change have no projectName stored and are unaffected.
+    const EXCLUDED_PROJECT_NAME = "citsec options";
     for (const r of records) {
       if (!r.consultantId || !r.placementId) continue;
+      if (r.projectName && r.projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) continue;
       const placement = placements[r.placementId];
       const candidateName = placement && placement.candidateName;
       if (!candidateName) continue; // not a genuine placement
