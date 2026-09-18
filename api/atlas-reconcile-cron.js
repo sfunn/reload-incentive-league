@@ -202,3 +202,16 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ ok: false, error: e.message, eventsSeen, eventsCounted });
   }
 };
+
+// Each event needs its own round-trip to Atlas for an owner lookup (plus a
+// cached-per-project name lookup), so a run processing hundreds of events
+// can genuinely take tens of seconds — a real backlog (e.g. after the
+// schedule hasn't run in a while) could exceed a short default limit.
+// Vercel Hobby plans commonly cap functions around 10s by default; this
+// raises it explicitly so a legitimately large, safe run isn't cut off
+// mid-way. If your actual plan's own maximum is lower than this, Vercel
+// will just use its own ceiling instead — this only ever raises the
+// limit, never bypasses whatever your plan genuinely allows.
+module.exports.config = {
+  maxDuration: 60,
+};
