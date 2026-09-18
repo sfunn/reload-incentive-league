@@ -82,6 +82,30 @@ function isoWeekToDates(weekKey) {
   return { monday: fmt(monday), sunday: fmt(sunday) };
 }
 
+// Used only for backfilling historical weekly tallies into the newer
+// per-event monthly tally — a week's aggregate count can't be split
+// precisely across two months when it straddles a boundary (there's no
+// record of which individual day within the week each event happened
+// on), so the whole week's count is assigned to whichever month has the
+// majority of that week's 7 days. This is a genuine approximation for
+// boundary weeks specifically, unlike the per-event tracking used for
+// every new event going forward, which has no such ambiguity.
+function majorityMonthForWeek(weekKey) {
+  const { monday } = isoWeekToDates(weekKey);
+  const counts = {};
+  const d = new Date(monday + "T00:00:00Z");
+  for (let i = 0; i < 7; i++) {
+    const mk = monthKeyFromDateStr(d.toISOString().slice(0, 10));
+    counts[mk] = (counts[mk] || 0) + 1;
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  let best = null, bestCount = -1;
+  for (const [mk, c] of Object.entries(counts)) {
+    if (c > bestCount) { best = mk; bestCount = c; }
+  }
+  return best;
+}
+
 function computeMetricValue(metric, cvs, interviews) {
   if (metric === METRIC_INTERVIEWS) return interviews;
   if (metric === METRIC_RATIO) return cvs > 0 ? Math.round((interviews / cvs) * 100) : 0;
@@ -431,6 +455,76 @@ module.exports = async (req, res) => {
   if (req.method === "GET" && action === "kpi-overrides") {
     const overrides = (await kv.get(KPI_OVERRIDES_KEY)) || {};
     return res.status(200).json({ overrides });
+  }
+
+  if (req.method === "POST" && action === "backfill-monthly-tally") {
+    // One-time (but safe to re-run) migration: fills in the per-event
+    // monthly tally (atlas-monthly-tally:{monthKey}) for historical
+    // weeks that predate this mechanism, using the OLD weekly tally as
+    // the source. Only Onsite/Offers are backfilled — CVs Out/Interviews
+    // were never affected by the bug this exists to fix. Idempotent: a
+    // marker records which weeks have already been backfilled, so
+    // running this again never double-counts, and it never touches the
+    // CURRENT, in-progress week at all, since that week may already have
+    // some events correctly recorded live via the new mechanism, and
+    // there's no reliable way to tell which part of its weekly total is
+    // already covered vs still missing.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
+    }
+
+    let tallyKeys = [];
+    try {
+      tallyKeys = await kv.keys(`${TALLY_PREFIX}*`);
+    } catch (e) {
+      return res.status(500).json({ error: `Couldn't list existing weekly tallies: ${e.message}` });
+    }
+
+    const currentWeekKey = isoWeekKey(new Date().toISOString());
+    const BACKFILL_MARKER_KEY = "atlas-monthly-tally-backfilled-weeks";
+    const alreadyBackfilled = (await kv.get(BACKFILL_MARKER_KEY)) || {};
+
+    let weeksBackfilled = 0, weeksSkippedCurrent = 0, weeksSkippedAlready = 0;
+    const monthlyDeltas = {}; // { [monthKey]: { [personId]: { onsite, offers } } } — accumulated before writing, so each month's key is only read/written once
+
+    for (const key of tallyKeys) {
+      const wk = key.slice(TALLY_PREFIX.length);
+      if (wk === currentWeekKey) { weeksSkippedCurrent++; continue; }
+      if (alreadyBackfilled[wk]) { weeksSkippedAlready++; continue; }
+
+      const weekTally = (await kv.get(key)) || {};
+      const monthKey = majorityMonthForWeek(wk);
+      if (!monthlyDeltas[monthKey]) monthlyDeltas[monthKey] = {};
+      for (const [personId, entry] of Object.entries(weekTally)) {
+        if (!monthlyDeltas[monthKey][personId]) monthlyDeltas[monthKey][personId] = { onsite: 0, offers: 0 };
+        monthlyDeltas[monthKey][personId].onsite += entry.onsite || 0;
+        monthlyDeltas[monthKey][personId].offers += entry.offers || 0;
+      }
+      alreadyBackfilled[wk] = true;
+      weeksBackfilled++;
+    }
+
+    for (const [monthKey, delta] of Object.entries(monthlyDeltas)) {
+      const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
+      const current = (await kv.get(monthTallyKey)) || {};
+      for (const [personId, add] of Object.entries(delta)) {
+        if (!current[personId]) current[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+        current[personId].onsite = (current[personId].onsite || 0) + add.onsite;
+        current[personId].offers = (current[personId].offers || 0) + add.offers;
+      }
+      await kv.set(monthTallyKey, current);
+    }
+
+    await kv.set(BACKFILL_MARKER_KEY, alreadyBackfilled);
+
+    return res.status(200).json({
+      ok: true,
+      weeksBackfilled,
+      weeksSkippedCurrent,
+      weeksSkippedAlready,
+      monthsUpdated: Object.keys(monthlyDeltas),
+    });
   }
 
   if (req.method === "POST" && action === "set-kpi-override") {
