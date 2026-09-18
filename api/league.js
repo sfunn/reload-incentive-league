@@ -254,61 +254,41 @@ module.exports = async (req, res) => {
 
   if (req.method === "GET" && action === "kpi-live-monthly") {
     // Feeds the Consultant KPIs page's CVs Out / Interviews / Onsite /
-    // Offers columns automatically — no manual "Pull from Atlas" needed for
-    // any of the four. Precedence is split by field, not applied to a
-    // whole week's record as one unit — see below for why.
+    // Offers columns. Precedence is split by field, matching Directors'
+    // own confirmed behavior exactly (walked through directly with
+    // Scott, not guessed at) rather than going further than it:
     //
     // CVs Out / Interviews: these are the Weekly Incentive system's own
     // real competitive metrics — a director genuinely, deliberately sets
-    // and corrects these when running Matchday Setup. So: a manual
-    // (non-auto-finalized) Weekly Incentive record wins outright for these
-    // two fields specifically; an auto-finalized snapshot is ignored
-    // (see below); otherwise, live Atlas tally; otherwise zero.
+    // and corrects these when running Matchday Setup, so a manual
+    // (non-auto-finalized) Weekly Incentive record wins outright for
+    // these two fields specifically. An auto-finalized snapshot doesn't
+    // count as that kind of deliberate correction — it's just whatever
+    // the tally happened to be the instant the week rolled over — so
+    // it's skipped in favor of live data, same as if no record existed
+    // at all. Bucketed by the week's own Monday, matching how the
+    // Weekly Incentive side already buckets weeks into months — a
+    // manually-entered weekly number can't be split across two months
+    // anyway, so this is the one place that approximation still
+    // applies, and only when a manual override is actually involved.
     //
     // Onsite / Offers: the Weekly Incentive system was never built to
     // track these — nobody competes on them, so nobody has any reason to
     // deliberately set or re-check them mid-week. Whatever value sits in
     // a Weekly Incentive row for these two fields is only ever an
     // incidental byproduct of clicking "Pull from Atlas" once, frozen at
-    // that exact moment, never a genuine, considered correction. So these
-    // two ALWAYS read live from Atlas directly, regardless of whether a
-    // Weekly Incentive record exists for that week at all, manual or
-    // automatic — and they read from a genuinely separate, per-EVENT
-    // monthly tally (atlas-monthly-tally:{monthKey}), not from the weekly
-    // tally bucketed by a week's Monday. A week's Monday can land in a
-    // different calendar month than most of that week's own days (e.g. a
-    // week running 31 Aug–6 Sep), so bucketing a whole week by its Monday
-    // would silently move a genuinely-September event into August's
-    // total — this happened in practice, not just in theory. The
-    // per-event monthly tally has no such ambiguity.
-    //
-    // For CVs Out / Interviews, an auto-finalized week is just a snapshot
-    // taken the instant the week rolled over — not a deliberate
-    // correction — so treating it as authoritative would permanently lock
-    // in whatever the tally happened to be at that exact moment, silently
-    // dropping any webhook event for that week that arrived even slightly
-    // later. Only a genuinely manually-created/edited record overrides
-    // live data for these two fields; an auto-finalized one is skipped
-    // entirely, same as if no record existed at all. These two are still
-    // bucketed by a week's own Monday, matching how the Weekly Incentive
-    // side already buckets weeks into months — a manually-entered weekly
-    // number can't be split across two months, so this is the one place
-    // that approximation still applies, and only when a manual override
-    // is actually involved.
+    // that exact moment, never a genuine, considered correction. So
+    // these two ALWAYS read live from Atlas directly, from the separate
+    // per-event monthly tally (atlas-monthly-tally:{monthKey}) the
+    // webhook writes directly, keyed by each individual event's own true
+    // date — no month-boundary ambiguity, unlike the week-based
+    // bucketing CVs Out/Interviews still uses above.
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
     const weeks = (await kv.get(WEEKS_KEY)) || [];
 
     const weeklyIncentiveByWeekKey = {};
     for (const w of weeks) {
       if (!w.date) continue;
-      // An auto-finalized week is just a snapshot taken the instant the
-      // week rolled over — it is NOT a deliberate correction, and treating
-      // it as authoritative would permanently lock in whatever the tally
-      // happened to be at that exact moment, silently dropping any webhook
-      // event for that week that arrived even slightly later. Only a
-      // genuinely manually-created/edited week record should ever
-      // override the live tally; an auto-finalized one is skipped
-      // entirely here, same as if no record existed at all.
       if (w.autoFinalized) continue;
       const wk = isoWeekKey(w.date);
       weeklyIncentiveByWeekKey[wk] = { rows: w.rows || {}, leadRows: w.leadRows || {} };
@@ -318,9 +298,8 @@ module.exports = async (req, res) => {
     try {
       tallyKeys = await kv.keys(`${TALLY_PREFIX}${year}-*`);
     } catch (e) {
-      console.error(`[kpi-live-monthly] kv.keys() FAILED — live Atlas data cannot be found at all: ${e.message}`);
+      console.error(`[kpi-live-monthly] kv.keys() FAILED for weekly tally — CVs Out/Interviews live fallback cannot be found: ${e.message}`);
     }
-    console.log(`[kpi-live-monthly] found ${tallyKeys.length} live tally week(s) for ${year}:`, tallyKeys);
     const liveTallyByWeekKey = {};
     for (const key of tallyKeys) {
       liveTallyByWeekKey[key.slice(TALLY_PREFIX.length)] = (await kv.get(key)) || {};
@@ -348,13 +327,6 @@ module.exports = async (req, res) => {
         const wiPersonEntry = wiSource && wiSource[personId];
         const livePersonEntry = liveEntry[personId] || {};
 
-        // CVs Out / Interviews are the Weekly Incentive's own actual
-        // competitive metrics — a director genuinely, deliberately sets
-        // and corrects these, so a manual (non-auto-finalized) record
-        // wins outright for these two fields specifically. These stay
-        // bucketed by the week's own Monday, matching how the Weekly
-        // Incentive side already buckets weeks into months — a manual
-        // weekly number can't be split across two months anyway.
         const cvsOut = wiPersonEntry ? Number(wiPersonEntry.cvs) || 0 : livePersonEntry.cvsOut || 0;
         const interviews = wiPersonEntry ? Number(wiPersonEntry.interviews) || 0 : livePersonEntry.interviews || 0;
 
@@ -364,17 +336,6 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Onsite / Offers are handled entirely separately from the week-based
-    // loop above, and deliberately do NOT bucket by a week's Monday at
-    // all. A week's Monday can fall in a different calendar month than
-    // most of that week's own days (e.g. a week running 31 Aug–6 Sep) —
-    // bucketing the WHOLE week by its Monday would silently move a
-    // genuinely September event into August's total, exactly the bug
-    // that surfaced in practice. Instead, this reads a separate monthly
-    // tally that the webhook writes directly, keyed by each individual
-    // event's own true date — no approximation, no ambiguity. These two
-    // fields never check for a Weekly Incentive override at all, per the
-    // rule above: nobody manages them there, so nothing to defer to.
     let monthlyTallyKeys = [];
     try {
       monthlyTallyKeys = await kv.keys(`atlas-monthly-tally:${year}-*`);
@@ -462,13 +423,12 @@ module.exports = async (req, res) => {
     // monthly tally (atlas-monthly-tally:{monthKey}) for historical
     // weeks that predate this mechanism, using the OLD weekly tally as
     // the source. Only Onsite/Offers are backfilled — CVs Out/Interviews
-    // were never affected by the bug this exists to fix. Idempotent: a
-    // marker records which weeks have already been backfilled, so
-    // running this again never double-counts, and it never touches the
-    // CURRENT, in-progress week at all, since that week may already have
-    // some events correctly recorded live via the new mechanism, and
-    // there's no reliable way to tell which part of its weekly total is
-    // already covered vs still missing.
+    // read from reload-league-weeks directly (with a live weekly-tally
+    // fallback) and were never affected by the bug this exists to fix.
+    // Idempotent: a marker records which weeks have already been
+    // backfilled, so running this again never double-counts, and it
+    // never touches the CURRENT, in-progress week at all — see
+    // ?action=reconcile-current-week for that one specifically.
     const user = await getUserFromRequest(req);
     if (!user || !user.isSuperAdmin) {
       return res.status(401).json({ error: "Super Admin access required" });
@@ -529,24 +489,27 @@ module.exports = async (req, res) => {
 
   if (req.method === "POST" && action === "reconcile-current-week") {
     // Closes the one specific, bounded gap the backfill above
-    // deliberately leaves open: the CURRENT, still-open week. That week's
-    // weekly tally may contain a mix of pre-deploy events (never written
-    // to the monthly tally at all) and post-deploy events (already
-    // written to both the weekly AND monthly tally live) — there's no
-    // per-event timestamp to tell the two apart, only a single running
-    // count. So this can't safely ADD the weekly total on top of what's
-    // already in the monthly tally without risking double-counting the
-    // post-deploy portion.
+    // deliberately leaves open: the CURRENT, still-open week, for
+    // Onsite/Offers specifically (CVs Out/Interviews don't need this —
+    // they read reload-league-weeks with a live weekly-tally fallback
+    // directly, which already covers the current week correctly). That
+    // week's weekly tally may contain a mix of pre-deploy events (never
+    // written to the monthly tally at all) and post-deploy events
+    // (already written to both the weekly AND monthly tally live) —
+    // there's no per-event timestamp to tell the two apart, only a
+    // single running count. So this can't safely ADD the weekly total on
+    // top of what's already in the monthly tally without risking
+    // double-counting the post-deploy portion.
     //
-    // Instead it takes the larger of the two values, per person, per
-    // metric. This is safe specifically because of how the two tallies
-    // relate: every post-deploy event increments BOTH the weekly and
-    // monthly tally at the same time, so the monthly tally's own value
-    // can never be genuinely higher than the true total the weekly tally
-    // holds. Taking the max therefore can't overcount, and correctly
-    // picks up any pre-deploy events that only ever made it into the
-    // weekly tally. This is a one-time, current-week-only reconciliation
-    // — meant to be run once shortly after deploying the fix, not on an
+    // Instead it takes the larger of the two values, per person. This is
+    // safe specifically because of how the two tallies relate: every
+    // post-deploy event increments BOTH the weekly and monthly tally at
+    // the same time, so the monthly tally's own value can never be
+    // genuinely higher than the true total the weekly tally holds.
+    // Taking the max therefore can't overcount, and correctly picks up
+    // any pre-deploy events that only ever made it into the weekly
+    // tally. This is a one-time, current-week-only reconciliation —
+    // meant to be run once shortly after deploying the fix, not on an
     // ongoing basis; every future week is already covered correctly by
     // live tracking with no such gap to close.
     const user = await getUserFromRequest(req);
