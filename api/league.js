@@ -527,6 +527,53 @@ module.exports = async (req, res) => {
     });
   }
 
+  if (req.method === "POST" && action === "reconcile-current-week") {
+    // Closes the one specific, bounded gap the backfill above
+    // deliberately leaves open: the CURRENT, still-open week. That week's
+    // weekly tally may contain a mix of pre-deploy events (never written
+    // to the monthly tally at all) and post-deploy events (already
+    // written to both the weekly AND monthly tally live) — there's no
+    // per-event timestamp to tell the two apart, only a single running
+    // count. So this can't safely ADD the weekly total on top of what's
+    // already in the monthly tally without risking double-counting the
+    // post-deploy portion.
+    //
+    // Instead it takes the larger of the two values, per person, per
+    // metric. This is safe specifically because of how the two tallies
+    // relate: every post-deploy event increments BOTH the weekly and
+    // monthly tally at the same time, so the monthly tally's own value
+    // can never be genuinely higher than the true total the weekly tally
+    // holds. Taking the max therefore can't overcount, and correctly
+    // picks up any pre-deploy events that only ever made it into the
+    // weekly tally. This is a one-time, current-week-only reconciliation
+    // — meant to be run once shortly after deploying the fix, not on an
+    // ongoing basis; every future week is already covered correctly by
+    // live tracking with no such gap to close.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required" });
+    }
+
+    const currentWeekKey = isoWeekKey(new Date().toISOString());
+    const weeklyTally = (await kv.get(`${TALLY_PREFIX}${currentWeekKey}`)) || {};
+    const monthKey = majorityMonthForWeek(currentWeekKey);
+    const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
+    const current = (await kv.get(monthTallyKey)) || {};
+
+    let peopleReconciled = 0;
+    for (const [personId, weeklyEntry] of Object.entries(weeklyTally)) {
+      if (!current[personId]) current[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+      const beforeOnsite = current[personId].onsite || 0;
+      const beforeOffers = current[personId].offers || 0;
+      current[personId].onsite = Math.max(beforeOnsite, weeklyEntry.onsite || 0);
+      current[personId].offers = Math.max(beforeOffers, weeklyEntry.offers || 0);
+      if (current[personId].onsite !== beforeOnsite || current[personId].offers !== beforeOffers) peopleReconciled++;
+    }
+    await kv.set(monthTallyKey, current);
+
+    return res.status(200).json({ ok: true, currentWeekKey, monthKey, peopleReconciled });
+  }
+
   if (req.method === "POST" && action === "set-kpi-override") {
     const user = await getUserFromRequest(req);
     if (!user || !user.isAdmin) {
