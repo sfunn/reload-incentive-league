@@ -768,6 +768,34 @@ function App() {
       .then(d => setKpiLiveMonthly(d.monthly || {}))
       .catch(() => {});
   }, [pipelineYear]);
+  // One-time (but safe to re-run) migration for Onsite/Offers history
+  // that predates the per-event monthly tally — see api/league.js's own
+  // comment on ?action=backfill-monthly-tally for the full reasoning.
+  // Super Admin only; refetches the live monthly data afterward so the
+  // page reflects the result immediately without a manual refresh.
+  const [backfillLoading, setBackfillLoading] = useState(false);
+  const [backfillResult, setBackfillResult] = useState(null);
+  async function runBackfillMonthlyTally() {
+    setBackfillLoading(true);
+    setBackfillResult(null);
+    try {
+      const res = await fetch("/api/league?action=backfill-monthly-tally", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Backfill failed");
+      setBackfillResult({ ok: true, ...data });
+      fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
+        .then(r => r.json())
+        .then(d => setKpiLiveMonthly(d.monthly || {}))
+        .catch(() => {});
+    } catch (e) {
+      setBackfillResult({ ok: false, error: e.message });
+    } finally {
+      setBackfillLoading(false);
+    }
+  }
   const [kpiOverrideError, setKpiOverrideError] = useState("");
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
@@ -4240,6 +4268,18 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             onClick: () => setPipelineYear(y),
             style: { ...chipStyle, background: pipelineYear === y ? MELON : "rgba(255,176,140,0.14)", fontWeight: pipelineYear === y ? 700 : 500 }
           }, y))
+        )
+      ),
+      isSuperAdmin && React.createElement("div", { style: { marginBottom: 12 } },
+        React.createElement("button", {
+          onClick: runBackfillMonthlyTally,
+          disabled: backfillLoading,
+          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: backfillLoading ? "default" : "pointer" }
+        }, backfillLoading ? "Backfilling…" : "Backfill historical Onsite/Offers into monthly tracking"),
+        backfillResult && React.createElement("div", { style: { fontSize: 12.5, color: backfillResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
+          backfillResult.ok
+            ? `Done — ${backfillResult.weeksBackfilled} week(s) backfilled, ${backfillResult.weeksSkippedAlready} already done, ${backfillResult.weeksSkippedCurrent} current week skipped (never backfilled automatically — see note below).`
+            : `Backfill failed: ${backfillResult.error}`
         )
       ),
 
