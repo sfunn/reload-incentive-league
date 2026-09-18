@@ -1,93 +1,16 @@
 import { kv } from "@vercel/kv";
 import { Webhook } from "svix";
+import atlasShared from "./_atlasShared.js";
 
-// ============================================================================
-// CONFIG:
-// 1. EMAIL_TO_CONSULTANT below — already filled in with real Atlas emails.
-// ============================================================================
-const CVS_OUT_STAGE = "CV Sent";
-// CONFIRMED with Scott: any of these three stages counts toward a
-// candidate's Interview KPI (HR call, HRX, and 1st Stage Interview are all
-// genuinely "reached interview stage"), but the dedup logic just below
-// caps it at ONE count per candidate+project no matter how many of these
-// stages they pass through — that dedup is the actual answer to "should
-// this count only once", not restricting which stage names qualify.
-const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
-// Confirmed directly against Atlas's own pipeline stage names — kept as
-// arrays (like INTERVIEW_STAGES above) so a future variant name can be
-// added without changing anything else.
-const ONSITE_STAGES = ["Onsite"];
-const OFFER_STAGES = ["Offer"];
-
-// A candidate's interview PROCESS is one thing, even if it involves several
-// stages (HR call, then HRX, then 1st Stage Interview) — this should only
-// ever count as ONE interview per candidate per process, not one per stage
-// they pass through. This persists forever (not scoped to any single week)
-// since the different stages for the same process can span multiple weeks —
-// once a candidate+project pair has been counted, it never counts again,
-// no matter which further interview-type stage they later move through.
-const INTERVIEW_COUNTED_KEY = "atlas-interview-counted"; // { "candidateId:projectId": true, ... }
-// Same one-per-candidate-per-process dedup, separately for Onsite and
-// Offer — each stage gets its own independent counted-key, so a candidate
-// bouncing back into an earlier stage (e.g. re-offered after a renegotiation)
-// never double-counts, and so that Onsite and Offer counts stay genuinely
-// independent of each other and of the interview count.
-const ONSITE_COUNTED_KEY = "atlas-onsite-counted";
-const OFFER_COUNTED_KEY = "atlas-offer-counted";
-
-// Scott's rule: CitSec Options is excluded from every consultant KPI
-// number entirely — it never counts toward CVs Out, Interviews, Onsite,
-// or Offers for anyone. Cached by project id (shared KV key with
-// atlas-fee-webhook.js, which does the same lookup for its own purposes)
-// so a project's name is only ever fetched from Atlas once, not on every
-// single stage move for every candidate in that project.
-const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache"; // { [projectId]: projectName }
-const EXCLUDED_PROJECT_NAME = "citsec options"; // compared lowercase/trimmed
-async function lookupProjectName(projectId) {
-  if (!projectId) return null;
-  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
-  if (projectId in cache) return cache[projectId];
-  let name = null;
-  try {
-    const res = await fetch(
-      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
-      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-    );
-    if (res.ok) {
-      const json = await res.json();
-      name = (json.data && json.data.name) || null;
-    }
-  } catch (e) {
-    console.error("[atlas-webhook] project name lookup failed:", e.message);
-  }
-  cache[projectId] = name;
-  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
-  return name;
-}
-
-
-const EMAIL_TO_CONSULTANT = {
-  "alex@reloadsearch.com": "alex-silverman",
-  "ash@reloadsearch.com": "ash-thiara",
-  "jack@reloadsearch.com": "jack-thompson",
-  "max@reloadsearch.com": "max-hart",
-  "oleg@reloadsearch.com": "oleg-sokyrka",
-  "alexander@reloadsearch.com": "alex-aparo",
-  "jackr@reloadsearch.com": "jack-routledge",
-  "joe@reloadsearch.com": "joe-purton",
-  "joshd@reloadsearch.com": "josh-davis",
-  "natasha@reloadsearch.com": "natasha-barnard",
-  // Team leads — tracked here identically to everyone else. The distinction
-  // between "regular consultant" and "team lead" is NOT enforced in this
-  // file at all — it's enforced downstream in league.js, which reads the
-  // same tally data this file writes and deliberately routes james-lancer
-  // and josh-stark into a separate `leadRows` field, never `rows`, so their
-  // own activity can never leak into the League Table or Team Lead Bonus's
-  // team volume figures. See league.js's TEAM_LEAD_BY_CONSULTANT for the
-  // actual enforcement point.
-  "james@reloadsearch.com": "james-lancer",
-  "josh@reloadsearch.com": "josh-stark",
-};
+const {
+  EXCLUDED_PROJECT_NAME,
+  EMAIL_TO_CONSULTANT,
+  DEDUPE_KEY_BY_METRIC,
+  metricForStageName,
+  lookupProjectName,
+  lookupCandidateOwnerEmail,
+  writeTally,
+} = atlasShared;
 // ============================================================================
 
 function getRawBody(req) {
@@ -97,28 +20,6 @@ function getRawBody(req) {
     req.on("end", () => resolve(data));
     req.on("error", reject);
   });
-}
-
-// ISO 8601 week key, e.g. "2026-W30" — a stable bucket to tally into.
-function isoWeekKey(dateStr) {
-  const d = new Date(dateStr);
-  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const dayNum = (target.getUTCDay() + 6) % 7;
-  target.setUTCDate(target.getUTCDate() - dayNum + 3);
-  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
-  const week = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
-  return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
-}
-
-async function lookupCandidateOwnerEmail(projectId, candidateId) {
-  const res = await fetch(
-    `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
-    { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-  );
-  if (!res.ok) throw new Error(`Atlas candidate lookup failed: ${res.status}`);
-  const json = await res.json();
-  const owner = json.data && json.data.owner;
-  return owner ? owner.email : null;
 }
 
 export default async function handler(req, res) {
@@ -159,18 +60,14 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
   }
 
-  const projectName = await lookupProjectName(projectId);
+  const projectName = await lookupProjectName(kv, projectId);
   if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
     console.log("[atlas-webhook] skipped: CitSec Options project is excluded from all KPI numbers");
     return res.status(200).json({ ok: true, skipped: true, reason: "excluded project (CitSec Options)" });
   }
 
-  let metric = null;
-  if (newStage.name === CVS_OUT_STAGE) metric = "cvsOut";
-  else if (INTERVIEW_STAGES.includes(newStage.name)) metric = "interviews";
-  else if (ONSITE_STAGES.includes(newStage.name)) metric = "onsite";
-  else if (OFFER_STAGES.includes(newStage.name)) metric = "offers";
-  else {
+  const metric = metricForStageName(newStage.name);
+  if (!metric) {
     console.log("[atlas-webhook] skipped: not a tracked stage. newStage.name was:", JSON.stringify(newStage.name));
     return res.status(200).json({ ok: true, skipped: true, reason: "not a tracked stage" });
   }
@@ -195,18 +92,11 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, skipped: true, reason: "unmapped candidate owner" });
   }
 
-  const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
-
   // Interview, Onsite, and Offer stages each only ever count once per
   // candidate per process — check (and record) that here, before touching
-  // the weekly tally at all. Each metric uses its OWN independent counted-
-  // key, so a candidate's interview, onsite, and offer counts never
-  // interfere with one another even though they follow the same pattern.
-  const DEDUPE_KEY_BY_METRIC = {
-    interviews: INTERVIEW_COUNTED_KEY,
-    onsite: ONSITE_COUNTED_KEY,
-    offers: OFFER_COUNTED_KEY,
-  };
+  // the tally at all. Each metric uses its OWN independent counted-key, so
+  // a candidate's interview, onsite, and offer counts never interfere with
+  // one another even though they follow the same pattern.
   if (DEDUPE_KEY_BY_METRIC[metric]) {
     const dedupeStoreKey = DEDUPE_KEY_BY_METRIC[metric];
     const dedupeKey = `${candidateId}:${projectId}`;
@@ -219,43 +109,7 @@ export default async function handler(req, res) {
     await kv.set(dedupeStoreKey, alreadyCounted);
   }
 
-  const current = (await kv.get(weekKey)) || {};
-  // Handles two cases: a consultant with no entry at all this week yet, AND
-  // a consultant who already has a cvsOut/interviews entry from earlier in
-  // the week but has never had onsite/offers fields before (either because
-  // this deploy is brand new, or their entry predates this change) — both
-  // need the missing fields patched in before incrementing, or an onsite/
-  // offer move would try to add 1 to `undefined` and silently store NaN.
-  if (!current[consultantId]) {
-    current[consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-  } else {
-    if (current[consultantId].onsite === undefined) current[consultantId].onsite = 0;
-    if (current[consultantId].offers === undefined) current[consultantId].offers = 0;
-  }
-  current[consultantId][metric] += 1;
-  await kv.set(weekKey, current);
-
-  // Written IN ADDITION to the weekly tally above, keyed by this event's
-  // OWN actual date, not by which week it falls in. This exists because a
-  // week's Monday can fall in a different calendar month than most of that
-  // week's own days (e.g. a week running 31 Aug–6 Sep) — bucketing an
-  // entire week by its Monday would silently move a genuinely
-  // September event into August's total. The weekly tally above is still
-  // needed for the Weekly Incentive competition itself, which is
-  // inherently week-based; this monthly one exists purely so month-level
-  // reporting (the Consultant KPIs page) can be exact, not an
-  // approximation of which month a whole week "belongs to".
-  const monthKey = new Date(movedAt).toISOString().slice(0, 7);
-  const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
-  const currentMonth = (await kv.get(monthTallyKey)) || {};
-  if (!currentMonth[consultantId]) {
-    currentMonth[consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-  } else {
-    if (currentMonth[consultantId].onsite === undefined) currentMonth[consultantId].onsite = 0;
-    if (currentMonth[consultantId].offers === undefined) currentMonth[consultantId].offers = 0;
-  }
-  currentMonth[consultantId][metric] += 1;
-  await kv.set(monthTallyKey, currentMonth);
+  const { weekKey, monthKey } = await writeTally(kv, consultantId, metric, movedAt);
 
   return res.status(200).json({ ok: true, consultantId, metric, weekKey, monthKey });
 }
