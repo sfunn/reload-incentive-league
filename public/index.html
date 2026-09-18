@@ -796,6 +796,34 @@ function App() {
       setBackfillLoading(false);
     }
   }
+  // Closes the one specific gap the backfill above deliberately leaves
+  // open: the current, still-open week — see api/league.js's own comment
+  // on ?action=reconcile-current-week for the full reasoning. Meant to be
+  // run once, shortly after deploying this fix; safe to re-run any time,
+  // since it only ever takes the larger of two values, never adds.
+  const [reconcileLoading, setReconcileLoading] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState(null);
+  async function runReconcileCurrentWeek() {
+    setReconcileLoading(true);
+    setReconcileResult(null);
+    try {
+      const res = await fetch("/api/league?action=reconcile-current-week", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Reconciliation failed");
+      setReconcileResult({ ok: true, ...data });
+      fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
+        .then(r => r.json())
+        .then(d => setKpiLiveMonthly(d.monthly || {}))
+        .catch(() => {});
+    } catch (e) {
+      setReconcileResult({ ok: false, error: e.message });
+    } finally {
+      setReconcileLoading(false);
+    }
+  }
   const [kpiOverrideError, setKpiOverrideError] = useState("");
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
@@ -4274,12 +4302,22 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         React.createElement("button", {
           onClick: runBackfillMonthlyTally,
           disabled: backfillLoading,
-          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: backfillLoading ? "default" : "pointer" }
+          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: backfillLoading ? "default" : "pointer", marginRight: 8 }
         }, backfillLoading ? "Backfilling…" : "Backfill historical Onsite/Offers into monthly tracking"),
+        React.createElement("button", {
+          onClick: runReconcileCurrentWeek,
+          disabled: reconcileLoading,
+          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: reconcileLoading ? "default" : "pointer" }
+        }, reconcileLoading ? "Reconciling…" : "Reconcile current week's Onsite/Offers"),
         backfillResult && React.createElement("div", { style: { fontSize: 12.5, color: backfillResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           backfillResult.ok
-            ? `Done — ${backfillResult.weeksBackfilled} week(s) backfilled, ${backfillResult.weeksSkippedAlready} already done, ${backfillResult.weeksSkippedCurrent} current week skipped (never backfilled automatically — see note below).`
+            ? `Backfill done — ${backfillResult.weeksBackfilled} week(s) backfilled, ${backfillResult.weeksSkippedAlready} already done, ${backfillResult.weeksSkippedCurrent} current week skipped (use "Reconcile current week" for that one instead).`
             : `Backfill failed: ${backfillResult.error}`
+        ),
+        reconcileResult && React.createElement("div", { style: { fontSize: 12.5, color: reconcileResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
+          reconcileResult.ok
+            ? `Reconciled ${reconcileResult.currentWeekKey} into ${reconcileResult.monthKey} — ${reconcileResult.peopleReconciled} person/people had a genuinely missing number picked up.`
+            : `Reconciliation failed: ${reconcileResult.error}`
         )
       ),
 
