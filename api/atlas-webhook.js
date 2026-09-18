@@ -235,7 +235,29 @@ export default async function handler(req, res) {
   current[consultantId][metric] += 1;
   await kv.set(weekKey, current);
 
-  return res.status(200).json({ ok: true, consultantId, metric, weekKey });
+  // Written IN ADDITION to the weekly tally above, keyed by this event's
+  // OWN actual date, not by which week it falls in. This exists because a
+  // week's Monday can fall in a different calendar month than most of that
+  // week's own days (e.g. a week running 31 Aug–6 Sep) — bucketing an
+  // entire week by its Monday would silently move a genuinely
+  // September event into August's total. The weekly tally above is still
+  // needed for the Weekly Incentive competition itself, which is
+  // inherently week-based; this monthly one exists purely so month-level
+  // reporting (the Consultant KPIs page) can be exact, not an
+  // approximation of which month a whole week "belongs to".
+  const monthKey = new Date(movedAt).toISOString().slice(0, 7);
+  const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
+  const currentMonth = (await kv.get(monthTallyKey)) || {};
+  if (!currentMonth[consultantId]) {
+    currentMonth[consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+  } else {
+    if (currentMonth[consultantId].onsite === undefined) currentMonth[consultantId].onsite = 0;
+    if (currentMonth[consultantId].offers === undefined) currentMonth[consultantId].offers = 0;
+  }
+  currentMonth[consultantId][metric] += 1;
+  await kv.set(monthTallyKey, currentMonth);
+
+  return res.status(200).json({ ok: true, consultantId, metric, weekKey, monthKey });
 }
 
 export const config = {
