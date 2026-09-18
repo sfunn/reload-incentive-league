@@ -1,0 +1,158 @@
+// Shared between api/atlas-webhook.js and api/atlas-reconcile-cron.js.
+// Underscore-prefixed so Vercel excludes it from routing — it's a plain
+// module, not an API endpoint, and doesn't count against the 12-function
+// Hobby-plan cap. The whole point of this file existing is that these
+// mappings must be byte-identical in both places: if a stage name or a
+// consultant's email were ever updated in one file and not the other, the
+// webhook and the reconciliation job would silently disagree about what
+// counts as what, which defeats the reconciliation job's entire purpose
+// (catching what the webhook missed, not re-litigating what counts).
+
+const CVS_OUT_STAGE = "CV Sent";
+const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
+const ONSITE_STAGES = ["Onsite"];
+const OFFER_STAGES = ["Offer"];
+
+const INTERVIEW_COUNTED_KEY = "atlas-interview-counted";
+const ONSITE_COUNTED_KEY = "atlas-onsite-counted";
+const OFFER_COUNTED_KEY = "atlas-offer-counted";
+// Added alongside the reconciliation job: CVs Out previously had no dedup
+// key at all, since a single webhook firing once per genuine event never
+// needed one. But a reconciliation job polling the same underlying event
+// from a separate source (the candidate-stage-events API) has no way to
+// know the webhook already counted it, for CVs Out specifically — the
+// other three metrics were already protected by their own dedup keys,
+// this makes CVs Out consistent with them, on the same reasoning: a
+// candidate genuinely should only ever count as "CV Sent" once per
+// project, no matter how many times that stage gets touched.
+const CVS_OUT_COUNTED_KEY = "atlas-cvsout-counted";
+
+const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache";
+const EXCLUDED_PROJECT_NAME = "citsec options";
+
+const EMAIL_TO_CONSULTANT = {
+  "alex@reloadsearch.com": "alex-silverman",
+  "ash@reloadsearch.com": "ash-thiara",
+  "jack@reloadsearch.com": "jack-thompson",
+  "max@reloadsearch.com": "max-hart",
+  "oleg@reloadsearch.com": "oleg-sokyrka",
+  "alexander@reloadsearch.com": "alex-aparo",
+  "jackr@reloadsearch.com": "jack-routledge",
+  "joe@reloadsearch.com": "joe-purton",
+  "joshd@reloadsearch.com": "josh-davis",
+  "natasha@reloadsearch.com": "natasha-barnard",
+  "james@reloadsearch.com": "james-lancer",
+  "josh@reloadsearch.com": "josh-stark",
+};
+
+function isoWeekKey(dateStr) {
+  const d = new Date(dateStr);
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = (target.getUTCDay() + 6) % 7;
+  target.setUTCDate(target.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+  const week = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+// Given a stage name (e.g. newStage.name from the webhook, or stageTo.name
+// from the candidate-stage-events API), returns which KPI metric it counts
+// toward, or null if it's not a tracked stage at all.
+function metricForStageName(stageName) {
+  if (stageName === CVS_OUT_STAGE) return "cvsOut";
+  if (INTERVIEW_STAGES.includes(stageName)) return "interviews";
+  if (ONSITE_STAGES.includes(stageName)) return "onsite";
+  if (OFFER_STAGES.includes(stageName)) return "offers";
+  return null;
+}
+
+const DEDUPE_KEY_BY_METRIC = {
+  cvsOut: CVS_OUT_COUNTED_KEY,
+  interviews: INTERVIEW_COUNTED_KEY,
+  onsite: ONSITE_COUNTED_KEY,
+  offers: OFFER_COUNTED_KEY,
+};
+
+async function lookupProjectName(kv, projectId) {
+  if (!projectId) return null;
+  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
+  if (projectId in cache) return cache[projectId];
+  let name = null;
+  try {
+    const res = await fetch(
+      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (res.ok) {
+      const json = await res.json();
+      name = (json.data && json.data.name) || null;
+    }
+  } catch (e) {
+    console.error("[atlas-shared] project name lookup failed:", e.message);
+  }
+  cache[projectId] = name;
+  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
+  return name;
+}
+
+async function lookupCandidateOwnerEmail(projectId, candidateId) {
+  const res = await fetch(
+    `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
+    { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+  );
+  if (!res.ok) throw new Error(`Atlas candidate lookup failed: ${res.status}`);
+  const json = await res.json();
+  const owner = json.data && json.data.owner;
+  return owner ? owner.email : null;
+}
+
+// The exact same tally-writing logic the webhook uses — writes both the
+// weekly tally (needed for the Weekly Incentive competition itself) and
+// the per-event monthly tally (needed for exact month-level KPI
+// reporting, avoiding the week-straddles-two-months bucketing bug).
+async function writeTally(kv, consultantId, metric, movedAt) {
+  const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
+  const current = (await kv.get(weekKey)) || {};
+  if (!current[consultantId]) {
+    current[consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+  } else {
+    if (current[consultantId].onsite === undefined) current[consultantId].onsite = 0;
+    if (current[consultantId].offers === undefined) current[consultantId].offers = 0;
+  }
+  current[consultantId][metric] += 1;
+  await kv.set(weekKey, current);
+
+  const monthKey = new Date(movedAt).toISOString().slice(0, 7);
+  const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
+  const currentMonth = (await kv.get(monthTallyKey)) || {};
+  if (!currentMonth[consultantId]) {
+    currentMonth[consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+  } else {
+    if (currentMonth[consultantId].onsite === undefined) currentMonth[consultantId].onsite = 0;
+    if (currentMonth[consultantId].offers === undefined) currentMonth[consultantId].offers = 0;
+  }
+  currentMonth[consultantId][metric] += 1;
+  await kv.set(monthTallyKey, currentMonth);
+
+  return { weekKey, monthKey };
+}
+
+module.exports = {
+  CVS_OUT_STAGE,
+  INTERVIEW_STAGES,
+  ONSITE_STAGES,
+  OFFER_STAGES,
+  CVS_OUT_COUNTED_KEY,
+  INTERVIEW_COUNTED_KEY,
+  ONSITE_COUNTED_KEY,
+  OFFER_COUNTED_KEY,
+  PROJECT_NAMES_CACHE_KEY,
+  EXCLUDED_PROJECT_NAME,
+  EMAIL_TO_CONSULTANT,
+  DEDUPE_KEY_BY_METRIC,
+  isoWeekKey,
+  metricForStageName,
+  lookupProjectName,
+  lookupCandidateOwnerEmail,
+  writeTally,
+};
