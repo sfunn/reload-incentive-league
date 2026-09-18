@@ -249,7 +249,14 @@ module.exports = async (req, res) => {
     // that exact moment, never a genuine, considered correction. So these
     // two ALWAYS read live from Atlas directly, regardless of whether a
     // Weekly Incentive record exists for that week at all, manual or
-    // automatic.
+    // automatic — and they read from a genuinely separate, per-EVENT
+    // monthly tally (atlas-monthly-tally:{monthKey}), not from the weekly
+    // tally bucketed by a week's Monday. A week's Monday can land in a
+    // different calendar month than most of that week's own days (e.g. a
+    // week running 31 Aug–6 Sep), so bucketing a whole week by its Monday
+    // would silently move a genuinely-September event into August's
+    // total — this happened in practice, not just in theory. The
+    // per-event monthly tally has no such ambiguity.
     //
     // For CVs Out / Interviews, an auto-finalized week is just a snapshot
     // taken the instant the week rolled over — not a deliberate
@@ -258,10 +265,12 @@ module.exports = async (req, res) => {
     // dropping any webhook event for that week that arrived even slightly
     // later. Only a genuinely manually-created/edited record overrides
     // live data for these two fields; an auto-finalized one is skipped
-    // entirely, same as if no record existed at all.
-    //
-    // Summed into calendar months by each week's own Monday, matching how
-    // the Weekly Incentive side already buckets weeks into months.
+    // entirely, same as if no record existed at all. These two are still
+    // bucketed by a week's own Monday, matching how the Weekly Incentive
+    // side already buckets weeks into months — a manually-entered weekly
+    // number can't be split across two months, so this is the one place
+    // that approximation still applies, and only when a manual override
+    // is actually involved.
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
     const weeks = (await kv.get(WEEKS_KEY)) || [];
 
@@ -318,27 +327,46 @@ module.exports = async (req, res) => {
         // CVs Out / Interviews are the Weekly Incentive's own actual
         // competitive metrics — a director genuinely, deliberately sets
         // and corrects these, so a manual (non-auto-finalized) record
-        // wins outright for these two fields specifically.
+        // wins outright for these two fields specifically. These stay
+        // bucketed by the week's own Monday, matching how the Weekly
+        // Incentive side already buckets weeks into months — a manual
+        // weekly number can't be split across two months anyway.
         const cvsOut = wiPersonEntry ? Number(wiPersonEntry.cvs) || 0 : livePersonEntry.cvsOut || 0;
         const interviews = wiPersonEntry ? Number(wiPersonEntry.interviews) || 0 : livePersonEntry.interviews || 0;
 
-        // Onsite / Offers are NEVER a deliberate Weekly Incentive entry —
-        // nobody competes on them, so nobody ever has a reason to correct
-        // or re-pull them mid-week. Whatever value sits in a Weekly
-        // Incentive row for these two fields is just an incidental
-        // byproduct of clicking "Pull from Atlas" once, frozen at that
-        // moment, never a real correction. These two ALWAYS read live,
-        // regardless of whether a Weekly Incentive record exists at all.
-        const onsite = livePersonEntry.onsite || 0;
-        const offers = livePersonEntry.offers || 0;
-
-        const resolved = { cvsOut, interviews, onsite, offers };
-
         if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-        monthly[monthKey][personId].cvsOut += resolved.cvsOut;
-        monthly[monthKey][personId].interviews += resolved.interviews;
-        monthly[monthKey][personId].onsite += resolved.onsite;
-        monthly[monthKey][personId].offers += resolved.offers;
+        monthly[monthKey][personId].cvsOut += cvsOut;
+        monthly[monthKey][personId].interviews += interviews;
+      }
+    }
+
+    // Onsite / Offers are handled entirely separately from the week-based
+    // loop above, and deliberately do NOT bucket by a week's Monday at
+    // all. A week's Monday can fall in a different calendar month than
+    // most of that week's own days (e.g. a week running 31 Aug–6 Sep) —
+    // bucketing the WHOLE week by its Monday would silently move a
+    // genuinely September event into August's total, exactly the bug
+    // that surfaced in practice. Instead, this reads a separate monthly
+    // tally that the webhook writes directly, keyed by each individual
+    // event's own true date — no approximation, no ambiguity. These two
+    // fields never check for a Weekly Incentive override at all, per the
+    // rule above: nobody manages them there, so nothing to defer to.
+    let monthlyTallyKeys = [];
+    try {
+      monthlyTallyKeys = await kv.keys(`atlas-monthly-tally:${year}-*`);
+    } catch (e) {
+      console.error(`[kpi-live-monthly] kv.keys() FAILED for monthly tally — Onsite/Offers cannot be found: ${e.message}`);
+    }
+    console.log(`[kpi-live-monthly] found ${monthlyTallyKeys.length} live monthly tally key(s) for ${year}:`, monthlyTallyKeys);
+    for (const key of monthlyTallyKeys) {
+      const monthKey = key.slice("atlas-monthly-tally:".length);
+      const monthTally = (await kv.get(key)) || {};
+      if (!monthly[monthKey]) monthly[monthKey] = {};
+      for (const personId of ALL_PEOPLE_IDS) {
+        const entry = monthTally[personId] || {};
+        if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+        monthly[monthKey][personId].onsite = entry.onsite || 0;
+        monthly[monthKey][personId].offers = entry.offers || 0;
       }
     }
 
