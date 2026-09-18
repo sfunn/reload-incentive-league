@@ -281,7 +281,13 @@ module.exports = async (req, res) => {
       weeklyIncentiveByWeekKey[wk] = { rows: w.rows || {}, leadRows: w.leadRows || {} };
     }
 
-    const tallyKeys = await kv.keys(`${TALLY_PREFIX}${year}-*`);
+    let tallyKeys = [];
+    try {
+      tallyKeys = await kv.keys(`${TALLY_PREFIX}${year}-*`);
+    } catch (e) {
+      console.error(`[kpi-live-monthly] kv.keys() FAILED — live Atlas data cannot be found at all: ${e.message}`);
+    }
+    console.log(`[kpi-live-monthly] found ${tallyKeys.length} live tally week(s) for ${year}:`, tallyKeys);
     const liveTallyByWeekKey = {};
     for (const key of tallyKeys) {
       liveTallyByWeekKey[key.slice(TALLY_PREFIX.length)] = (await kv.get(key)) || {};
