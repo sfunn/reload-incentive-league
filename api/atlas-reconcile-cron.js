@@ -1,4 +1,5 @@
 const { kv } = require("@vercel/kv");
+const { getUserFromRequest } = require("./_authHelpers");
 const {
   EXCLUDED_PROJECT_NAME,
   EMAIL_TO_CONSULTANT,
@@ -49,12 +50,22 @@ const MAX_PAGES_PER_RUN = 20;
 const PAGE_SIZE = 100;
 
 module.exports = async function handler(req, res) {
-  // Vercel signs its own cron requests with this header when CRON_SECRET
-  // is set — protects this endpoint from being triggered by anyone who
-  // simply knows or guesses the URL, since it performs writes.
-  const expectedAuth = `Bearer ${process.env.CRON_SECRET}`;
-  if (!process.env.CRON_SECRET || req.headers.authorization !== expectedAuth) {
-    return res.status(401).json({ error: "Unauthorized" });
+  // Two ways in: Vercel's own scheduled cron calls (signed with
+  // CRON_SECRET, sent automatically, never known to any person), or a
+  // Super Admin manually triggering a run from the Consultant KPIs page
+  // to actually SEE what a run does right now, rather than waiting for
+  // the schedule and having no way to tell whether "nothing changed"
+  // meant "nothing was wrong" or "this silently isn't running at all".
+  const expectedCronAuth = `Bearer ${process.env.CRON_SECRET}`;
+  const isCron = !!process.env.CRON_SECRET && req.headers.authorization === expectedCronAuth;
+  let triggeredBy = isCron ? "cron" : null;
+
+  if (!isCron) {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    triggeredBy = "manual";
   }
 
   const cursorState = (await kv.get(CURSOR_KEY)) || null;
@@ -173,6 +184,7 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
+      triggeredBy,
       createdAfter,
       pagesFetched,
       hitPageLimit,
