@@ -231,20 +231,35 @@ module.exports = async (req, res) => {
   if (req.method === "GET" && action === "kpi-live-monthly") {
     // Feeds the Consultant KPIs page's CVs Out / Interviews / Onsite /
     // Offers columns automatically — no manual "Pull from Atlas" needed for
-    // any of the four. Precedence, per ISO week per person:
-    //   1. A Weekly Incentive record for that exact week+person, if one
-    //      exists at all (whether auto-finalized or set up in Matchday
-    //      Setup) — its stored numbers are authoritative, since a director
-    //      may have corrected them there. This is deliberately all-or-
-    //      nothing per entry, not per field: there's no way to tell "this
-    //      field is a genuine zero" from "this field was simply never
-    //      pulled" on old data, so once a week+person has a Weekly
-    //      Incentive record at all, that record wins outright rather than
-    //      guessing per field.
-    //   2. Otherwise, the live Atlas tally for that week (covers weeks
-    //      nobody has set up in Matchday Setup yet, including the current,
-    //      in-progress week).
-    //   3. Otherwise zero.
+    // any of the four. Precedence is split by field, not applied to a
+    // whole week's record as one unit — see below for why.
+    //
+    // CVs Out / Interviews: these are the Weekly Incentive system's own
+    // real competitive metrics — a director genuinely, deliberately sets
+    // and corrects these when running Matchday Setup. So: a manual
+    // (non-auto-finalized) Weekly Incentive record wins outright for these
+    // two fields specifically; an auto-finalized snapshot is ignored
+    // (see below); otherwise, live Atlas tally; otherwise zero.
+    //
+    // Onsite / Offers: the Weekly Incentive system was never built to
+    // track these — nobody competes on them, so nobody has any reason to
+    // deliberately set or re-check them mid-week. Whatever value sits in
+    // a Weekly Incentive row for these two fields is only ever an
+    // incidental byproduct of clicking "Pull from Atlas" once, frozen at
+    // that exact moment, never a genuine, considered correction. So these
+    // two ALWAYS read live from Atlas directly, regardless of whether a
+    // Weekly Incentive record exists for that week at all, manual or
+    // automatic.
+    //
+    // For CVs Out / Interviews, an auto-finalized week is just a snapshot
+    // taken the instant the week rolled over — not a deliberate
+    // correction — so treating it as authoritative would permanently lock
+    // in whatever the tally happened to be at that exact moment, silently
+    // dropping any webhook event for that week that arrived even slightly
+    // later. Only a genuinely manually-created/edited record overrides
+    // live data for these two fields; an auto-finalized one is skipped
+    // entirely, same as if no record existed at all.
+    //
     // Summed into calendar months by each week's own Monday, matching how
     // the Weekly Incentive side already buckets weeks into months.
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
@@ -292,23 +307,26 @@ module.exports = async (req, res) => {
         const isTeamLead = personId in TEAM_LEAD_BY_CONSULTANT;
         const wiSource = wiEntry && (isTeamLead ? wiEntry.leadRows : wiEntry.rows);
         const wiPersonEntry = wiSource && wiSource[personId];
-        const livePersonEntry = liveEntry[personId];
+        const livePersonEntry = liveEntry[personId] || {};
 
-        const resolved = wiPersonEntry
-          ? {
-              cvsOut: Number(wiPersonEntry.cvs) || 0,
-              interviews: Number(wiPersonEntry.interviews) || 0,
-              onsite: Number(wiPersonEntry.onsite) || 0,
-              offers: Number(wiPersonEntry.offers) || 0,
-            }
-          : livePersonEntry
-          ? {
-              cvsOut: livePersonEntry.cvsOut || 0,
-              interviews: livePersonEntry.interviews || 0,
-              onsite: livePersonEntry.onsite || 0,
-              offers: livePersonEntry.offers || 0,
-            }
-          : { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+        // CVs Out / Interviews are the Weekly Incentive's own actual
+        // competitive metrics — a director genuinely, deliberately sets
+        // and corrects these, so a manual (non-auto-finalized) record
+        // wins outright for these two fields specifically.
+        const cvsOut = wiPersonEntry ? Number(wiPersonEntry.cvs) || 0 : livePersonEntry.cvsOut || 0;
+        const interviews = wiPersonEntry ? Number(wiPersonEntry.interviews) || 0 : livePersonEntry.interviews || 0;
+
+        // Onsite / Offers are NEVER a deliberate Weekly Incentive entry —
+        // nobody competes on them, so nobody ever has a reason to correct
+        // or re-pull them mid-week. Whatever value sits in a Weekly
+        // Incentive row for these two fields is just an incidental
+        // byproduct of clicking "Pull from Atlas" once, frozen at that
+        // moment, never a real correction. These two ALWAYS read live,
+        // regardless of whether a Weekly Incentive record exists at all.
+        const onsite = livePersonEntry.onsite || 0;
+        const offers = livePersonEntry.offers || 0;
+
+        const resolved = { cvsOut, interviews, onsite, offers };
 
         if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
         monthly[monthKey][personId].cvsOut += resolved.cvsOut;
