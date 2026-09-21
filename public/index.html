@@ -768,67 +768,11 @@ function App() {
       .then(d => setKpiLiveMonthly(d.monthly || {}))
       .catch(() => {});
   }, [pipelineYear]);
-  // One-time (but safe to re-run) migration for Onsite/Offers history
-  // that predates the per-event monthly tally — see api/league.js's own
-  // comment on ?action=backfill-monthly-tally for the full reasoning.
-  // Super Admin only; refetches the live monthly data afterward so the
-  // page reflects the result immediately without a manual refresh.
-  const [backfillLoading, setBackfillLoading] = useState(false);
-  const [backfillResult, setBackfillResult] = useState(null);
-  async function runBackfillMonthlyTally() {
-    setBackfillLoading(true);
-    setBackfillResult(null);
-    try {
-      const res = await fetch("/api/league?action=backfill-monthly-tally", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${authUser.token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Backfill failed");
-      setBackfillResult({ ok: true, ...data });
-      fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
-        .then(r => r.json())
-        .then(d => setKpiLiveMonthly(d.monthly || {}))
-        .catch(() => {});
-    } catch (e) {
-      setBackfillResult({ ok: false, error: e.message });
-    } finally {
-      setBackfillLoading(false);
-    }
-  }
-  // Closes the one specific gap the backfill above deliberately leaves
-  // open: the current, still-open week — see api/league.js's own comment
-  // on ?action=reconcile-current-week for the full reasoning. Meant to be
-  // run once, shortly after deploying this fix; safe to re-run any time,
-  // since it only ever takes the larger of two values, never adds.
-  const [reconcileLoading, setReconcileLoading] = useState(false);
-  const [reconcileResult, setReconcileResult] = useState(null);
-  async function runReconcileCurrentWeek() {
-    setReconcileLoading(true);
-    setReconcileResult(null);
-    try {
-      const res = await fetch("/api/league?action=reconcile-current-week", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${authUser.token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Reconciliation failed");
-      setReconcileResult({ ok: true, ...data });
-      fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
-        .then(r => r.json())
-        .then(d => setKpiLiveMonthly(d.monthly || {}))
-        .catch(() => {});
-    } catch (e) {
-      setReconcileResult({ ok: false, error: e.message });
-    } finally {
-      setReconcileLoading(false);
-    }
-  }
-  // Lets a Super Admin manually run the scheduled Atlas reconciliation
-  // job right now, instead of waiting for its own schedule and having no
-  // way to tell whether "the numbers look the same" means "nothing was
-  // wrong" or "this silently isn't running at all" — see api/
-  // atlas-reconcile-cron.js's own comments for what the job itself does.
+  // Lets a Super Admin manually run the scheduled Atlas reconciliation job
+  // right now — this keeps the Weekly Incentive's own weekly tally
+  // accurate (used by "Pull from Atlas" in Matchday Setup). It has no
+  // effect on this page's own numbers above, which are always live from
+  // Atlas directly and never depend on this job's own tally at all.
   const [syncCheckLoading, setSyncCheckLoading] = useState(false);
   const [syncCheckResult, setSyncCheckResult] = useState(null);
   async function runAtlasSyncCheck() {
@@ -842,10 +786,6 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync check failed");
       setSyncCheckResult({ ok: true, ...data });
-      fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
-        .then(r => r.json())
-        .then(d => setKpiLiveMonthly(d.monthly || {}))
-        .catch(() => {});
     } catch (e) {
       setSyncCheckResult({ ok: false, error: e.message });
     } finally {
@@ -4261,7 +4201,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
 },
   React.createElement("div", {
     style: { fontSize: 12.5, color: INDIGO_MUTED }
-  }, "Onsite and Offer counts always read live from Atlas — they don't depend on Matchday Setup being filled in. CVs Out and Interviews still use whatever's manually recorded for a week, when a director has set one up. Onsite/Offer counts only start from when this per-event tracking went live — months before that always show zero here, even if real activity happened, unless a Super Admin has run the historical backfill for that period. Deals Agreed are genuine placements only, bucketed by the date the deal was signed (the same date shown as \"Date Signed\" elsewhere), not the candidate's eventual start date. \"avg\" figures are the average across all ten consultants for the same period."),
+  }, "CVs Out, Interviews, Onsite, and Offers all read live from Atlas here — none of the four depend on Matchday Setup being filled in. The actual Weekly Incentive competition and Team Lead Bonus still score off whatever's manually confirmed there, separately and untouched. Counts only start from when this per-event tracking went live — months before that always show zero here, even if real activity happened, unless a Super Admin has run the historical backfill for that period. Deals Agreed are genuine placements only, bucketed by the date the deal was signed (the same date shown as \"Date Signed\" elsewhere), not the candidate's eventual start date. \"avg\" figures are the average across all ten consultants for the same period."),
 
   !authUser ? React.createElement(EmptyState, { text: "Log in to see your own Onsite & Offer activity." }) : (() => {
     const ownConsultant = consultants.find(c => c.id === authUser.consultantId);
@@ -4328,33 +4268,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       ),
       isSuperAdmin && React.createElement("div", { style: { marginBottom: 12 } },
         React.createElement("button", {
-          onClick: runBackfillMonthlyTally,
-          disabled: backfillLoading,
-          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: backfillLoading ? "default" : "pointer", marginRight: 8 }
-        }, backfillLoading ? "Backfilling…" : "Backfill historical Onsite/Offers into monthly tracking"),
-        React.createElement("button", {
-          onClick: runReconcileCurrentWeek,
-          disabled: reconcileLoading,
-          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: reconcileLoading ? "default" : "pointer", marginRight: 8 }
-        }, reconcileLoading ? "Reconciling…" : "Reconcile current week's Onsite/Offers"),
-        React.createElement("button", {
           onClick: runAtlasSyncCheck,
           disabled: syncCheckLoading,
           style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: syncCheckLoading ? "default" : "pointer" }
-        }, syncCheckLoading ? "Checking…" : "Check Atlas sync now"),
-        backfillResult && React.createElement("div", { style: { fontSize: 12.5, color: backfillResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
-          backfillResult.ok
-            ? `Backfill done — ${backfillResult.weeksBackfilled} week(s) backfilled, ${backfillResult.weeksSkippedAlready} already done, ${backfillResult.weeksSkippedCurrent} current week skipped (use "Reconcile current week" for that one instead).`
-            : `Backfill failed: ${backfillResult.error}`
-        ),
-        reconcileResult && React.createElement("div", { style: { fontSize: 12.5, color: reconcileResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
-          reconcileResult.ok
-            ? `Reconciled ${reconcileResult.currentWeekKey} into ${reconcileResult.monthKey} — ${reconcileResult.peopleReconciled} person/people had a genuinely missing number picked up.`
-            : `Reconciliation failed: ${reconcileResult.error}`
-        ),
+        }, syncCheckLoading ? "Checking…" : "Check Atlas sync now (Weekly Incentive data)"),
         syncCheckResult && React.createElement("div", { style: { fontSize: 12.5, color: syncCheckResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           syncCheckResult.ok
-            ? `Sync check ran — looked at ${syncCheckResult.eventsSeen} Atlas event(s) since ${new Date(syncCheckResult.createdAfter).toLocaleString()}, found ${syncCheckResult.eventsCounted} genuinely missing and added them. ${syncCheckResult.eventsCounted === 0 ? "Zero missing means the webhook already caught everything in this window — that's a good sign, not a sign this isn't working." : ""}`
+            ? `Sync check ran — looked at ${syncCheckResult.eventsSeen} Atlas event(s) since ${new Date(syncCheckResult.createdAfter).toLocaleString()}, found ${syncCheckResult.eventsCounted} genuinely missing and added them to the Weekly Incentive tally (used by "Pull from Atlas" in Matchday Setup — this page's own numbers above are already always live from Atlas directly, and aren't affected by this). ${syncCheckResult.eventsCounted === 0 ? "Zero missing means the webhook already caught everything in this window — that's a good sign, not a sign this isn't working." : ""}`
             : `Sync check failed: ${syncCheckResult.error}`
         )
       ),
