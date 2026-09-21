@@ -7,7 +7,9 @@ const {
   metricForStageName,
   lookupProjectName,
   lookupCandidateOwnerEmail,
+  isoWeekKey,
   computeMonthlyKpiLive,
+  computeWeeklyKpiLive,
   writeTally,
 } = require("./_atlasShared.js");
 
@@ -216,17 +218,22 @@ module.exports = async function handler(req, res) {
 
 // Each event needs its own round-trip to Atlas for an owner lookup (plus a
 // The second job this file does — see the branch near the top of the
-// main handler. Keeps the KPI page's own cache (api/league.js's
-// ?action=kpi-live-monthly, atlas-kpi-cache:{monthKey}) warm ahead of
-// time, using the EXACT SAME proven computation the KPI page itself
-// uses on demand (computeMonthlyKpiLive, in _atlasShared.js) — not a
-// second, different implementation with its own accuracy question, the
-// identical logic, just triggered by a schedule instead of a page load.
-// Only the current month is warmed here: that's the one whose cache
-// window is short enough (15 minutes) to plausibly go cold between
-// visits, and the one where new events are still genuinely arriving.
-// A past, settled month's cache lasts long enough (30 days) that
-// proactively warming it isn't worth the Atlas calls it would cost.
+// main handler. Keeps BOTH the KPI page's current-month cache
+// (?action=kpi-live-monthly, atlas-kpi-cache:{monthKey}) AND the Weekly
+// Incentive's current-week cache (?action=week-live,
+// atlas-week-cache:{weekKey}) warm ahead of time, using the EXACT SAME
+// proven computation each page itself uses on demand (computeMonthlyKpiLive
+// / computeWeeklyKpiLive, both in _atlasShared.js) — not a second,
+// different implementation with its own accuracy question, the identical
+// logic, just triggered by a schedule instead of a page load. Only the
+// CURRENT month and week are warmed here: those are the ones whose cache
+// windows are short enough (15 minutes each) to plausibly go cold
+// between visits, and where new events are still genuinely arriving. A
+// past, settled month or week lasts long enough (30 days) that
+// proactively warming it isn't worth the Atlas calls it would cost. The
+// two are independent — a failure warming one (e.g. a transient Atlas
+// issue) doesn't prevent the other from still completing and being
+// reported accurately.
 async function warmKpiCache(req, res) {
   const expectedCronAuth = `Bearer ${process.env.CRON_SECRET}`;
   const isCron = !!process.env.CRON_SECRET && req.headers.authorization === expectedCronAuth;
@@ -244,24 +251,47 @@ async function warmKpiCache(req, res) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
   const monthKey = `${year}-${String(month).padStart(2, "0")}`;
-  const CACHE_KEY = `atlas-kpi-cache:${monthKey}`;
+  const weekKey = isoWeekKey(now.toISOString());
+
+  const result = { ok: true, triggeredBy, monthKey, weekKey };
 
   try {
     const live = await computeMonthlyKpiLive(kv, year, month);
-    await kv.set(CACHE_KEY, { monthly: live.people, cachedAt: Date.now() });
-    return res.status(200).json({
+    await kv.set(`atlas-kpi-cache:${monthKey}`, { monthly: live.people, cachedAt: Date.now() });
+    result.month = {
       ok: true,
-      triggeredBy,
-      monthKey,
       pagesFetched: live.pagesFetched,
       eventsSeen: live.eventsSeen,
       eventsCounted: live.eventsCounted,
       pairsResolved: live.pairsResolved,
-    });
+    };
   } catch (e) {
-    console.error("[warm-kpi-cache] failed:", e.message);
-    return res.status(502).json({ ok: false, error: e.message });
+    console.error("[warm-kpi-cache] month warm failed:", e.message);
+    result.month = { ok: false, error: e.message };
   }
+
+  try {
+    const liveWeek = await computeWeeklyKpiLive(kv, weekKey);
+    await kv.set(`atlas-week-cache:${weekKey}`, { people: liveWeek.people, cachedAt: Date.now() });
+    result.week = {
+      ok: true,
+      pagesFetched: liveWeek.pagesFetched,
+      eventsSeen: liveWeek.eventsSeen,
+      eventsCounted: liveWeek.eventsCounted,
+      pairsResolved: liveWeek.pairsResolved,
+    };
+  } catch (e) {
+    console.error("[warm-kpi-cache] week warm failed:", e.message);
+    result.week = { ok: false, error: e.message };
+  }
+
+  // Only a genuine, total failure (both the month and the week failed)
+  // is reported as an overall error status — a partial success (one
+  // warmed, one didn't) still returns 200 with each result clearly
+  // broken out, since that's genuinely useful, actionable information,
+  // not a reason to hide the half that DID work.
+  const overallOk = result.month.ok || result.week.ok;
+  return res.status(overallOk ? 200 : 502).json(result);
 }
 
 // cached-per-project name lookup), so a run processing hundreds of events
