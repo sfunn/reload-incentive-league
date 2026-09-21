@@ -279,9 +279,20 @@ module.exports = async (req, res) => {
     let cursorDate = null, cursorId = null;
     let pagesFetched = 0;
     const MAX_PAGES = 20; // safety cap — 20 * 100 = 2000 events, comfortably beyond one month's realistic volume
+    // Vercel kills this function outright at its own maxDuration (60s),
+    // with no chance to return a useful error — just a generic, opaque
+    // 502. This budget bails out deliberately, well before that, so a
+    // month that's taking too long (e.g. genuinely exhausted rate limits
+    // making many sequential owner lookups slow) fails with a real,
+    // specific, loggable reason instead of an unexplained platform kill.
+    const startTime = Date.now();
+    const TIME_BUDGET_MS = 45000;
 
     try {
       while (pagesFetched < MAX_PAGES) {
+        if (Date.now() - startTime > TIME_BUDGET_MS) {
+          throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen so far). Try again in a minute.`);
+        }
         const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
         if (cursorDate && cursorId) {
           params.set("cursorDate", cursorDate);
@@ -299,6 +310,9 @@ module.exports = async (req, res) => {
         pagesFetched++;
 
         for (const event of json.data || []) {
+          if (Date.now() - startTime > TIME_BUDGET_MS) {
+            throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s mid-page — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
+          }
           eventsSeen++;
           if (event.isReverted) continue;
 
