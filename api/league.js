@@ -2,11 +2,7 @@ const { kv } = require("@vercel/kv");
 const { getUserFromRequest } = require("./_authHelpers");
 const {
   EXCLUDED_PROJECT_NAME,
-  EMAIL_TO_CONSULTANT,
-  metricForStageName,
-  fetchAtlasWithRetry,
-  lookupProjectName,
-  lookupCandidateOwnerEmailCached,
+  computeMonthlyKpiLive,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
@@ -267,24 +263,25 @@ module.exports = async (req, res) => {
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
     const month = req.query.month ? parseInt(req.query.month, 10) : new Date().getUTCMonth() + 1;
     const monthStr = String(month).padStart(2, "0");
-    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
-    const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
     const requestedMonthKey = `${year}-${monthStr}`;
 
-    // A short-lived cache of the fully computed result for this specific
-    // month — deliberately NOT a permanent accumulating tally (that was
-    // the old, complex design this whole rebuild moved away from, with
-    // its own reconciliation and backfill machinery). This exists purely
-    // so a page refresh, or simply reopening the tab a minute later,
-    // doesn't have to pay the full live-query cost again for a month
-    // someone just looked at. A genuinely busy month (~2000 events) can
-    // take 30-40 real seconds to compute from scratch — that's an
-    // acceptable cost the FIRST time, not every single time. 10 minutes
-    // balances "stays meaningfully live" against "don't make someone
-    // wait 40 seconds twice in a row for no reason".
+    // A cache of the fully computed result for this specific month —
+    // deliberately NOT a permanent accumulating tally (that was the old,
+    // complex design this whole rebuild moved away from, with its own
+    // reconciliation and backfill machinery). How long a cached result
+    // stays trusted depends on whether the month could plausibly still
+    // be changing: the CURRENT calendar month gets a short window, since
+    // new events are still genuinely arriving and a background job (see
+    // atlas-reconcile-cron.js) keeps it refreshed automatically — any
+    // PAST, fully-elapsed month is treated as settled and cached for a
+    // long time, since Atlas's own historical record for a month that's
+    // already over essentially doesn't change. Either way, this means a
+    // page load reads an already-computed answer far more often than it
+    // pays the full live-query cost itself.
     const CACHE_KEY = `atlas-kpi-cache:${requestedMonthKey}`;
-    const CACHE_TTL_MS = 10 * 60 * 1000;
+    const now = new Date();
+    const isCurrentMonth = year === now.getUTCFullYear() && month === now.getUTCMonth() + 1;
+    const CACHE_TTL_MS = isCurrentMonth ? 15 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
     if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
@@ -292,132 +289,23 @@ module.exports = async (req, res) => {
     }
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
-    const monthly = { [requestedMonthKey]: {} };
-    const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}` — a candidate genuinely only ever counts once per metric per project, computed fresh within this one request rather than a persisted dedup key
-    let eventsSeen = 0, eventsCounted = 0;
-    let cursorDate = null, cursorId = null;
-    let pagesFetched = 0;
-    const MAX_PAGES = 20; // safety cap — 20 * 100 = 2000 events, comfortably beyond one month's realistic volume
-    // Vercel kills this function outright at its own maxDuration (60s),
-    // with no chance to return a useful error — just a generic, opaque
-    // 502. This budget bails out deliberately, well before that, so a
-    // month that's taking too long fails with a real, specific, loggable
-    // reason instead of an unexplained platform kill.
-    const startTime = Date.now();
-    const TIME_BUDGET_MS = 45000;
-    // How many owner/project lookups run at once. Sequential, one-at-a-
-    // time processing was the actual bottleneck for a busy month (a real
-    // September was observed with roughly 1800 total events) — each
-    // lookup is its own network round-trip to Atlas, and waiting for each
-    // one in turn before starting the next made the whole request too
-    // slow to finish even with no rate-limit errors at all. Atlas's own
-    // limit is 1200 requests/60s (20/s) — this concurrency stays inside
-    // that with headroom, while cutting real wall-clock time
-    // substantially versus doing it one at a time.
-    const LOOKUP_CONCURRENCY = 15;
-
-    // Relevant events worth resolving further — filtered fast, with no
-    // API calls at all, before any of the slower lookup work begins.
-    // Grouped by candidateId:projectId rather than kept as a flat list:
-    // the SAME candidate can appear for several different metrics in one
-    // month (e.g. CVs Out, then later Interviews) — each of those would
-    // otherwise trigger its own separate owner lookup for the exact same
-    // answer. Grouping means that pair is only ever resolved once, no
-    // matter how many of its metrics need the result.
-    const pairsToResolve = new Map(); // key: `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> }
-
+    let live;
     try {
-      while (pagesFetched < MAX_PAGES) {
-        if (Date.now() - startTime > TIME_BUDGET_MS) {
-          throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s fetching pages — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen so far). Try again in a minute.`);
-        }
-        const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
-        if (cursorDate && cursorId) {
-          params.set("cursorDate", cursorDate);
-          params.set("cursorId", cursorId);
-        }
-        const apiRes = await fetchAtlasWithRetry(
-          `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
-          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-        );
-        if (!apiRes.ok) {
-          const body = await apiRes.text().catch(() => "");
-          throw new Error(`candidate-stage-events request failed: ${apiRes.status} ${body}`);
-        }
-        const json = await apiRes.json();
-        pagesFetched++;
-
-        for (const event of json.data || []) {
-          eventsSeen++;
-          if (event.isReverted) continue;
-
-          const metric = metricForStageName(event.stageTo && event.stageTo.name);
-          if (!metric) continue;
-
-          const projectId = event.project && event.project.id;
-          const candidateId = event.candidate && event.candidate.id;
-          if (!projectId || !candidateId) continue;
-
-          const dedupeKey = `${candidateId}:${projectId}:${metric}`;
-          if (seenDedupeKeys.has(dedupeKey)) continue;
-          seenDedupeKeys.add(dedupeKey);
-
-          const pairKey = `${candidateId}:${projectId}`;
-          if (!pairsToResolve.has(pairKey)) {
-            pairsToResolve.set(pairKey, { projectId, candidateId, metrics: new Set() });
-          }
-          pairsToResolve.get(pairKey).metrics.add(metric);
-        }
-
-        const pagination = json.pagination || {};
-        if (!pagination.hasMore) break;
-        cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
-        cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
-        if (!cursorDate || !cursorId) break;
-      }
-
-      // The slower part: resolving each UNIQUE candidate+project's
-      // project name (for the CitSec Options exclusion) and candidate
-      // owner (for attribution), LOOKUP_CONCURRENCY at a time — once per
-      // pair, however many metrics that pair needed.
-      const pairs = Array.from(pairsToResolve.values());
-      for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
-        if (Date.now() - startTime > TIME_BUDGET_MS) {
-          throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s resolving owners — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
-        }
-        const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
-        const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
-          const projectName = await lookupProjectName(kv, projectId);
-          if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
-          const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
-          const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
-          if (!consultantId) return null;
-          return { consultantId, metrics };
-        }));
-
-        for (const r of resolved) {
-          if (!r) continue;
-          if (!monthly[requestedMonthKey][r.consultantId]) monthly[requestedMonthKey][r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-          for (const metric of r.metrics) {
-            monthly[requestedMonthKey][r.consultantId][metric] += 1;
-            eventsCounted++;
-          }
-        }
-      }
+      live = await computeMonthlyKpiLive(kv, year, month);
     } catch (e) {
       console.error("[kpi-live-monthly] live Atlas query failed:", e.message);
       return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
     }
 
-    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${pairsToResolve.size} unique candidate/project pair(s) resolved, ${eventsCounted} counted`);
+    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${live.pagesFetched} page(s), ${live.eventsSeen} event(s) seen, ${live.pairsResolved} unique candidate/project pair(s) resolved, ${live.eventsCounted} counted`);
 
     for (const personId of ALL_PEOPLE_IDS) {
-      if (!monthly[requestedMonthKey][personId]) monthly[requestedMonthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+      if (!live.people[personId]) live.people[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
     }
 
-    await kv.set(CACHE_KEY, { monthly: monthly[requestedMonthKey], cachedAt: Date.now() });
+    await kv.set(CACHE_KEY, { monthly: live.people, cachedAt: Date.now() });
 
-    return res.status(200).json({ year, month, monthly });
+    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: live.people } });
   }
 
   if (req.method === "GET" && action === "placement-counts") {
