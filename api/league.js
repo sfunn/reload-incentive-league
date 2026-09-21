@@ -3,12 +3,24 @@ const { getUserFromRequest } = require("./_authHelpers");
 const {
   EXCLUDED_PROJECT_NAME,
   computeMonthlyKpiLive,
+  computeWeeklyKpiLive,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
 const CONFIG_KEY = "reload-current-week-config";
 const TEAMS_KEY = "consultant-teams";
 const TALLY_PREFIX = "atlas-tally:";
+// New, live-query-backed Weekly Incentive data model — deliberately
+// SEPARATE from WEEKS_KEY/CONFIG_KEY above, additive rather than
+// replacing them outright, so the new ?action=week-live path can be
+// built and proven correct before anything switches over to depending
+// on it. WEEK_CONFIGS_KEY holds each week's own metric/threshold/
+// exclusions (the one genuinely manual decision per week — Atlas has no
+// way to know what a week is being scored on), separately from the
+// actual volume numbers, which are computed live and cached, the same
+// architecture already proven for the KPI page's own monthly numbers.
+const WEEK_CONFIGS_KEY = "reload-week-configs";
+const WEEK_OVERRIDES_KEY = "weekly-incentive-overrides";
 // Read-only for the new placement-counts action below -- this file never
 // writes to either key, and never touches commission/£ figures at all.
 // It exists purely to answer "how many genuine placements did person X
@@ -223,6 +235,112 @@ module.exports = async (req, res) => {
     return res.status(200).json({ weekKey: config.weekKey, weekStart: monday, weekEnd: sunday, metric: config.metric, threshold: config.threshold, consultants, teamLeads });
   }
 
+  if (req.method === "GET" && action === "week-live") {
+    // The new, live-query-backed Weekly Incentive numbers — computed
+    // directly from Atlas's own candidate-stage-events (the same proven
+    // logic the KPI page uses, see computeWeeklyKpiLive in
+    // _atlasShared.js), bypassing the webhook-fed atlas-tally entirely.
+    // That webhook was found, over the course of building this, to
+    // genuinely miss a real share of events (roughly 22% in one
+    // measured window) — going straight to Atlas is the actual fix for
+    // the accuracy problem this whole rebuild exists to solve, not a
+    // side effect of it.
+    //
+    // Works for ANY week, current or past, the same way: live-compute-
+    // and-cache, then a manual override (if one's been set) always wins
+    // on top, exactly the same pattern already proven on the KPI page.
+    // A week within the last 2 weeks is treated as still worth checking
+    // regularly (kept warm by the same background job that warms the
+    // KPI page's current month); anything older is treated as settled
+    // and cached for a long time — the same aging idea, just at a
+    // week's timescale instead of a month's.
+    //
+    // Deliberately ADDITIVE at this stage: this does not yet replace
+    // reload-league-weeks/CONFIG_KEY or the auto-finalize flow above —
+    // this is the new path being proven correct before the frontend (and
+    // Standings/League Table) are moved onto it.
+    const weekKey = typeof req.query.week === "string" ? req.query.week : isoWeekKey(new Date().toISOString());
+    const { monday, sunday } = isoWeekToDates(weekKey);
+    const isCurrentWeek = weekKey === isoWeekKey(new Date().toISOString());
+    const weeksSinceEnded = (Date.now() - new Date(`${sunday}T23:59:59.999Z`).getTime()) / (7 * 24 * 60 * 60 * 1000);
+    const isRecent = isCurrentWeek || weeksSinceEnded < 2;
+
+    const CACHE_KEY = `atlas-week-cache:${weekKey}`;
+    const CACHE_TTL_MS = isRecent ? 15 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    const cached = await kv.get(CACHE_KEY);
+    let computed;
+    if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+      computed = cached.people;
+    } else {
+      try {
+        const live = await computeWeeklyKpiLive(kv, weekKey);
+        computed = live.people;
+        await kv.set(CACHE_KEY, { people: computed, cachedAt: Date.now() });
+      } catch (e) {
+        console.error("[week-live] live Atlas query failed:", e.message);
+        return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
+      }
+    }
+
+    const overrides = (await kv.get(WEEK_OVERRIDES_KEY)) || {};
+    const weekOverrides = overrides[weekKey] || {};
+
+    // A week's metric/threshold carries forward from the most recently
+    // configured week (same default-forward behavior as the old
+    // CONFIG_KEY flow) — but exclusions deliberately do NOT carry
+    // forward (someone being off sick one week shouldn't silently stay
+    // excluded forever), matching the old system's own stated reasoning.
+    const configs = (await kv.get(WEEK_CONFIGS_KEY)) || {};
+    let weekConfig = configs[weekKey];
+    if (!weekConfig) {
+      const pastKeys = Object.keys(configs).filter((k) => k < weekKey).sort();
+      const fallback = pastKeys.length > 0 ? configs[pastKeys[pastKeys.length - 1]] : {};
+      weekConfig = { metric: fallback.metric || METRIC_CVS_OUT, threshold: fallback.threshold ?? null, excludedConsultants: [] };
+    }
+    const excluded = weekConfig.excludedConsultants || [];
+    const teamOverrides = (await kv.get(TEAMS_KEY)) || {};
+
+    const applyOverrides = (consultantId, computedForPerson) => {
+      const personOverrides = weekOverrides[consultantId] || {};
+      return {
+        cvsOut: personOverrides.cvsOut ?? computedForPerson.cvsOut ?? 0,
+        interviews: personOverrides.interviews ?? computedForPerson.interviews ?? 0,
+        onsite: personOverrides.onsite ?? computedForPerson.onsite ?? 0,
+        offers: personOverrides.offers ?? computedForPerson.offers ?? 0,
+        overridden: {
+          cvsOut: personOverrides.cvsOut !== undefined,
+          interviews: personOverrides.interviews !== undefined,
+          onsite: personOverrides.onsite !== undefined,
+          offers: personOverrides.offers !== undefined,
+        },
+      };
+    };
+
+    const consultants = Object.keys(DEFAULT_TEAM_BY_CONSULTANT).map((consultantId) => ({
+      consultantId,
+      team: teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId],
+      excluded: excluded.includes(consultantId),
+      ...applyOverrides(consultantId, computed[consultantId] || {}),
+    }));
+
+    // Team leads' own activity — a separate array, deliberately never
+    // merged into `consultants` above, same isolation principle as the
+    // old live-week action just above (see its own comment for why this
+    // separation is load-bearing, not cosmetic).
+    const teamLeads = Object.keys(TEAM_LEAD_BY_CONSULTANT).map((consultantId) => ({
+      consultantId,
+      team: TEAM_LEAD_BY_CONSULTANT[consultantId],
+      ...applyOverrides(consultantId, computed[consultantId] || {}),
+    }));
+
+    return res.status(200).json({
+      weekKey, weekStart: monday, weekEnd: sunday,
+      metric: weekConfig.metric, threshold: weekConfig.threshold,
+      isCurrentWeek,
+      consultants, teamLeads,
+    });
+  }
+
   if (req.method === "GET" && action === "tally") {
     // Merged in from the old standalone atlas-tally.js — a raw read of a
     // specific (or current) ISO week's tally, used by the "Pull numbers
@@ -396,6 +514,69 @@ module.exports = async (req, res) => {
     }
     await kv.set(KPI_OVERRIDES_KEY, overrides);
     return res.status(200).json({ ok: true, overrides });
+  }
+
+  if (req.method === "POST" && action === "set-week-override") {
+    // The Weekly Incentive's own manual correction, same "always wins"
+    // pattern as set-kpi-override just above — Admin, not Super Admin,
+    // same access level the KPI page's own overrides already use. Its
+    // own field list, deliberately separate from KPI_OVERRIDE_FIELDS
+    // above: the weekly data only ever has the four Atlas-derived
+    // fields (using cvsOut, matching computeWeeklyKpiLive's own field
+    // name, not the KPI page's differently-named "cvs") — it never has
+    // placements/calls/phoneHours, which are specific to the KPI page.
+    const WEEK_OVERRIDE_FIELDS = ["cvsOut", "interviews", "onsite", "offers"];
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isAdmin) {
+      return res.status(401).json({ error: "Admin access required." });
+    }
+    const { consultantId, weekKey, field, value } = req.body || {};
+    if (!consultantId || !weekKey || !WEEK_OVERRIDE_FIELDS.includes(field)) {
+      return res.status(400).json({ error: "consultantId, weekKey, and a valid field are required." });
+    }
+    if (value !== null && (typeof value !== "number" || isNaN(value) || value < 0)) {
+      return res.status(400).json({ error: "value must be a non-negative number, or null to clear the override." });
+    }
+    const overrides = (await kv.get(WEEK_OVERRIDES_KEY)) || {};
+    if (!overrides[weekKey]) overrides[weekKey] = {};
+    if (!overrides[weekKey][consultantId]) overrides[weekKey][consultantId] = {};
+    if (value === null) {
+      delete overrides[weekKey][consultantId][field];
+      if (Object.keys(overrides[weekKey][consultantId]).length === 0) delete overrides[weekKey][consultantId];
+      if (Object.keys(overrides[weekKey]).length === 0) delete overrides[weekKey];
+    } else {
+      overrides[weekKey][consultantId][field] = value;
+    }
+    await kv.set(WEEK_OVERRIDES_KEY, overrides);
+    return res.status(200).json({ ok: true, overrides });
+  }
+
+  if (req.method === "POST" && action === "set-week-config") {
+    // Sets a specific week's metric/threshold/exclusions — the one
+    // genuinely manual decision left per week, since Atlas has no way to
+    // infer what a week is being scored on. Deliberately separate from
+    // the actual volume numbers (which come live from ?action=week-live)
+    // — this never touches or overrides a person's own figures, only
+    // which figure the competition is scored on and who's excluded.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isAdmin) {
+      return res.status(401).json({ error: "Admin access required." });
+    }
+    const { weekKey, metric, threshold, excludedConsultants } = req.body || {};
+    if (!weekKey || ![METRIC_CVS_OUT, METRIC_INTERVIEWS, METRIC_RATIO].includes(metric)) {
+      return res.status(400).json({ error: "weekKey and a valid metric are required." });
+    }
+    if (threshold !== null && threshold !== undefined && (typeof threshold !== "number" || isNaN(threshold) || threshold < 0)) {
+      return res.status(400).json({ error: "threshold must be a non-negative number, or null." });
+    }
+    const configs = (await kv.get(WEEK_CONFIGS_KEY)) || {};
+    configs[weekKey] = {
+      metric,
+      threshold: threshold ?? null,
+      excludedConsultants: Array.isArray(excludedConsultants) ? excludedConsultants : [],
+    };
+    await kv.set(WEEK_CONFIGS_KEY, configs);
+    return res.status(200).json({ ok: true, config: configs[weekKey] });
   }
 
   // Merged in from the old standalone consultant-teams.js — current team
