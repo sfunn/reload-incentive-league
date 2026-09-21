@@ -251,17 +251,33 @@ module.exports = async (req, res) => {
     // correct a specific number on the KPI page itself still can,
     // directly, through that page's own editable override cells
     // (kpi-overrides, handled separately below) — untouched by this.
+    //
+    // Scoped to ONE MONTH, not a whole year — querying a full year in one
+    // call proved genuinely too slow to ever finish in practice: a year
+    // can hold thousands of stage events, each needing its own separate,
+    // sequential owner lookup, and that request was observed sitting
+    // "Pending" for minutes without ever completing. A single month is
+    // roughly a twelfth of that volume, which keeps this fast enough to
+    // actually return. The `month` param is required (1-12); omitting it
+    // falls back to the current UTC month rather than defaulting to a
+    // full year, specifically so this can never silently regress back
+    // into the slow, whole-year behavior that caused this in the first
+    // place.
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
-    const createdAfter = `${year}-01-01T00:00:00.000Z`;
-    const createdBefore = `${year}-12-31T23:59:59.999Z`;
+    const month = req.query.month ? parseInt(req.query.month, 10) : new Date().getUTCMonth() + 1;
+    const monthStr = String(month).padStart(2, "0");
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
+    const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
+    const requestedMonthKey = `${year}-${monthStr}`;
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
-    const monthly = {};
+    const monthly = { [requestedMonthKey]: {} };
     const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}` — a candidate genuinely only ever counts once per metric per project, computed fresh within this one request rather than a persisted dedup key
     let eventsSeen = 0, eventsCounted = 0;
     let cursorDate = null, cursorId = null;
     let pagesFetched = 0;
-    const MAX_PAGES = 60; // safety cap — 60 * 100 = 6000 events, comfortably beyond a year's realistic volume
+    const MAX_PAGES = 20; // safety cap — 20 * 100 = 2000 events, comfortably beyond one month's realistic volume
 
     try {
       while (pagesFetched < MAX_PAGES) {
@@ -304,11 +320,8 @@ module.exports = async (req, res) => {
 
           seenDedupeKeys.add(dedupeKey);
 
-          const monthKey = (event.movedAt || "").slice(0, 7);
-          if (!monthKey) continue;
-          if (!monthly[monthKey]) monthly[monthKey] = {};
-          if (!monthly[monthKey][consultantId]) monthly[monthKey][consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-          monthly[monthKey][consultantId][metric] += 1;
+          if (!monthly[requestedMonthKey][consultantId]) monthly[requestedMonthKey][consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+          monthly[requestedMonthKey][consultantId][metric] += 1;
           eventsCounted++;
         }
 
@@ -323,20 +336,13 @@ module.exports = async (req, res) => {
       return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
     }
 
-    console.log(`[kpi-live-monthly] year ${year}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${eventsCounted} counted`);
+    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${eventsCounted} counted`);
 
-    // Ensure every tracked person has an explicit zero entry for every
-    // month that has ANY data at all, rather than being silently absent
-    // from a month where they genuinely had no activity — the frontend
-    // expects every person present, not just the ones with a non-zero
-    // count that month.
-    for (const monthKey of Object.keys(monthly)) {
-      for (const personId of ALL_PEOPLE_IDS) {
-        if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-      }
+    for (const personId of ALL_PEOPLE_IDS) {
+      if (!monthly[requestedMonthKey][personId]) monthly[requestedMonthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
     }
 
-    return res.status(200).json({ year, monthly });
+    return res.status(200).json({ year, month, monthly });
   }
 
   if (req.method === "GET" && action === "placement-counts") {
