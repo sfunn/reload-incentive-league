@@ -2673,9 +2673,7 @@ function App() {
                 React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 } },
                   React.createElement("span", { style: { width: 120, flexShrink: 0 } }),
                   React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0 } }, "CVs Out"),
-                  React.createElement("span", { style: { ...labelStyle, width: 66, flexShrink: 0, marginBottom: 0 } }, "Interviews"),
-                  React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0 } }, "Onsite"),
-                  React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0 } }, "Offers")
+                  React.createElement("span", { style: { ...labelStyle, width: 66, flexShrink: 0, marginBottom: 0 } }, "Interviews")
                 ),
                 rows.map(r => React.createElement("div", {
                   key: r.consultantId,
@@ -2688,12 +2686,6 @@ function App() {
                   isAdmin
                     ? React.createElement(EditableKpiCell, { width: 66, value: r.interviews, isOverridden: r.overridden.interviews, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "interviews", v) })
                     : React.createElement("span", { style: { width: 66, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.interviews),
-                  isAdmin
-                    ? React.createElement(EditableKpiCell, { width: 55, value: r.onsite, isOverridden: r.overridden.onsite, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "onsite", v) })
-                    : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.onsite),
-                  isAdmin
-                    ? React.createElement(EditableKpiCell, { width: 55, value: r.offers, isOverridden: r.overridden.offers, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "offers", v) })
-                    : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.offers),
                   isAdmin && !viewingPast && React.createElement("button", {
                     onClick: () => toggleExcludeConsultant(r.consultantId),
                     title: r.excluded ? "Include them in this week's scoring again" : "Exclude them from this week's scoring (e.g. new starter, on leave)",
