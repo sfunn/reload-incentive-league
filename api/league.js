@@ -506,3 +506,14 @@ module.exports = async (req, res) => {
 
   return res.status(405).json({ error: "Method not allowed" });
 };
+
+// kpi-live-monthly in particular can make many sequential calls out to
+// Atlas (once per unique candidate/project involved in a year's worth of
+// stage events), so this whole file — which handles every action, not
+// just that one — gets the same longer limit already given to the
+// reconciliation cron job, for the same reason: a legitimately large,
+// safe run shouldn't get cut off by a short default before it can finish
+// and return a real result.
+module.exports.config = {
+  maxDuration: 60,
+};
