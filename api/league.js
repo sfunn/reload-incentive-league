@@ -272,6 +272,25 @@ module.exports = async (req, res) => {
     const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
     const requestedMonthKey = `${year}-${monthStr}`;
 
+    // A short-lived cache of the fully computed result for this specific
+    // month — deliberately NOT a permanent accumulating tally (that was
+    // the old, complex design this whole rebuild moved away from, with
+    // its own reconciliation and backfill machinery). This exists purely
+    // so a page refresh, or simply reopening the tab a minute later,
+    // doesn't have to pay the full live-query cost again for a month
+    // someone just looked at. A genuinely busy month (~2000 events) can
+    // take 30-40 real seconds to compute from scratch — that's an
+    // acceptable cost the FIRST time, not every single time. 10 minutes
+    // balances "stays meaningfully live" against "don't make someone
+    // wait 40 seconds twice in a row for no reason".
+    const CACHE_KEY = `atlas-kpi-cache:${requestedMonthKey}`;
+    const CACHE_TTL_MS = 10 * 60 * 1000;
+    const cached = await kv.get(CACHE_KEY);
+    if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+      console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: cached.monthly } });
+    }
+
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
     const monthly = { [requestedMonthKey]: {} };
     const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}` — a candidate genuinely only ever counts once per metric per project, computed fresh within this one request rather than a persisted dedup key
@@ -395,6 +414,8 @@ module.exports = async (req, res) => {
     for (const personId of ALL_PEOPLE_IDS) {
       if (!monthly[requestedMonthKey][personId]) monthly[requestedMonthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
     }
+
+    await kv.set(CACHE_KEY, { monthly: monthly[requestedMonthKey], cachedAt: Date.now() });
 
     return res.status(200).json({ year, month, monthly });
   }
