@@ -1,5 +1,12 @@
 const { kv } = require("@vercel/kv");
 const { getUserFromRequest } = require("./_authHelpers");
+const {
+  EXCLUDED_PROJECT_NAME,
+  EMAIL_TO_CONSULTANT,
+  metricForStageName,
+  lookupProjectName,
+  lookupCandidateOwnerEmailCached,
+} = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
 const CONFIG_KEY = "reload-current-week-config";
@@ -80,30 +87,6 @@ function isoWeekToDates(weekKey) {
   sunday.setUTCDate(monday.getUTCDate() + 6);
   const fmt = (d) => d.toISOString().slice(0, 10);
   return { monday: fmt(monday), sunday: fmt(sunday) };
-}
-
-// Used only for backfilling historical weekly tallies into the newer
-// per-event monthly tally — a week's aggregate count can't be split
-// precisely across two months when it straddles a boundary (there's no
-// record of which individual day within the week each event happened
-// on), so the whole week's count is assigned to whichever month has the
-// majority of that week's 7 days. This is a genuine approximation for
-// boundary weeks specifically, unlike the per-event tracking used for
-// every new event going forward, which has no such ambiguity.
-function majorityMonthForWeek(weekKey) {
-  const { monday } = isoWeekToDates(weekKey);
-  const counts = {};
-  const d = new Date(monday + "T00:00:00Z");
-  for (let i = 0; i < 7; i++) {
-    const mk = monthKeyFromDateStr(d.toISOString().slice(0, 10));
-    counts[mk] = (counts[mk] || 0) + 1;
-    d.setUTCDate(d.getUTCDate() + 1);
-  }
-  let best = null, bestCount = -1;
-  for (const [mk, c] of Object.entries(counts)) {
-    if (c > bestCount) { best = mk; bestCount = c; }
-  }
-  return best;
 }
 
 function computeMetricValue(metric, cvs, interviews) {
@@ -253,105 +236,103 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === "GET" && action === "kpi-live-monthly") {
-    // Feeds the Consultant KPIs page's CVs Out / Interviews / Onsite /
-    // Offers columns. Precedence is split by field, matching Directors'
-    // own confirmed behavior exactly (walked through directly with
-    // Scott, not guessed at) rather than going further than it:
-    //
-    // CVs Out / Interviews: these are the Weekly Incentive system's own
-    // real competitive metrics — a director genuinely, deliberately sets
-    // and corrects these when running Matchday Setup, so a manual
-    // (non-auto-finalized) Weekly Incentive record wins outright for
-    // these two fields specifically. An auto-finalized snapshot doesn't
-    // count as that kind of deliberate correction — it's just whatever
-    // the tally happened to be the instant the week rolled over — so
-    // it's skipped in favor of live data, same as if no record existed
-    // at all. Bucketed by the week's own Monday, matching how the
-    // Weekly Incentive side already buckets weeks into months — a
-    // manually-entered weekly number can't be split across two months
-    // anyway, so this is the one place that approximation still
-    // applies, and only when a manual override is actually involved.
-    //
-    // Onsite / Offers: the Weekly Incentive system was never built to
-    // track these — nobody competes on them, so nobody has any reason to
-    // deliberately set or re-check them mid-week. Whatever value sits in
-    // a Weekly Incentive row for these two fields is only ever an
-    // incidental byproduct of clicking "Pull from Atlas" once, frozen at
-    // that exact moment, never a genuine, considered correction. So
-    // these two ALWAYS read live from Atlas directly, from the separate
-    // per-event monthly tally (atlas-monthly-tally:{monthKey}) the
-    // webhook writes directly, keyed by each individual event's own true
-    // date — no month-boundary ambiguity, unlike the week-based
-    // bucketing CVs Out/Interviews still uses above.
+    // Feeds the Consultant KPIs page's DISPLAY only — CVs Out, Interviews,
+    // Onsite, and Offers are computed fresh, live, directly from Atlas's
+    // own candidate-stage-events API every time this is called. No
+    // accumulated tally, no webhook dependency, no month-boundary
+    // bucketing logic — every event carries its own true date and owner,
+    // so there's nothing left to approximate. This is deliberately
+    // independent of reload-league-weeks entirely: the actual Weekly
+    // Incentive competition (League Table, standings, Team Lead Bonus)
+    // still scores off whatever's manually confirmed there in Matchday
+    // Setup, completely untouched by this — a director's decision to
+    // lock in a week's numbers for competition purposes is a separate
+    // concern from what this page displays. A director who wants to
+    // correct a specific number on the KPI page itself still can,
+    // directly, through that page's own editable override cells
+    // (kpi-overrides, handled separately below) — untouched by this.
     const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
-    const weeks = (await kv.get(WEEKS_KEY)) || [];
-
-    const weeklyIncentiveByWeekKey = {};
-    for (const w of weeks) {
-      if (!w.date) continue;
-      if (w.autoFinalized) continue;
-      const wk = isoWeekKey(w.date);
-      weeklyIncentiveByWeekKey[wk] = { rows: w.rows || {}, leadRows: w.leadRows || {} };
-    }
-
-    let tallyKeys = [];
-    try {
-      tallyKeys = await kv.keys(`${TALLY_PREFIX}${year}-*`);
-    } catch (e) {
-      console.error(`[kpi-live-monthly] kv.keys() FAILED for weekly tally — CVs Out/Interviews live fallback cannot be found: ${e.message}`);
-    }
-    const liveTallyByWeekKey = {};
-    for (const key of tallyKeys) {
-      liveTallyByWeekKey[key.slice(TALLY_PREFIX.length)] = (await kv.get(key)) || {};
-    }
-
-    const relevantWeekKeys = new Set([
-      ...Object.keys(weeklyIncentiveByWeekKey).filter((wk) => wk.startsWith(`${year}-`)),
-      ...Object.keys(liveTallyByWeekKey),
-    ]);
+    const createdAfter = `${year}-01-01T00:00:00.000Z`;
+    const createdBefore = `${year}-12-31T23:59:59.999Z`;
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
     const monthly = {};
+    const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}` — a candidate genuinely only ever counts once per metric per project, computed fresh within this one request rather than a persisted dedup key
+    let eventsSeen = 0, eventsCounted = 0;
+    let cursorDate = null, cursorId = null;
+    let pagesFetched = 0;
+    const MAX_PAGES = 60; // safety cap — 60 * 100 = 6000 events, comfortably beyond a year's realistic volume
 
-    for (const wk of relevantWeekKeys) {
-      const { monday } = isoWeekToDates(wk);
-      const monthKey = monthKeyFromDateStr(monday);
-      if (!monthly[monthKey]) monthly[monthKey] = {};
-
-      const wiEntry = weeklyIncentiveByWeekKey[wk];
-      const liveEntry = liveTallyByWeekKey[wk] || {};
-
-      for (const personId of ALL_PEOPLE_IDS) {
-        const isTeamLead = personId in TEAM_LEAD_BY_CONSULTANT;
-        const wiSource = wiEntry && (isTeamLead ? wiEntry.leadRows : wiEntry.rows);
-        const wiPersonEntry = wiSource && wiSource[personId];
-        const livePersonEntry = liveEntry[personId] || {};
-
-        const cvsOut = wiPersonEntry ? Number(wiPersonEntry.cvs) || 0 : livePersonEntry.cvsOut || 0;
-        const interviews = wiPersonEntry ? Number(wiPersonEntry.interviews) || 0 : livePersonEntry.interviews || 0;
-
-        if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-        monthly[monthKey][personId].cvsOut += cvsOut;
-        monthly[monthKey][personId].interviews += interviews;
-      }
-    }
-
-    let monthlyTallyKeys = [];
     try {
-      monthlyTallyKeys = await kv.keys(`atlas-monthly-tally:${year}-*`);
+      while (pagesFetched < MAX_PAGES) {
+        const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
+        if (cursorDate && cursorId) {
+          params.set("cursorDate", cursorDate);
+          params.set("cursorId", cursorId);
+        }
+        const apiRes = await fetch(
+          `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+        if (!apiRes.ok) {
+          const body = await apiRes.text().catch(() => "");
+          throw new Error(`candidate-stage-events request failed: ${apiRes.status} ${body}`);
+        }
+        const json = await apiRes.json();
+        pagesFetched++;
+
+        for (const event of json.data || []) {
+          eventsSeen++;
+          if (event.isReverted) continue;
+
+          const metric = metricForStageName(event.stageTo && event.stageTo.name);
+          if (!metric) continue;
+
+          const projectId = event.project && event.project.id;
+          const candidateId = event.candidate && event.candidate.id;
+          if (!projectId || !candidateId) continue;
+
+          const dedupeKey = `${candidateId}:${projectId}:${metric}`;
+          if (seenDedupeKeys.has(dedupeKey)) continue;
+
+          const projectName = await lookupProjectName(kv, projectId);
+          if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) continue;
+
+          const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
+          const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
+          if (!consultantId) continue;
+
+          seenDedupeKeys.add(dedupeKey);
+
+          const monthKey = (event.movedAt || "").slice(0, 7);
+          if (!monthKey) continue;
+          if (!monthly[monthKey]) monthly[monthKey] = {};
+          if (!monthly[monthKey][consultantId]) monthly[monthKey][consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+          monthly[monthKey][consultantId][metric] += 1;
+          eventsCounted++;
+        }
+
+        const pagination = json.pagination || {};
+        if (!pagination.hasMore) break;
+        cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
+        cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
+        if (!cursorDate || !cursorId) break;
+      }
     } catch (e) {
-      console.error(`[kpi-live-monthly] kv.keys() FAILED for monthly tally — Onsite/Offers cannot be found: ${e.message}`);
+      console.error("[kpi-live-monthly] live Atlas query failed:", e.message);
+      return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
     }
-    console.log(`[kpi-live-monthly] found ${monthlyTallyKeys.length} live monthly tally key(s) for ${year}:`, monthlyTallyKeys);
-    for (const key of monthlyTallyKeys) {
-      const monthKey = key.slice("atlas-monthly-tally:".length);
-      const monthTally = (await kv.get(key)) || {};
-      if (!monthly[monthKey]) monthly[monthKey] = {};
+
+    console.log(`[kpi-live-monthly] year ${year}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${eventsCounted} counted`);
+
+    // Ensure every tracked person has an explicit zero entry for every
+    // month that has ANY data at all, rather than being silently absent
+    // from a month where they genuinely had no activity — the frontend
+    // expects every person present, not just the ones with a non-zero
+    // count that month.
+    for (const monthKey of Object.keys(monthly)) {
       for (const personId of ALL_PEOPLE_IDS) {
-        const entry = monthTally[personId] || {};
         if (!monthly[monthKey][personId]) monthly[monthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-        monthly[monthKey][personId].onsite = entry.onsite || 0;
-        monthly[monthKey][personId].offers = entry.offers || 0;
       }
     }
 
@@ -387,7 +368,9 @@ module.exports = async (req, res) => {
     // number, including Deals Agreed here. Only affects records created
     // after this field started being captured — existing records from
     // before this change have no projectName stored and are unaffected.
-    const EXCLUDED_PROJECT_NAME = "citsec options";
+    // (EXCLUDED_PROJECT_NAME is now imported from _atlasShared.js at the
+    // top of this file — the local redeclaration that used to live here
+    // has been removed, since both held the identical value anyway.)
     for (const r of records) {
       if (!r.consultantId || !r.placementId) continue;
       if (r.projectName && r.projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) continue;
@@ -416,125 +399,6 @@ module.exports = async (req, res) => {
   if (req.method === "GET" && action === "kpi-overrides") {
     const overrides = (await kv.get(KPI_OVERRIDES_KEY)) || {};
     return res.status(200).json({ overrides });
-  }
-
-  if (req.method === "POST" && action === "backfill-monthly-tally") {
-    // One-time (but safe to re-run) migration: fills in the per-event
-    // monthly tally (atlas-monthly-tally:{monthKey}) for historical
-    // weeks that predate this mechanism, using the OLD weekly tally as
-    // the source. Only Onsite/Offers are backfilled — CVs Out/Interviews
-    // read from reload-league-weeks directly (with a live weekly-tally
-    // fallback) and were never affected by the bug this exists to fix.
-    // Idempotent: a marker records which weeks have already been
-    // backfilled, so running this again never double-counts, and it
-    // never touches the CURRENT, in-progress week at all — see
-    // ?action=reconcile-current-week for that one specifically.
-    const user = await getUserFromRequest(req);
-    if (!user || !user.isSuperAdmin) {
-      return res.status(401).json({ error: "Super Admin access required" });
-    }
-
-    let tallyKeys = [];
-    try {
-      tallyKeys = await kv.keys(`${TALLY_PREFIX}*`);
-    } catch (e) {
-      return res.status(500).json({ error: `Couldn't list existing weekly tallies: ${e.message}` });
-    }
-
-    const currentWeekKey = isoWeekKey(new Date().toISOString());
-    const BACKFILL_MARKER_KEY = "atlas-monthly-tally-backfilled-weeks";
-    const alreadyBackfilled = (await kv.get(BACKFILL_MARKER_KEY)) || {};
-
-    let weeksBackfilled = 0, weeksSkippedCurrent = 0, weeksSkippedAlready = 0;
-    const monthlyDeltas = {}; // { [monthKey]: { [personId]: { onsite, offers } } } — accumulated before writing, so each month's key is only read/written once
-
-    for (const key of tallyKeys) {
-      const wk = key.slice(TALLY_PREFIX.length);
-      if (wk === currentWeekKey) { weeksSkippedCurrent++; continue; }
-      if (alreadyBackfilled[wk]) { weeksSkippedAlready++; continue; }
-
-      const weekTally = (await kv.get(key)) || {};
-      const monthKey = majorityMonthForWeek(wk);
-      if (!monthlyDeltas[monthKey]) monthlyDeltas[monthKey] = {};
-      for (const [personId, entry] of Object.entries(weekTally)) {
-        if (!monthlyDeltas[monthKey][personId]) monthlyDeltas[monthKey][personId] = { onsite: 0, offers: 0 };
-        monthlyDeltas[monthKey][personId].onsite += entry.onsite || 0;
-        monthlyDeltas[monthKey][personId].offers += entry.offers || 0;
-      }
-      alreadyBackfilled[wk] = true;
-      weeksBackfilled++;
-    }
-
-    for (const [monthKey, delta] of Object.entries(monthlyDeltas)) {
-      const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
-      const current = (await kv.get(monthTallyKey)) || {};
-      for (const [personId, add] of Object.entries(delta)) {
-        if (!current[personId]) current[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-        current[personId].onsite = (current[personId].onsite || 0) + add.onsite;
-        current[personId].offers = (current[personId].offers || 0) + add.offers;
-      }
-      await kv.set(monthTallyKey, current);
-    }
-
-    await kv.set(BACKFILL_MARKER_KEY, alreadyBackfilled);
-
-    return res.status(200).json({
-      ok: true,
-      weeksBackfilled,
-      weeksSkippedCurrent,
-      weeksSkippedAlready,
-      monthsUpdated: Object.keys(monthlyDeltas),
-    });
-  }
-
-  if (req.method === "POST" && action === "reconcile-current-week") {
-    // Closes the one specific, bounded gap the backfill above
-    // deliberately leaves open: the CURRENT, still-open week, for
-    // Onsite/Offers specifically (CVs Out/Interviews don't need this —
-    // they read reload-league-weeks with a live weekly-tally fallback
-    // directly, which already covers the current week correctly). That
-    // week's weekly tally may contain a mix of pre-deploy events (never
-    // written to the monthly tally at all) and post-deploy events
-    // (already written to both the weekly AND monthly tally live) —
-    // there's no per-event timestamp to tell the two apart, only a
-    // single running count. So this can't safely ADD the weekly total on
-    // top of what's already in the monthly tally without risking
-    // double-counting the post-deploy portion.
-    //
-    // Instead it takes the larger of the two values, per person. This is
-    // safe specifically because of how the two tallies relate: every
-    // post-deploy event increments BOTH the weekly and monthly tally at
-    // the same time, so the monthly tally's own value can never be
-    // genuinely higher than the true total the weekly tally holds.
-    // Taking the max therefore can't overcount, and correctly picks up
-    // any pre-deploy events that only ever made it into the weekly
-    // tally. This is a one-time, current-week-only reconciliation —
-    // meant to be run once shortly after deploying the fix, not on an
-    // ongoing basis; every future week is already covered correctly by
-    // live tracking with no such gap to close.
-    const user = await getUserFromRequest(req);
-    if (!user || !user.isSuperAdmin) {
-      return res.status(401).json({ error: "Super Admin access required" });
-    }
-
-    const currentWeekKey = isoWeekKey(new Date().toISOString());
-    const weeklyTally = (await kv.get(`${TALLY_PREFIX}${currentWeekKey}`)) || {};
-    const monthKey = majorityMonthForWeek(currentWeekKey);
-    const monthTallyKey = `atlas-monthly-tally:${monthKey}`;
-    const current = (await kv.get(monthTallyKey)) || {};
-
-    let peopleReconciled = 0;
-    for (const [personId, weeklyEntry] of Object.entries(weeklyTally)) {
-      if (!current[personId]) current[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-      const beforeOnsite = current[personId].onsite || 0;
-      const beforeOffers = current[personId].offers || 0;
-      current[personId].onsite = Math.max(beforeOnsite, weeklyEntry.onsite || 0);
-      current[personId].offers = Math.max(beforeOffers, weeklyEntry.offers || 0);
-      if (current[personId].onsite !== beforeOnsite || current[personId].offers !== beforeOffers) peopleReconciled++;
-    }
-    await kv.set(monthTallyKey, current);
-
-    return res.status(200).json({ ok: true, currentWeekKey, monthKey, peopleReconciled });
   }
 
   if (req.method === "POST" && action === "set-kpi-override") {
