@@ -240,6 +240,36 @@ function weekTeamWinners(weekRows) {
 // has set one, otherwise falls back to the auto-computed value. Only ever
 // affects DISPLAY — the underlying weekly Atlas data and placement counts
 // are never touched, so this can always be safely cleared to revert.
+// Byte-identical copy of the backend's own isoWeekKey (api/league.js and
+// api/_atlasShared.js both carry the same copy, for the same reason: a
+// week's key must resolve identically everywhere this project computes
+// it). Used here purely to generate a list of recent week keys for the
+// "Past weeks" list — the new live-query system needs no pre-existing
+// record to look up any given week, so this list is computed, not read
+// from stored data.
+function isoWeekKey(dateStr) {
+  const d = new Date(dateStr);
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = (target.getUTCDay() + 6) % 7;
+  target.setUTCDate(target.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+  const week = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+// Returns the last n week keys, most recent first, starting from the
+// current week. Walks backward 7 days at a time rather than doing
+// week-number arithmetic directly, so it never has to handle a
+// year-boundary edge case itself.
+function recentWeekKeys(n) {
+  const keys = [];
+  const cursor = new Date();
+  for (let i = 0; i < n; i++) {
+    keys.push(isoWeekKey(cursor.toISOString()));
+    cursor.setUTCDate(cursor.getUTCDate() - 7);
+  }
+  return keys;
+}
+
 function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue) {
   const stored = kpiOverrides && kpiOverrides[personId] && kpiOverrides[personId][monthKey] && kpiOverrides[personId][monthKey][field];
   return (stored !== undefined && stored !== null) ? { value: stored, isOverridden: true } : { value: computedValue, isOverridden: false };
@@ -617,6 +647,24 @@ function App() {
   const [formTeam, setFormTeam] = useState("james");
   const [editingWeekId, setEditingWeekId] = useState(null);
   const [liveWeekData, setLiveWeekData] = useState(null);
+  // A specific PAST week's live data, when a director opens one from
+  // "Past weeks" to review or correct it — separate from liveWeekData
+  // (the current week) so viewing history never disturbs the live view.
+  const [pastWeekData, setPastWeekData] = useState(null);
+  const [pastWeekLoading, setPastWeekLoading] = useState(false);
+  const loadPastWeek = useCallback(async (weekKey) => {
+    setPastWeekLoading(true);
+    try {
+      const res = await fetch(`/api/league?action=week-live&week=${encodeURIComponent(weekKey)}`);
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setPastWeekData(data);
+    } catch (e) {
+      // silent — same as loadLiveWeek, the rest of the page still works
+    } finally {
+      setPastWeekLoading(false);
+    }
+  }, []);
   const [liveWeekLoading, setLiveWeekLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [saveState, setSaveState] = useState("idle");
@@ -938,7 +986,13 @@ function App() {
   const loadLiveWeek = useCallback(async () => {
     setLiveWeekLoading(true);
     try {
-      const res = await fetch("/api/league?action=live-week");
+      // Live, direct from Atlas (see api/league.js's own comments on
+      // ?action=week-live for the full reasoning) — replaces the old
+      // webhook-fed live-week action, which was found, over the course
+      // of building this, to genuinely miss a real share of events
+      // (roughly 22% in one measured window). No week param sent here:
+      // the backend defaults to the current week on its own.
+      const res = await fetch("/api/league?action=week-live");
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setLiveWeekData(data);
@@ -949,12 +1003,14 @@ function App() {
     }
   }, []);
   async function setCurrentWeekConfig(metric, threshold) {
+    if (!liveWeekData) return;
     setConfigSaving(true);
     try {
-      const res = await fetch("/api/league?action=set-current-week-config", {
+      const excludedConsultants = liveWeekData.consultants.filter((c) => c.excluded).map((c) => c.consultantId);
+      const res = await fetch("/api/league?action=set-week-config", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
-        body: JSON.stringify({ metric, threshold })
+        body: JSON.stringify({ weekKey: liveWeekData.weekKey, metric, threshold, excludedConsultants })
       });
       if (!res.ok) throw new Error("save failed");
       await loadLiveWeek();
@@ -965,11 +1021,16 @@ function App() {
     }
   }
   async function toggleExcludeConsultant(consultantId) {
+    if (!liveWeekData) return;
     try {
-      const res = await fetch("/api/league?action=toggle-exclude", {
+      const current = liveWeekData.consultants.filter((c) => c.excluded).map((c) => c.consultantId);
+      const excludedConsultants = current.includes(consultantId)
+        ? current.filter((id) => id !== consultantId)
+        : [...current, consultantId];
+      const res = await fetch("/api/league?action=set-week-config", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
-        body: JSON.stringify({ consultantId })
+        body: JSON.stringify({ weekKey: liveWeekData.weekKey, metric: liveWeekData.metric, threshold: liveWeekData.threshold, excludedConsultants })
       });
       if (!res.ok) throw new Error("save failed");
       await loadLiveWeek();
@@ -977,6 +1038,28 @@ function App() {
       // no-op
     }
   }
+  // A director's manual correction to a specific person's number for a
+  // specific week — always wins over the live-computed figure, same
+  // "always wins" pattern already proven on the KPI page's own cells.
+  // Used by the inline editable cells on both the current week and any
+  // past week being reviewed.
+  const [weekOverrideError, setWeekOverrideError] = useState("");
+  const saveWeekOverride = useCallback(async (consultantId, weekKey, field, value) => {
+    setWeekOverrideError("");
+    try {
+      const res = await fetch("/api/league?action=set-week-override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
+        body: JSON.stringify({ consultantId, weekKey, field, value })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setWeekOverrideError(data.error || "Couldn't save that correction."); return; }
+      if (liveWeekData && liveWeekData.weekKey === weekKey) await loadLiveWeek();
+      if (pastWeekData && pastWeekData.weekKey === weekKey) await loadPastWeek(weekKey);
+    } catch (e) {
+      setWeekOverrideError("Couldn't reach the server — try again.");
+    }
+  }, [authUser, liveWeekData, loadLiveWeek]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2510,187 +2593,130 @@ function App() {
       gap: 20
     }
   },
-    editingWeekId && React.createElement("div", {
-      style: { display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,176,140,0.16)", border: `1px solid ${MELON}`, borderRadius: 8, padding: "10px 14px" }
-    },
-      React.createElement("span", { style: { fontFamily: "'Work Sans', sans-serif", fontSize: 12.5, color: INDIGO } }, "Editing week ending ", formDate, " — correcting entered results"),
-      React.createElement("button", { onClick: cancelEdit, style: ghostDangerStyle }, "Cancel edit")
-    ),
-    React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Matchday setup", title: "This week's metric" }),
-      React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 } },
-        React.createElement("div", null,
-          React.createElement("label", { style: labelStyle }, "Week"),
-          React.createElement("div", { style: { ...inputStyle, display: "flex", alignItems: "center", color: INDIGO_MUTED } },
-            editingWeekId ? formDate : (liveWeekData ? `${toDayMonthYear(liveWeekData.weekStart)} – ${toDayMonthYear(liveWeekData.weekEnd)}` : "…")
-          )
-        ),
-        React.createElement("div", null,
-          React.createElement("label", { style: labelStyle }, "Metric"),
-          React.createElement("select", {
-            value: editingWeekId ? formMetric : (liveWeekData ? liveWeekData.metric : ""),
-            disabled: editingWeekId ? false : (!isAdmin || configSaving),
-            onChange: e => editingWeekId ? setFormMetric(e.target.value) : setCurrentWeekConfig(e.target.value, liveWeekData ? liveWeekData.threshold : null),
-            style: inputStyle
-          },
-            React.createElement("option", { value: "", disabled: true }, "Select this week's metric…"),
-            METRIC_OPTIONS.map(m => React.createElement("option", { key: m, value: m }, m))
-          )
-        ),
-        React.createElement("div", null,
-          React.createElement("label", { style: labelStyle },
-            (editingWeekId ? formMetric : (liveWeekData ? liveWeekData.metric : "")) === METRIC_RATIO ? "Threshold (%, optional)" : "Threshold (optional)"
-          ),
-          React.createElement("input", {
-            type: "number",
-            value: editingWeekId ? formThreshold : (liveWeekData && liveWeekData.threshold !== null && liveWeekData.threshold !== undefined ? liveWeekData.threshold : ""),
-            disabled: editingWeekId ? false : (!isAdmin || configSaving),
-            onChange: e => editingWeekId ? setFormThreshold(e.target.value) : setCurrentWeekConfig(liveWeekData ? liveWeekData.metric : METRIC_CVS_OUT, e.target.value === "" ? null : Number(e.target.value)),
-            placeholder: (editingWeekId ? formMetric : (liveWeekData ? liveWeekData.metric : "")) === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
-            style: inputStyle
-          })
-        )
-      ),
-      !isAdmin && !editingWeekId && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
-        "Only Admins can change this week's metric or threshold — ask Scott or Lee."
-      )
-    ),
-    editingWeekId ? React.createElement(React.Fragment, null,
-      Object.keys(TEAMS).map(teamId => {
-        const teamInfo = TEAMS[teamId];
-        const effectiveMetric = formMetric;
-        const col1Label = "CVs Out";
-        const col2Label = effectiveMetric === METRIC_CVS_OUT ? "Interviews" : effectiveMetric === METRIC_RATIO ? "Ratio (%)" : "Interviews";
-        const col2Field = effectiveMetric === METRIC_CVS_OUT ? "interviews" : "metricValue";
-        return React.createElement(Panel, { key: teamId },
-          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14 } },
-            React.createElement(Badge, { teamId: teamId }),
-            React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 17, color: teamInfo.color, margin: 0 } }, teamInfo.label)
-          ),
-          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 120px 140px 80px", gap: 10, marginBottom: 6 } },
-            React.createElement("span", null),
-            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col1Label),
-            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, col2Label),
-            React.createElement("span", { style: { ...labelStyle, marginBottom: 0 } }, "Exclude")
-          ),
-          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
-            [...consultants].filter(c => c.team === teamId).sort((a, b) => a.name.localeCompare(b.name)).map(c => React.createElement("div", {
-              key: c.id,
-              style: { display: "grid", gridTemplateColumns: "1fr 120px 140px 80px", gap: 10, alignItems: "center" }
-            },
-              React.createElement("span", {
-                style: { fontFamily: "'Work Sans', sans-serif", fontSize: 14, textDecoration: formRows[c.id]?.excluded ? "line-through" : "none", color: formRows[c.id]?.excluded ? INDIGO_MUTED : INDIGO }
-              }, c.name),
-              React.createElement("input", {
-                type: "number", min: "0", placeholder: col1Label,
-                value: formRows[c.id]?.cvs ?? "",
-                onChange: e => updateFormRow(c.id, "cvs", e.target.value),
-                style: inputStyleSmall
-              }),
-              React.createElement("input", {
-                type: "number", min: "0", max: effectiveMetric === METRIC_RATIO ? 100 : undefined,
-                placeholder: col2Label,
-                value: formRows[c.id]?.[col2Field] ?? "",
-                onChange: e => updateFormRow(c.id, col2Field, e.target.value),
-                style: inputStyleSmall
-              }),
-              React.createElement("input", {
-                type: "checkbox",
-                checked: !!formRows[c.id]?.excluded,
-                title: "Exclude them from this week's scoring (e.g. new starter, on leave)",
-                onChange: e => updateFormRow(c.id, "excluded", e.target.checked)
-              })
-            ))
-          )
-        );
-      }),
-      atlasError && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK } }, atlasError),
-      React.createElement("button", { type: "button", onClick: pullFromAtlas, disabled: atlasPulling, style: ghostStyle },
-        atlasPulling ? "Pulling from Atlas…" : "Pull numbers from Atlas"
-      ),
-      React.createElement("button", {
-        onClick: saveWeek,
-        disabled: !isAdmin,
-        title: !isAdmin ? "Only admins can save manual entries — ask Scott or Lee for access." : undefined,
-        style: primaryButtonStyle(!isAdmin)
-      }, React.createElement(Plus, { size: 16 }), " ", "Save corrections")
-    ) : React.createElement(Panel, null,
-        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 } },
-          React.createElement(SectionTitle, { eyebrow: liveWeekData ? `${toDayMonthYear(liveWeekData.weekStart)} – ${toDayMonthYear(liveWeekData.weekEnd)}` : "This week", title: "Live tally" }),
-          React.createElement("button", {
-            onClick: loadLiveWeek,
-            disabled: liveWeekLoading,
-            style: ghostStyle
-          }, liveWeekLoading ? "Refreshing…" : "Refresh now")
-        ),
-        liveWeekLoading && !liveWeekData ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
-        !liveWeekData ? null :
-        React.createElement("div", { style: { display: "flex", gap: 30, flexWrap: "wrap" } },
-          Object.keys(TEAMS).map(teamId => {
-            const teamInfo = TEAMS[teamId];
-            const rows = liveWeekData.consultants
-              .filter(c => c.team === teamId)
-              .map(c => ({ ...c, name: (consultants.find(cc => cc.id === c.consultantId) || {}).name || c.consultantId }))
-              .sort((a, b) => a.name.localeCompare(b.name));
-            return React.createElement("div", { key: teamId, style: { flex: 1, minWidth: 260 } },
-              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
-                React.createElement(Badge, { teamId: teamId }),
-                React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 16, color: teamInfo.color, margin: 0 } }, teamInfo.label)
-              ),
-              React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 16, marginBottom: 6 } },
-                React.createElement("span", { style: { width: 130, flexShrink: 0 } }),
-                React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0, whiteSpace: "nowrap" } }, "CVs Out"),
-                React.createElement("span", { style: { ...labelStyle, width: 65, flexShrink: 0, marginBottom: 0, whiteSpace: "nowrap" } }, "Interviews"),
-                React.createElement("span", { style: { ...labelStyle, marginBottom: 0, whiteSpace: "nowrap" } }, "CV : Interview Ratio")
-              ),
-              rows.map(r => {
-                const ratio = r.cvsOut > 0 ? Math.round((r.interviews / r.cvsOut) * 100) : 0;
-                return React.createElement("div", {
-                  key: r.consultantId,
-                  style: { display: "flex", alignItems: "baseline", gap: 16, fontSize: 13.5, padding: "5px 0", color: r.excluded ? INDIGO_MUTED : INDIGO }
-                },
-                  React.createElement("span", { style: { width: 130, flexShrink: 0, textDecoration: r.excluded ? "line-through" : "none" } }, r.name),
-                  React.createElement("span", { style: { fontWeight: 700, width: 55, flexShrink: 0 } }, r.cvsOut),
-                  React.createElement("span", { style: { fontWeight: 700, width: 65, flexShrink: 0 } }, r.interviews),
-                  React.createElement("span", { style: { fontWeight: 700, width: 60, flexShrink: 0 } }, `${ratio}%`),
-                  isAdmin && React.createElement("button", {
-                    onClick: () => toggleExcludeConsultant(r.consultantId),
-                    title: r.excluded ? "Include them in this week's scoring again" : "Exclude them from this week's scoring (e.g. new starter, on leave)",
-                    style: { ...ghostStyle, fontSize: 10.5, padding: "2px 8px", color: r.excluded ? VERDIGRIS : MELON_LINK, borderColor: r.excluded ? VERDIGRIS : MELON_LINK }
-                  }, r.excluded ? "Include" : "Exclude")
-                );
-              })
-            );
-          })
-        ),
-        React.createElement("div", { style: { marginTop: 14, fontSize: 12, color: INDIGO_MUTED } },
-          "Pulled live from Atlas as candidates move stage — no manual entry needed, refreshes automatically every 20 seconds. This week locks in automatically once Sunday ends, and stays editable afterwards from Past weeks below."
-        )
-      ),
-    sortedWeeks.length > 0 && React.createElement(Panel, null,
-      React.createElement(SectionTitle, { eyebrow: "Logged so far", title: "Past weeks" }),
-      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-        [...sortedWeeks].reverse().map(w => {
-          const { missing } = computeWeekRows(w, consultants);
-          const missingLabels = teamMissingLabel(missing);
-          return React.createElement("div", {
-            key: w.id,
-            style: { display: "flex", flexDirection: "column", gap: 4, padding: "8px 0", borderBottom: `1px solid ${INDIGO_HAIRLINE}` }
-          },
-            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-              React.createElement("span", { style: { fontFamily: "'Work Sans', sans-serif", fontSize: 13, color: INDIGO } },
-                w.date, " — ", w.metric, w.threshold !== null ? ` (min ${w.threshold})` : ""
-              ),
-              React.createElement("div", { style: { display: "flex", gap: 8 } },
-                React.createElement("button", { onClick: () => loadWeekForEdit(w), style: ghostStyle }, "Edit"),
-                React.createElement("button", { onClick: () => deleteWeek(w.id), style: ghostDangerStyle }, "Remove")
+    (() => {
+      // Which week is being shown right now: the live current week, or
+      // a specific past week a director opened from "Past weeks" below
+      // to review or correct it. Both come from the exact same
+      // ?action=week-live shape, so the same rendering handles either.
+      const viewingPast = !!pastWeekData;
+      const activeWeek = viewingPast ? pastWeekData : liveWeekData;
+      const activeLoading = viewingPast ? pastWeekLoading : liveWeekLoading;
+
+      return React.createElement(React.Fragment, null,
+        React.createElement(Panel, null,
+          React.createElement(SectionTitle, { eyebrow: viewingPast ? "Reviewing a past week" : "This week's setup", title: "Metric & threshold" }),
+          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 } },
+            React.createElement("div", null,
+              React.createElement("label", { style: labelStyle }, "Week"),
+              React.createElement("div", { style: { ...inputStyle, display: "flex", alignItems: "center", color: INDIGO_MUTED } },
+                activeWeek ? `${toDayMonthYear(activeWeek.weekStart)} – ${toDayMonthYear(activeWeek.weekEnd)}` : "…"
               )
             ),
-            missingLabels.length > 0 && React.createElement("div", {
-              style: { fontSize: 11.5, color: MELON, fontFamily: "'Work Sans', sans-serif", fontWeight: 600 }
-            }, "Awaiting: ", missingLabels.join(" · "))
-          );
-        })
+            React.createElement("div", null,
+              React.createElement("label", { style: labelStyle }, "Metric"),
+              React.createElement("select", {
+                value: activeWeek ? activeWeek.metric : "",
+                disabled: viewingPast || !isAdmin || configSaving,
+                onChange: e => setCurrentWeekConfig(e.target.value, activeWeek ? activeWeek.threshold : null),
+                style: inputStyle
+              },
+                React.createElement("option", { value: "", disabled: true }, "Select this week's metric…"),
+                METRIC_OPTIONS.map(m => React.createElement("option", { key: m, value: m }, m))
+              )
+            ),
+            React.createElement("div", null,
+              React.createElement("label", { style: labelStyle },
+                (activeWeek ? activeWeek.metric : "") === METRIC_RATIO ? "Threshold (%, optional)" : "Threshold (optional)"
+              ),
+              React.createElement("input", {
+                type: "number",
+                value: activeWeek && activeWeek.threshold !== null && activeWeek.threshold !== undefined ? activeWeek.threshold : "",
+                disabled: viewingPast || !isAdmin || configSaving,
+                onChange: e => setCurrentWeekConfig(activeWeek ? activeWeek.metric : METRIC_CVS_OUT, e.target.value === "" ? null : Number(e.target.value)),
+                placeholder: (activeWeek ? activeWeek.metric : "") === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
+                style: inputStyle
+              })
+            )
+          ),
+          viewingPast && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+            "Viewing a past week — its metric and threshold are fixed as they were scored at the time."
+          ),
+          !isAdmin && !viewingPast && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+            "Only Admins can change this week's metric or threshold — ask Scott or Lee."
+          )
+        ),
+        React.createElement(Panel, null,
+          React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 } },
+            React.createElement(SectionTitle, {
+              eyebrow: activeWeek ? `${toDayMonthYear(activeWeek.weekStart)} – ${toDayMonthYear(activeWeek.weekEnd)}` : (viewingPast ? "Past week" : "This week"),
+              title: viewingPast ? "Reviewing this week" : "Live tally"
+            }),
+            viewingPast
+              ? React.createElement("button", { onClick: () => setPastWeekData(null), style: ghostStyle }, "Back to this week")
+              : React.createElement("button", { onClick: loadLiveWeek, disabled: liveWeekLoading, style: ghostStyle }, liveWeekLoading ? "Refreshing…" : "Refresh now")
+          ),
+          weekOverrideError && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK, marginBottom: 10 } }, weekOverrideError),
+          activeLoading && !activeWeek ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
+          !activeWeek || !Array.isArray(activeWeek.consultants) ? null :
+          React.createElement("div", { style: { display: "flex", gap: 30, flexWrap: "wrap" } },
+            Object.keys(TEAMS).map(teamId => {
+              const teamInfo = TEAMS[teamId];
+              const rows = activeWeek.consultants
+                .filter(c => c.team === teamId)
+                .map(c => ({ ...c, name: (consultants.find(cc => cc.id === c.consultantId) || {}).name || c.consultantId }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+              return React.createElement("div", { key: teamId, style: { flex: 1, minWidth: 300 } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                  React.createElement(Badge, { teamId: teamId }),
+                  React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontSize: 16, color: teamInfo.color, margin: 0 } }, teamInfo.label)
+                ),
+                React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 } },
+                  React.createElement("span", { style: { width: 120, flexShrink: 0 } }),
+                  React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0 } }, "CVs Out"),
+                  React.createElement("span", { style: { ...labelStyle, width: 66, flexShrink: 0, marginBottom: 0 } }, "Interviews"),
+                  React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0 } }, "Onsite"),
+                  React.createElement("span", { style: { ...labelStyle, width: 55, flexShrink: 0, marginBottom: 0 } }, "Offers")
+                ),
+                rows.map(r => React.createElement("div", {
+                  key: r.consultantId,
+                  style: { display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13.5, padding: "5px 0", color: r.excluded ? INDIGO_MUTED : INDIGO }
+                },
+                  React.createElement("span", { style: { width: 120, flexShrink: 0, textDecoration: r.excluded ? "line-through" : "none", paddingTop: 4 } }, r.name),
+                  isAdmin
+                    ? React.createElement(EditableKpiCell, { width: 55, value: r.cvsOut, isOverridden: r.overridden.cvsOut, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "cvsOut", v) })
+                    : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.cvsOut),
+                  isAdmin
+                    ? React.createElement(EditableKpiCell, { width: 66, value: r.interviews, isOverridden: r.overridden.interviews, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "interviews", v) })
+                    : React.createElement("span", { style: { width: 66, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.interviews),
+                  isAdmin
+                    ? React.createElement(EditableKpiCell, { width: 55, value: r.onsite, isOverridden: r.overridden.onsite, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "onsite", v) })
+                    : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.onsite),
+                  isAdmin
+                    ? React.createElement(EditableKpiCell, { width: 55, value: r.offers, isOverridden: r.overridden.offers, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "offers", v) })
+                    : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.offers),
+                  isAdmin && !viewingPast && React.createElement("button", {
+                    onClick: () => toggleExcludeConsultant(r.consultantId),
+                    title: r.excluded ? "Include them in this week's scoring again" : "Exclude them from this week's scoring (e.g. new starter, on leave)",
+                    style: { ...ghostStyle, fontSize: 10, padding: "2px 6px", marginTop: 2, color: r.excluded ? VERDIGRIS : MELON_LINK, borderColor: r.excluded ? VERDIGRIS : MELON_LINK }
+                  }, r.excluded ? "Include" : "Exclude")
+                ))
+              );
+            })
+          ),
+          !viewingPast && React.createElement("div", { style: { marginTop: 14, fontSize: 12, color: INDIGO_MUTED } },
+            "Live, direct from Atlas — refreshes automatically. This week locks in automatically once Sunday ends, and stays reviewable afterwards from Past weeks below."
+          )
+        )
+      );
+    })(),
+    React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "History", title: "Past weeks" }),
+      React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } },
+        recentWeekKeys(13).slice(1).map(wk => React.createElement("button", {
+          key: wk,
+          onClick: () => loadPastWeek(wk),
+          style: { ...ghostStyle, background: pastWeekData && pastWeekData.weekKey === wk ? "rgba(255,176,140,0.16)" : WHITE, borderColor: pastWeekData && pastWeekData.weekKey === wk ? MELON : INDIGO_HAIRLINE }
+        }, wk))
       )
     )
   ), tab === "standings" && React.createElement("div", {
