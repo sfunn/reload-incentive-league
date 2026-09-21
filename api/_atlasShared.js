@@ -73,13 +73,44 @@ const DEDUPE_KEY_BY_METRIC = {
   offers: OFFER_COUNTED_KEY,
 };
 
+// Atlas's own documented rate limits (from their API introduction): 1200
+// read requests per 60 seconds, per agency, shared across every endpoint
+// this whole app calls. A 429 response includes retryAfterSec, and
+// Atlas's own guidance is explicit: "watch RateLimit-Remaining and slow
+// down... rather than retrying on 429s" blindly. This wraps every Atlas
+// GET call this project makes with a small, bounded retry: on a 429, it
+// waits the time Atlas itself says to wait (capped, so a bad response
+// can't hang a request indefinitely), then tries again, up to a few
+// times, before genuinely giving up. This does NOT fix a request pattern
+// that's fundamentally bursting too many calls at once — that has to be
+// fixed at the call site, by not firing that many requests concurrently
+// in the first place — it only makes a single call resilient to a
+// transient rate-limit hit rather than failing immediately on the first one.
+const MAX_RATE_LIMIT_RETRIES = 3;
+const MAX_RETRY_WAIT_MS = 15000;
+async function fetchAtlasWithRetry(url, options) {
+  for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+    const res = await fetch(url, options);
+    if (res.status !== 429) return res;
+    if (attempt === MAX_RATE_LIMIT_RETRIES) return res; // out of retries — let the caller see the final 429
+    let retryAfterSec = 2;
+    try {
+      const body = await res.clone().json();
+      if (typeof body.retryAfterSec === "number") retryAfterSec = body.retryAfterSec;
+    } catch (e) { /* fall back to the default above */ }
+    const waitMs = Math.min(retryAfterSec * 1000, MAX_RETRY_WAIT_MS);
+    console.warn(`[atlas-shared] 429 rate limited, waiting ${waitMs}ms before retry ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+}
+
 async function lookupProjectName(kv, projectId) {
   if (!projectId) return null;
   const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
   if (projectId in cache) return cache[projectId];
   let name = null;
   try {
-    const res = await fetch(
+    const res = await fetchAtlasWithRetry(
       `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
       { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
     );
@@ -96,7 +127,7 @@ async function lookupProjectName(kv, projectId) {
 }
 
 async function lookupCandidateOwnerEmail(projectId, candidateId) {
-  const res = await fetch(
+  const res = await fetchAtlasWithRetry(
     `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
     { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
   );
@@ -177,6 +208,7 @@ module.exports = {
   DEDUPE_KEY_BY_METRIC,
   isoWeekKey,
   metricForStageName,
+  fetchAtlasWithRetry,
   lookupProjectName,
   lookupCandidateOwnerEmail,
   lookupCandidateOwnerEmailCached,
