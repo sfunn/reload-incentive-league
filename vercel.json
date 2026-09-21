@@ -3,6 +3,10 @@
     {
       "path": "/api/atlas-reconcile-cron",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/atlas-reconcile-cron?task=warm-kpi-cache",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
