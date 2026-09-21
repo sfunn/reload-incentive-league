@@ -106,6 +106,31 @@ async function lookupCandidateOwnerEmail(projectId, candidateId) {
   return owner ? owner.email : null;
 }
 
+const CANDIDATE_OWNER_CACHE_KEY = "atlas-candidate-owner-cache"; // { [candidateId]: email | null }
+// A cached wrapper around the lookup above — used by any live, on-the-fly
+// computation (e.g. the KPI page's own live query) that may need to look
+// the same candidate up repeatedly across page loads. A candidate's owner
+// rarely changes, so caching trades a small amount of staleness risk for
+// a large reduction in repeated API calls. NOT used by the webhook, which
+// deliberately looks up fresh every time — a webhook event is rare enough
+// (one per stage move) that a stale cached owner would be a worse trade
+// there than it is here, where the same candidate can appear many times
+// across a single computation.
+async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
+  const cache = (await kv.get(CANDIDATE_OWNER_CACHE_KEY)) || {};
+  if (candidateId in cache) return cache[candidateId];
+  let email = null;
+  try {
+    email = await lookupCandidateOwnerEmail(projectId, candidateId);
+  } catch (e) {
+    console.error("[atlas-shared] cached candidate owner lookup failed:", e.message);
+    return null; // deliberately NOT cached — a transient failure shouldn't poison the cache
+  }
+  cache[candidateId] = email;
+  await kv.set(CANDIDATE_OWNER_CACHE_KEY, cache);
+  return email;
+}
+
 // The exact same tally-writing logic the webhook uses — writes both the
 // weekly tally (needed for the Weekly Incentive competition itself) and
 // the per-event monthly tally (needed for exact month-level KPI
@@ -154,5 +179,6 @@ module.exports = {
   metricForStageName,
   lookupProjectName,
   lookupCandidateOwnerEmail,
+  lookupCandidateOwnerEmailCached,
   writeTally,
 };
