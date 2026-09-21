@@ -171,6 +171,113 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
 // weekly tally (needed for the Weekly Incentive competition itself) and
 // the per-event monthly tally (needed for exact month-level KPI
 // reporting, avoiding the week-straddles-two-months bucketing bug).
+// The proven, tested computation from the KPI page's live query — moved
+// here so it can be reused by both the on-demand request handler
+// (league.js's ?action=kpi-live-monthly) and the background job that
+// keeps its cache warm ahead of time, without risking the two drifting
+// apart into two subtly different implementations. Queries Atlas's own
+// candidate-stage-events directly for the given month, deduping each
+// candidate+project pair once (regardless of how many different metrics
+// it needed), resolving owners LOOKUP_CONCURRENCY at a time rather than
+// one after another, and respecting a time budget so a genuinely
+// oversized month fails with a clear, specific reason well before
+// Vercel's own platform-level kill at 60s. Returns the computed
+// per-person totals for that one month, plus some counters for logging
+// — does NOT touch the cache itself, deliberately: caching is the
+// caller's decision, not baked into this.
+async function computeMonthlyKpiLive(kv, year, month, timeBudgetMs = 45000) {
+  const monthStr = String(month).padStart(2, "0");
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
+  const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
+
+  const people = {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
+  const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}`
+  const pairsToResolve = new Map(); // `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> }
+  let eventsSeen = 0, eventsCounted = 0;
+  let cursorDate = null, cursorId = null;
+  let pagesFetched = 0;
+  const MAX_PAGES = 20; // 20 * 100 = 2000 events, comfortably beyond one month's realistic volume
+  const LOOKUP_CONCURRENCY = 15; // stays well inside Atlas's own 1200 requests/60s limit
+  const startTime = Date.now();
+
+  while (pagesFetched < MAX_PAGES) {
+    if (Date.now() - startTime > timeBudgetMs) {
+      throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s fetching pages — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen so far). Try again in a minute.`);
+    }
+    const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
+    if (cursorDate && cursorId) {
+      params.set("cursorDate", cursorDate);
+      params.set("cursorId", cursorId);
+    }
+    const apiRes = await fetchAtlasWithRetry(
+      `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (!apiRes.ok) {
+      const body = await apiRes.text().catch(() => "");
+      throw new Error(`candidate-stage-events request failed: ${apiRes.status} ${body}`);
+    }
+    const json = await apiRes.json();
+    pagesFetched++;
+
+    for (const event of json.data || []) {
+      eventsSeen++;
+      if (event.isReverted) continue;
+
+      const metric = metricForStageName(event.stageTo && event.stageTo.name);
+      if (!metric) continue;
+
+      const projectId = event.project && event.project.id;
+      const candidateId = event.candidate && event.candidate.id;
+      if (!projectId || !candidateId) continue;
+
+      const dedupeKey = `${candidateId}:${projectId}:${metric}`;
+      if (seenDedupeKeys.has(dedupeKey)) continue;
+      seenDedupeKeys.add(dedupeKey);
+
+      const pairKey = `${candidateId}:${projectId}`;
+      if (!pairsToResolve.has(pairKey)) {
+        pairsToResolve.set(pairKey, { projectId, candidateId, metrics: new Set() });
+      }
+      pairsToResolve.get(pairKey).metrics.add(metric);
+    }
+
+    const pagination = json.pagination || {};
+    if (!pagination.hasMore) break;
+    cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
+    cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
+    if (!cursorDate || !cursorId) break;
+  }
+
+  const pairs = Array.from(pairsToResolve.values());
+  for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
+    if (Date.now() - startTime > timeBudgetMs) {
+      throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s resolving owners — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
+    }
+    const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
+    const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
+      const projectName = await lookupProjectName(kv, projectId);
+      if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
+      const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
+      const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
+      if (!consultantId) return null;
+      return { consultantId, metrics };
+    }));
+
+    for (const r of resolved) {
+      if (!r) continue;
+      if (!people[r.consultantId]) people[r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+      for (const metric of r.metrics) {
+        people[r.consultantId][metric] += 1;
+        eventsCounted++;
+      }
+    }
+  }
+
+  return { people, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched };
+}
+
 async function writeTally(kv, consultantId, metric, movedAt) {
   const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
   const current = (await kv.get(weekKey)) || {};
@@ -217,5 +324,6 @@ module.exports = {
   lookupProjectName,
   lookupCandidateOwnerEmail,
   lookupCandidateOwnerEmailCached,
+  computeMonthlyKpiLive,
   writeTally,
 };
