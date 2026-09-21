@@ -757,17 +757,45 @@ function App() {
       .catch(() => {});
   }, []);
   // Feeds CVs Out / Interviews / Onsite / Offers on the Consultant KPIs
-  // page automatically — the backend already resolves Weekly-Incentive-
-  // recorded-vs-live-Atlas precedence and sums by month (see api/league.js
-  // ?action=kpi-live-monthly), so this is just the fetch, no client-side
-  // aggregation needed. Refetches whenever the selected year changes.
+  // page — every number is computed live, directly from Atlas, by
+  // api/league.js's own ?action=kpi-live-monthly (see its own comments
+  // for the full reasoning). Deliberately fetched ONE MONTH AT A TIME,
+  // not a whole year in one call — querying a full year at once proved
+  // genuinely too slow to ever finish in practice (thousands of events,
+  // each needing its own sequential owner lookup; a real request was
+  // observed sitting unresolved for minutes). kpiLiveMonthly acts as a
+  // running cache here: a month already fetched is never re-requested,
+  // so moving between months you've already viewed is instant, and only
+  // a genuinely new month triggers a fresh live query.
   const [kpiLiveMonthly, setKpiLiveMonthly] = useState({});
-  useEffect(() => {
-    fetch(`/api/league?action=kpi-live-monthly&year=${pipelineYear}`)
+  const fetchKpiMonth = useCallback((year, month) => {
+    const mk = `${year}-${String(month).padStart(2, "0")}`;
+    if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
+    fetch(`/api/league?action=kpi-live-monthly&year=${year}&month=${month}`)
       .then(r => r.json())
-      .then(d => setKpiLiveMonthly(d.monthly || {}))
+      .then(d => {
+        if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
+      })
       .catch(() => {});
-  }, [pipelineYear]);
+  }, [kpiLiveMonthly]);
+  useEffect(() => {
+    // Mirrors the exact same "who is being viewed" logic the render code
+    // below uses (isAdmin ? pipelineFocusId : the logged-in person's own
+    // id) — a focused person's page shows all 12 months at once, so all
+    // 12 need fetching (in parallel, each independently cached); the
+    // "Everyone" grid shows one month for everyone, so only that one
+    // month is ever needed.
+    const ownConsultant = consultants.find(c => c.id === (authUser && authUser.consultantId));
+    const ownTeamLead = TEAM_LEADS.find(tl => tl.id === (authUser && authUser.consultantId));
+    const own = ownConsultant || ownTeamLead;
+    const focusId = isAdmin ? pipelineFocusId : (own ? own.id : null);
+
+    if (focusId) {
+      for (let m = 1; m <= 12; m++) fetchKpiMonth(pipelineYear, m);
+    } else {
+      fetchKpiMonth(pipelineYear, pipelineMonth);
+    }
+  }, [pipelineYear, pipelineMonth, pipelineFocusId, isAdmin, authUser]);
   // Lets a Super Admin manually run the scheduled Atlas reconciliation job
   // right now — this keeps the Weekly Incentive's own weekly tally
   // accurate (used by "Pull from Atlas" in Matchday Setup). It has no
