@@ -7,6 +7,7 @@ const {
   metricForStageName,
   lookupProjectName,
   lookupCandidateOwnerEmail,
+  computeMonthlyKpiLive,
   writeTally,
 } = require("./_atlasShared.js");
 
@@ -66,6 +67,16 @@ module.exports = async function handler(req, res) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     triggeredBy = "manual";
+  }
+
+  // This one function now does two genuinely different jobs, split by a
+  // query param rather than as two separate files — kept as one file
+  // deliberately, since a new, separate function would push this project
+  // over its 12-function Hobby-plan cap. Each invocation only ever does
+  // ONE of the two, never both together, so neither job risks running
+  // long enough to push into the other's own time budget.
+  if (req.query && req.query.task === "warm-kpi-cache") {
+    return warmKpiCache(req, res);
   }
 
   const cursorState = (await kv.get(CURSOR_KEY)) || null;
@@ -204,6 +215,55 @@ module.exports = async function handler(req, res) {
 };
 
 // Each event needs its own round-trip to Atlas for an owner lookup (plus a
+// The second job this file does — see the branch near the top of the
+// main handler. Keeps the KPI page's own cache (api/league.js's
+// ?action=kpi-live-monthly, atlas-kpi-cache:{monthKey}) warm ahead of
+// time, using the EXACT SAME proven computation the KPI page itself
+// uses on demand (computeMonthlyKpiLive, in _atlasShared.js) — not a
+// second, different implementation with its own accuracy question, the
+// identical logic, just triggered by a schedule instead of a page load.
+// Only the current month is warmed here: that's the one whose cache
+// window is short enough (15 minutes) to plausibly go cold between
+// visits, and the one where new events are still genuinely arriving.
+// A past, settled month's cache lasts long enough (30 days) that
+// proactively warming it isn't worth the Atlas calls it would cost.
+async function warmKpiCache(req, res) {
+  const expectedCronAuth = `Bearer ${process.env.CRON_SECRET}`;
+  const isCron = !!process.env.CRON_SECRET && req.headers.authorization === expectedCronAuth;
+  let triggeredBy = isCron ? "cron" : null;
+
+  if (!isCron) {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    triggeredBy = "manual";
+  }
+
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+  const CACHE_KEY = `atlas-kpi-cache:${monthKey}`;
+
+  try {
+    const live = await computeMonthlyKpiLive(kv, year, month);
+    await kv.set(CACHE_KEY, { monthly: live.people, cachedAt: Date.now() });
+    return res.status(200).json({
+      ok: true,
+      triggeredBy,
+      monthKey,
+      pagesFetched: live.pagesFetched,
+      eventsSeen: live.eventsSeen,
+      eventsCounted: live.eventsCounted,
+      pairsResolved: live.pairsResolved,
+    });
+  } catch (e) {
+    console.error("[warm-kpi-cache] failed:", e.message);
+    return res.status(502).json({ ok: false, error: e.message });
+  }
+}
+
 // cached-per-project name lookup), so a run processing hundreds of events
 // can genuinely take tens of seconds — a real backlog (e.g. after the
 // schedule hasn't run in a while) could exceed a short default limit.
