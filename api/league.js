@@ -266,7 +266,19 @@ module.exports = async (req, res) => {
     const isRecent = isCurrentWeek || weeksSinceEnded < 2;
 
     const CACHE_KEY = `atlas-week-cache:${weekKey}`;
-    const CACHE_TTL_MS = isRecent ? 15 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    // 6 hours, not 15 minutes — the background job that keeps this warm
+    // (atlas-reconcile-cron.js) can only run once a day on this Vercel
+    // plan (Hobby caps cron at daily; a more frequent schedule fails
+    // deployment outright, discovered the hard way). A 15-minute window
+    // against a once-daily refresh meant the cache would expire roughly
+    // 95 times between each real warm-up, sending far more people than
+    // necessary down the slower, live-computed path for no actual
+    // freshness benefit. 6 hours roughly matches the gap between the
+    // two daily warm runs (6am and noon), so the cache stays genuinely
+    // warm through the parts of the day people are actually using this.
+    // The "Warm this month's KPI cache now" button remains the right
+    // tool for anyone who wants it fresher than that, on demand.
+    const CACHE_TTL_MS = isRecent ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
     let computed;
     if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
@@ -399,7 +411,12 @@ module.exports = async (req, res) => {
     const CACHE_KEY = `atlas-kpi-cache:${requestedMonthKey}`;
     const now = new Date();
     const isCurrentMonth = year === now.getUTCFullYear() && month === now.getUTCMonth() + 1;
-    const CACHE_TTL_MS = isCurrentMonth ? 15 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    // 6 hours, not 15 minutes — see the matching comment on week-live's
+    // own CACHE_TTL_MS just above for the full reasoning: the background
+    // warming job can only run once a day on this plan, so the cache
+    // window is set to roughly match that instead of expiring itself
+    // many times between each real refresh.
+    const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
     if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
