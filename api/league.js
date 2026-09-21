@@ -282,16 +282,28 @@ module.exports = async (req, res) => {
     // Vercel kills this function outright at its own maxDuration (60s),
     // with no chance to return a useful error — just a generic, opaque
     // 502. This budget bails out deliberately, well before that, so a
-    // month that's taking too long (e.g. genuinely exhausted rate limits
-    // making many sequential owner lookups slow) fails with a real,
-    // specific, loggable reason instead of an unexplained platform kill.
+    // month that's taking too long fails with a real, specific, loggable
+    // reason instead of an unexplained platform kill.
     const startTime = Date.now();
     const TIME_BUDGET_MS = 45000;
+    // How many owner/project lookups run at once. Sequential, one-at-a-
+    // time processing was the actual bottleneck for a busy month (573
+    // events genuinely observed for one month alone) — each lookup is its
+    // own network round-trip to Atlas, and waiting for each one in turn
+    // before starting the next made the whole request too slow to finish
+    // even with no rate-limit errors at all. Atlas's own limit is 1200
+    // requests/60s (20/s) — this concurrency stays comfortably inside
+    // that while cutting real wall-clock time roughly proportionally.
+    const LOOKUP_CONCURRENCY = 8;
+
+    // Relevant events worth resolving further — filtered fast, with no
+    // API calls at all, before any of the slower lookup work begins.
+    const relevantEvents = [];
 
     try {
       while (pagesFetched < MAX_PAGES) {
         if (Date.now() - startTime > TIME_BUDGET_MS) {
-          throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen so far). Try again in a minute.`);
+          throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s fetching pages — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen so far). Try again in a minute.`);
         }
         const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
         if (cursorDate && cursorId) {
@@ -310,9 +322,6 @@ module.exports = async (req, res) => {
         pagesFetched++;
 
         for (const event of json.data || []) {
-          if (Date.now() - startTime > TIME_BUDGET_MS) {
-            throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s mid-page — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
-          }
           eventsSeen++;
           if (event.isReverted) continue;
 
@@ -325,19 +334,9 @@ module.exports = async (req, res) => {
 
           const dedupeKey = `${candidateId}:${projectId}:${metric}`;
           if (seenDedupeKeys.has(dedupeKey)) continue;
-
-          const projectName = await lookupProjectName(kv, projectId);
-          if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) continue;
-
-          const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
-          const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
-          if (!consultantId) continue;
-
           seenDedupeKeys.add(dedupeKey);
 
-          if (!monthly[requestedMonthKey][consultantId]) monthly[requestedMonthKey][consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-          monthly[requestedMonthKey][consultantId][metric] += 1;
-          eventsCounted++;
+          relevantEvents.push({ projectId, candidateId, metric });
         }
 
         const pagination = json.pagination || {};
@@ -346,12 +345,38 @@ module.exports = async (req, res) => {
         cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
         if (!cursorDate || !cursorId) break;
       }
+
+      // The slower part: resolving each relevant event's project name
+      // (for the CitSec Options exclusion) and candidate owner (for
+      // attribution), LOOKUP_CONCURRENCY at a time rather than one after
+      // another.
+      for (let i = 0; i < relevantEvents.length; i += LOOKUP_CONCURRENCY) {
+        if (Date.now() - startTime > TIME_BUDGET_MS) {
+          throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s resolving owners — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
+        }
+        const batch = relevantEvents.slice(i, i + LOOKUP_CONCURRENCY);
+        const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metric }) => {
+          const projectName = await lookupProjectName(kv, projectId);
+          if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
+          const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
+          const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
+          if (!consultantId) return null;
+          return { consultantId, metric };
+        }));
+
+        for (const r of resolved) {
+          if (!r) continue;
+          if (!monthly[requestedMonthKey][r.consultantId]) monthly[requestedMonthKey][r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+          monthly[requestedMonthKey][r.consultantId][r.metric] += 1;
+          eventsCounted++;
+        }
+      }
     } catch (e) {
       console.error("[kpi-live-monthly] live Atlas query failed:", e.message);
       return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
     }
 
-    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${eventsCounted} counted`);
+    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${relevantEvents.length} relevant, ${eventsCounted} counted`);
 
     for (const personId of ALL_PEOPLE_IDS) {
       if (!monthly[requestedMonthKey][personId]) monthly[requestedMonthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
