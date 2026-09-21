@@ -171,26 +171,20 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
 // weekly tally (needed for the Weekly Incentive competition itself) and
 // the per-event monthly tally (needed for exact month-level KPI
 // reporting, avoiding the week-straddles-two-months bucketing bug).
-// The proven, tested computation from the KPI page's live query — moved
-// here so it can be reused by both the on-demand request handler
-// (league.js's ?action=kpi-live-monthly) and the background job that
-// keeps its cache warm ahead of time, without risking the two drifting
-// apart into two subtly different implementations. Queries Atlas's own
-// candidate-stage-events directly for the given month, deduping each
-// candidate+project pair once (regardless of how many different metrics
-// it needed), resolving owners LOOKUP_CONCURRENCY at a time rather than
-// one after another, and respecting a time budget so a genuinely
-// oversized month fails with a clear, specific reason well before
-// Vercel's own platform-level kill at 60s. Returns the computed
-// per-person totals for that one month, plus some counters for logging
-// — does NOT touch the cache itself, deliberately: caching is the
-// caller's decision, not baked into this.
-async function computeMonthlyKpiLive(kv, year, month, timeBudgetMs = 45000) {
-  const monthStr = String(month).padStart(2, "0");
-  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
-  const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
-
+// The proven, tested computation from the KPI page's live query — this
+// is the genuinely generic core: given any date range, query Atlas's own
+// candidate-stage-events directly, dedupe each candidate+project pair
+// once (regardless of how many different metrics it needed), resolve
+// owners LOOKUP_CONCURRENCY at a time rather than one after another, and
+// respect a time budget so a genuinely oversized range fails with a
+// clear, specific reason well before Vercel's own platform-level kill at
+// 60s. Both a calendar month (computeMonthlyKpiLive, just below) and an
+// ISO week (computeWeeklyKpiLive, for the Weekly Incentive) delegate to
+// this SAME function — a week is a smaller date range, not a different
+// computation, so it gets the identical, already-proven logic rather
+// than a second implementation with its own new bugs to find. Does NOT
+// touch caching itself, deliberately: caching is the caller's decision.
+async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs = 45000) {
   const people = {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
   const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}`
   const pairsToResolve = new Map(); // `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> }
@@ -278,6 +272,50 @@ async function computeMonthlyKpiLive(kv, year, month, timeBudgetMs = 45000) {
   return { people, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched };
 }
 
+// Byte-identical copy of league.js's own isoWeekToDates — same principle
+// already established for isoWeekKey just above: a week's Monday and
+// Sunday must resolve identically everywhere this project computes them,
+// never two subtly different implementations drifting apart over time.
+function isoWeekToDates(weekKey) {
+  const [yearStr, wStr] = weekKey.split("-W");
+  const year = Number(yearStr);
+  const weekNum = Number(wStr);
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Day = (jan4.getUTCDay() + 6) % 7; // 0 = Monday
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - jan4Day);
+  const monday = new Date(week1Monday);
+  monday.setUTCDate(week1Monday.getUTCDate() + (weekNum - 1) * 7);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { monday: fmt(monday), sunday: fmt(sunday) };
+}
+
+// Thin wrapper over the generic range computation, for a calendar month —
+// used by the KPI page (?action=kpi-live-monthly) and the background job
+// that keeps its cache warm.
+async function computeMonthlyKpiLive(kv, year, month, timeBudgetMs = 45000) {
+  const monthStr = String(month).padStart(2, "0");
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
+  const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
+  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs);
+}
+
+// Thin wrapper over the generic range computation, for a single ISO week
+// (Monday through Sunday) — used by the Weekly Incentive's own live
+// numbers and the background job that keeps the current week's cache
+// warm. A week is roughly a quarter of a month's volume, so this is
+// expected to comfortably finish well within the time budget even for a
+// genuinely busy week.
+async function computeWeeklyKpiLive(kv, weekKey, timeBudgetMs = 45000) {
+  const { monday, sunday } = isoWeekToDates(weekKey);
+  const createdAfter = `${monday}T00:00:00.000Z`;
+  const createdBefore = `${sunday}T23:59:59.999Z`;
+  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs);
+}
+
 async function writeTally(kv, consultantId, metric, movedAt) {
   const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
   const current = (await kv.get(weekKey)) || {};
@@ -324,6 +362,9 @@ module.exports = {
   lookupProjectName,
   lookupCandidateOwnerEmail,
   lookupCandidateOwnerEmailCached,
+  isoWeekToDates,
+  computeKpiLiveForRange,
   computeMonthlyKpiLive,
+  computeWeeklyKpiLive,
   writeTally,
 };
