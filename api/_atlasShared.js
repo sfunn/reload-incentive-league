@@ -1,4 +1,4 @@
-// Shared between api/atlas-webhook.js and api/atlas-reconcile-cron.js. 
+// Shared between api/atlas-webhook.js and api/atlas-reconcile-cron.js.
 // Underscore-prefixed so Vercel excludes it from routing — it's a plain
 // module, not an API endpoint, and doesn't count against the 12-function
 // Hobby-plan cap. The whole point of this file existing is that these
