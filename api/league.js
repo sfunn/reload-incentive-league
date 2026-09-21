@@ -4,6 +4,7 @@ const {
   EXCLUDED_PROJECT_NAME,
   EMAIL_TO_CONSULTANT,
   metricForStageName,
+  fetchAtlasWithRetry,
   lookupProjectName,
   lookupCandidateOwnerEmailCached,
 } = require("./_atlasShared.js");
@@ -286,7 +287,7 @@ module.exports = async (req, res) => {
           params.set("cursorDate", cursorDate);
           params.set("cursorId", cursorId);
         }
-        const apiRes = await fetch(
+        const apiRes = await fetchAtlasWithRetry(
           `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
           { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
         );
