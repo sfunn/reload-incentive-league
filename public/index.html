@@ -768,33 +768,46 @@ function App() {
   // so moving between months you've already viewed is instant, and only
   // a genuinely new month triggers a fresh live query.
   const [kpiLiveMonthly, setKpiLiveMonthly] = useState({});
-  const fetchKpiMonth = useCallback((year, month) => {
+  const fetchKpiMonth = useCallback(async (year, month) => {
     const mk = `${year}-${String(month).padStart(2, "0")}`;
     if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
-    fetch(`/api/league?action=kpi-live-monthly&year=${year}&month=${month}`)
-      .then(r => r.json())
-      .then(d => {
-        if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
-      })
-      .catch(() => {});
+    try {
+      const res = await fetch(`/api/league?action=kpi-live-monthly&year=${year}&month=${month}`);
+      const d = await res.json();
+      if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
+    } catch (e) { /* silently skip — the page just shows zero/stale for this month */ }
   }, [kpiLiveMonthly]);
   useEffect(() => {
     // Mirrors the exact same "who is being viewed" logic the render code
     // below uses (isAdmin ? pipelineFocusId : the logged-in person's own
     // id) — a focused person's page shows all 12 months at once, so all
-    // 12 need fetching (in parallel, each independently cached); the
-    // "Everyone" grid shows one month for everyone, so only that one
-    // month is ever needed.
+    // 12 need fetching; the "Everyone" grid shows one month for everyone,
+    // so only that one month is ever needed.
+    //
+    // The 12-month case is fetched ONE AT A TIME, deliberately, not all
+    // in parallel — firing 12 requests at once each independently makes
+    // its own stream of calls out to Atlas (one per unique candidate
+    // involved that month), and 12 of those streams running
+    // simultaneously is exactly what burst past Atlas's own shared,
+    // per-agency rate limit in practice (429s, confirmed directly in
+    // Vercel's own logs). Sequencing them keeps only one month's worth
+    // of Atlas calls in flight at any moment.
     const ownConsultant = consultants.find(c => c.id === (authUser && authUser.consultantId));
     const ownTeamLead = TEAM_LEADS.find(tl => tl.id === (authUser && authUser.consultantId));
     const own = ownConsultant || ownTeamLead;
     const focusId = isAdmin ? pipelineFocusId : (own ? own.id : null);
 
-    if (focusId) {
-      for (let m = 1; m <= 12; m++) fetchKpiMonth(pipelineYear, m);
-    } else {
-      fetchKpiMonth(pipelineYear, pipelineMonth);
-    }
+    let cancelled = false;
+    (async () => {
+      if (focusId) {
+        for (let m = 1; m <= 12 && !cancelled; m++) {
+          await fetchKpiMonth(pipelineYear, m);
+        }
+      } else {
+        await fetchKpiMonth(pipelineYear, pipelineMonth);
+      }
+    })();
+    return () => { cancelled = true; }; // avoids continuing a stale 12-month sequence if the user navigates away mid-fetch
   }, [pipelineYear, pipelineMonth, pipelineFocusId, isAdmin, authUser]);
   // Lets a Super Admin manually run the scheduled Atlas reconciliation job
   // right now — this keeps the Weekly Incentive's own weekly tally
