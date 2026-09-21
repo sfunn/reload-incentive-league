@@ -579,6 +579,93 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, config: configs[weekKey] });
   }
 
+  if (req.method === "POST" && action === "migrate-legacy-weeks") {
+    // A one-time (but safely repeatable) migration from the old,
+    // webhook-fed reload-league-weeks into the new live-query-backed
+    // system — Super Admin only, given how consequential this is: it can
+    // genuinely change what a past week's numbers show. Deliberately
+    // NOT run automatically on deploy; a director triggers this
+    // knowingly, once, when ready.
+    //
+    // The actual distinction this makes, deliberately: a week that was
+    // only ever auto-finalized (autoFinalized === true) and never
+    // touched again holds whatever the flawed, webhook-fed tally
+    // happened to capture at the time — that's exactly the unreliable
+    // data the live rebuild exists to replace, so it's discarded here
+    // and left for the new system to compute fresh, accurately, from
+    // Atlas directly. A week that WAS manually touched at some point
+    // (autoFinalized is false, cleared by an explicit edit, OR
+    // undefined, a brand-new manual entry that never went through
+    // auto-finalize at all) represents a director's own deliberate,
+    // checked correction — that's preserved as a permanent override on
+    // top of the new live number, exactly the same as any override set
+    // going forward.
+    //
+    // Every week's metric/threshold/exclusions carry over regardless,
+    // since that's a real decision made at the time, not something
+    // Atlas could ever reconstruct on its own.
+    //
+    // Field names differ between the two systems (the old rows use
+    // "cvs", the new live/override data uses "cvsOut", matching Atlas's
+    // own field name) — mapped explicitly here, not assumed identical.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required." });
+    }
+
+    const legacyWeeks = (await kv.get(WEEKS_KEY)) || [];
+    const configs = (await kv.get(WEEK_CONFIGS_KEY)) || {};
+    const overrides = (await kv.get(WEEK_OVERRIDES_KEY)) || {};
+
+    let weeksProcessed = 0;
+    let weeksWithPreservedOverrides = 0;
+    let weeksSkippedNoDate = 0;
+
+    for (const week of legacyWeeks) {
+      let weekKey;
+      if (typeof week.id === "string" && week.id.startsWith("auto-")) {
+        weekKey = week.id.slice("auto-".length);
+      } else if (week.date) {
+        weekKey = isoWeekKey(week.date);
+      } else {
+        weeksSkippedNoDate++;
+        continue;
+      }
+
+      const excludedConsultants = Object.keys(week.rows || {}).filter((cid) => week.rows[cid].excluded);
+      configs[weekKey] = {
+        metric: week.metric || METRIC_CVS_OUT,
+        threshold: week.threshold ?? null,
+        excludedConsultants,
+      };
+
+      if (week.autoFinalized !== true) {
+        if (!overrides[weekKey]) overrides[weekKey] = {};
+        for (const [consultantId, r] of Object.entries(week.rows || {})) {
+          if (!overrides[weekKey][consultantId]) overrides[weekKey][consultantId] = {};
+          if (typeof r.cvs === "number") overrides[weekKey][consultantId].cvsOut = r.cvs;
+          if (typeof r.interviews === "number") overrides[weekKey][consultantId].interviews = r.interviews;
+          if (typeof r.onsite === "number") overrides[weekKey][consultantId].onsite = r.onsite;
+          if (typeof r.offers === "number") overrides[weekKey][consultantId].offers = r.offers;
+        }
+        weeksWithPreservedOverrides++;
+      }
+      weeksProcessed++;
+    }
+
+    await kv.set(WEEK_CONFIGS_KEY, configs);
+    await kv.set(WEEK_OVERRIDES_KEY, overrides);
+
+    return res.status(200).json({
+      ok: true,
+      totalLegacyWeeks: legacyWeeks.length,
+      weeksProcessed,
+      weeksWithPreservedOverrides,
+      weeksRecomputedFresh: weeksProcessed - weeksWithPreservedOverrides,
+      weeksSkippedNoDate,
+    });
+  }
+
   // Merged in from the old standalone consultant-teams.js — current team
   // assignment overrides, keyed by consultantId → "james" | "josh".
   // Deliberately public-readable (like the rest of league data) since it's
