@@ -1,4 +1,4 @@
-const { kv } = require("@vercel/kv"); 
+const { kv } = require("@vercel/kv");
 const { getUserFromRequest } = require("./_authHelpers");
 const {
   EXCLUDED_PROJECT_NAME,
