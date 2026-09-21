@@ -244,11 +244,16 @@ function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue
   const stored = kpiOverrides && kpiOverrides[personId] && kpiOverrides[personId][monthKey] && kpiOverrides[personId][monthKey][field];
   return (stored !== undefined && stored !== null) ? { value: stored, isOverridden: true } : { value: computedValue, isOverridden: false };
 }
-// cvs/interviews/onsite/offers now come pre-computed from the backend's
-// own ?action=kpi-live-monthly (see api/league.js) — it already resolves
-// the Weekly-Incentive-vs-live-Atlas precedence and sums by month, so this
-// function just looks the result up per person, the same simple pattern
-// already used for placementCountsByConsultant and ringoverByMonth below.
+// cvs/interviews/onsite/offers all come pre-computed, always live, from
+// the backend's own ?action=kpi-live-monthly (see api/league.js) —
+// queried fresh from Atlas's own candidate-stage-events, with a short
+// server-side cache so a repeat view of the same month doesn't re-pay
+// the full query cost. This function just looks the result up per
+// person, the same simple pattern already used for
+// placementCountsByConsultant and ringoverByMonth below. A manual
+// override set directly on this page (kpiOverrideValue, just above)
+// still always wins over whatever this returns — that's a separate,
+// untouched mechanism, not affected by any of this.
 function computeMonthPipelineRows(kpiLiveMonthly, people, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
   return people.map(p => {
     const liveEntry = ((kpiLiveMonthly || {})[monthKey] || {})[p.id] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
@@ -843,6 +848,39 @@ function App() {
       setSyncCheckResult({ ok: false, error: e.message });
     } finally {
       setSyncCheckLoading(false);
+    }
+  }
+  // Lets a Super Admin manually warm the KPI page's own cache right now,
+  // rather than waiting for the schedule — useful since Vercel's Hobby
+  // plan may restrict how often a cron job can actually run, so this is
+  // a genuine fallback, not just a convenience. Refetches the current
+  // month afterward so the page reflects the freshly warmed result
+  // immediately.
+  const [kpiWarmLoading, setKpiWarmLoading] = useState(false);
+  const [kpiWarmResult, setKpiWarmResult] = useState(null);
+  async function runWarmKpiCache() {
+    setKpiWarmLoading(true);
+    setKpiWarmResult(null);
+    try {
+      const res = await fetch("/api/atlas-reconcile-cron?task=warm-kpi-cache", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Warming failed");
+      setKpiWarmResult({ ok: true, ...data });
+      // Fetch the now-freshly-warmed result directly, rather than
+      // deleting from state and hoping fetchKpiMonth's own cache check
+      // sees the update in time — React state updates aren't
+      // synchronous, so that approach could race and skip the refetch.
+      fetch(`/api/league?action=kpi-live-monthly&year=${data.monthKey.split("-")[0]}&month=${Number(data.monthKey.split("-")[1])}`)
+        .then(r => r.json())
+        .then(d => { if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly })); })
+        .catch(() => {});
+    } catch (e) {
+      setKpiWarmResult({ ok: false, error: e.message });
+    } finally {
+      setKpiWarmLoading(false);
     }
   }
   const [kpiOverrideError, setKpiOverrideError] = useState("");
@@ -4362,12 +4400,22 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         React.createElement("button", {
           onClick: runAtlasSyncCheck,
           disabled: syncCheckLoading,
-          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: syncCheckLoading ? "default" : "pointer" }
+          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: syncCheckLoading ? "default" : "pointer", marginRight: 8 }
         }, syncCheckLoading ? "Checking…" : "Check Atlas sync now (Weekly Incentive data)"),
+        React.createElement("button", {
+          onClick: runWarmKpiCache,
+          disabled: kpiWarmLoading,
+          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: kpiWarmLoading ? "default" : "pointer" }
+        }, kpiWarmLoading ? "Warming…" : "Warm this month's KPI cache now"),
         syncCheckResult && React.createElement("div", { style: { fontSize: 12.5, color: syncCheckResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           syncCheckResult.ok
             ? `Sync check ran — looked at ${syncCheckResult.eventsSeen} Atlas event(s) since ${new Date(syncCheckResult.createdAfter).toLocaleString()}, found ${syncCheckResult.eventsCounted} genuinely missing and added them to the Weekly Incentive tally (used by "Pull from Atlas" in Matchday Setup — this page's own numbers above are already always live from Atlas directly, and aren't affected by this). ${syncCheckResult.eventsCounted === 0 ? "Zero missing means the webhook already caught everything in this window — that's a good sign, not a sign this isn't working." : ""}`
             : `Sync check failed: ${syncCheckResult.error}`
+        ),
+        kpiWarmResult && React.createElement("div", { style: { fontSize: 12.5, color: kpiWarmResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
+          kpiWarmResult.ok
+            ? `Warmed ${kpiWarmResult.monthKey} directly — ${kpiWarmResult.eventsSeen} event(s) seen, ${kpiWarmResult.eventsCounted} counted, ${kpiWarmResult.pairsResolved} unique candidate/project pair(s) resolved. This normally runs automatically on a schedule — use this only if it's clearly stale and you don't want to wait.`
+            : `Warming failed: ${kpiWarmResult.error}`
         )
       ),
 
