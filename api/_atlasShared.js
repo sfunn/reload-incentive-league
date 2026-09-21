@@ -78,16 +78,21 @@ const DEDUPE_KEY_BY_METRIC = {
 // this whole app calls. A 429 response includes retryAfterSec, and
 // Atlas's own guidance is explicit: "watch RateLimit-Remaining and slow
 // down... rather than retrying on 429s" blindly. This wraps every Atlas
-// GET call this project makes with a small, bounded retry: on a 429, it
-// waits the time Atlas itself says to wait (capped, so a bad response
-// can't hang a request indefinitely), then tries again, up to a few
-// times, before genuinely giving up. This does NOT fix a request pattern
-// that's fundamentally bursting too many calls at once — that has to be
-// fixed at the call site, by not firing that many requests concurrently
-// in the first place — it only makes a single call resilient to a
-// transient rate-limit hit rather than failing immediately on the first one.
-const MAX_RATE_LIMIT_RETRIES = 3;
-const MAX_RETRY_WAIT_MS = 15000;
+// GET call this project makes with a small, DELIBERATELY SHORT retry —
+// one quick attempt, capped at a couple of seconds, in case a specific
+// call hit a transient blip. It does NOT try to wait out a genuinely
+// exhausted, agency-wide rate limit window (which can take up to 60
+// seconds to clear): a single request here makes many sequential calls
+// (one per unique candidate), and if each one waited the full window
+// before retrying, those waits would stack up sequentially and could
+// easily exceed this whole function's own execution time limit — turning
+// a fast, clear failure into a slow, confusing hang that still fails
+// anyway. A genuinely exhausted limit is better surfaced quickly as a
+// real error (the KPI page's own error banner handles this, with a
+// manual Retry the user can use once the window's had a chance to
+// reset) than gambled on silently within one request.
+const MAX_RATE_LIMIT_RETRIES = 1;
+const MAX_RETRY_WAIT_MS = 2000;
 async function fetchAtlasWithRetry(url, options) {
   for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
     const res = await fetch(url, options);
