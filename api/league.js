@@ -287,18 +287,25 @@ module.exports = async (req, res) => {
     const startTime = Date.now();
     const TIME_BUDGET_MS = 45000;
     // How many owner/project lookups run at once. Sequential, one-at-a-
-    // time processing was the actual bottleneck for a busy month (573
-    // events genuinely observed for one month alone) — each lookup is its
-    // own network round-trip to Atlas, and waiting for each one in turn
-    // before starting the next made the whole request too slow to finish
-    // even with no rate-limit errors at all. Atlas's own limit is 1200
-    // requests/60s (20/s) — this concurrency stays comfortably inside
-    // that while cutting real wall-clock time roughly proportionally.
-    const LOOKUP_CONCURRENCY = 8;
+    // time processing was the actual bottleneck for a busy month (a real
+    // September was observed with roughly 1800 total events) — each
+    // lookup is its own network round-trip to Atlas, and waiting for each
+    // one in turn before starting the next made the whole request too
+    // slow to finish even with no rate-limit errors at all. Atlas's own
+    // limit is 1200 requests/60s (20/s) — this concurrency stays inside
+    // that with headroom, while cutting real wall-clock time
+    // substantially versus doing it one at a time.
+    const LOOKUP_CONCURRENCY = 15;
 
     // Relevant events worth resolving further — filtered fast, with no
     // API calls at all, before any of the slower lookup work begins.
-    const relevantEvents = [];
+    // Grouped by candidateId:projectId rather than kept as a flat list:
+    // the SAME candidate can appear for several different metrics in one
+    // month (e.g. CVs Out, then later Interviews) — each of those would
+    // otherwise trigger its own separate owner lookup for the exact same
+    // answer. Grouping means that pair is only ever resolved once, no
+    // matter how many of its metrics need the result.
+    const pairsToResolve = new Map(); // key: `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> }
 
     try {
       while (pagesFetched < MAX_PAGES) {
@@ -336,7 +343,11 @@ module.exports = async (req, res) => {
           if (seenDedupeKeys.has(dedupeKey)) continue;
           seenDedupeKeys.add(dedupeKey);
 
-          relevantEvents.push({ projectId, candidateId, metric });
+          const pairKey = `${candidateId}:${projectId}`;
+          if (!pairsToResolve.has(pairKey)) {
+            pairsToResolve.set(pairKey, { projectId, candidateId, metrics: new Set() });
+          }
+          pairsToResolve.get(pairKey).metrics.add(metric);
         }
 
         const pagination = json.pagination || {};
@@ -346,29 +357,32 @@ module.exports = async (req, res) => {
         if (!cursorDate || !cursorId) break;
       }
 
-      // The slower part: resolving each relevant event's project name
-      // (for the CitSec Options exclusion) and candidate owner (for
-      // attribution), LOOKUP_CONCURRENCY at a time rather than one after
-      // another.
-      for (let i = 0; i < relevantEvents.length; i += LOOKUP_CONCURRENCY) {
+      // The slower part: resolving each UNIQUE candidate+project's
+      // project name (for the CitSec Options exclusion) and candidate
+      // owner (for attribution), LOOKUP_CONCURRENCY at a time — once per
+      // pair, however many metrics that pair needed.
+      const pairs = Array.from(pairsToResolve.values());
+      for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
         if (Date.now() - startTime > TIME_BUDGET_MS) {
           throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s resolving owners — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
         }
-        const batch = relevantEvents.slice(i, i + LOOKUP_CONCURRENCY);
-        const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metric }) => {
+        const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
+        const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
           const projectName = await lookupProjectName(kv, projectId);
           if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
           const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
           const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
           if (!consultantId) return null;
-          return { consultantId, metric };
+          return { consultantId, metrics };
         }));
 
         for (const r of resolved) {
           if (!r) continue;
           if (!monthly[requestedMonthKey][r.consultantId]) monthly[requestedMonthKey][r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-          monthly[requestedMonthKey][r.consultantId][r.metric] += 1;
-          eventsCounted++;
+          for (const metric of r.metrics) {
+            monthly[requestedMonthKey][r.consultantId][metric] += 1;
+            eventsCounted++;
+          }
         }
       }
     } catch (e) {
@@ -376,7 +390,7 @@ module.exports = async (req, res) => {
       return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
     }
 
-    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${relevantEvents.length} relevant, ${eventsCounted} counted`);
+    console.log(`[kpi-live-monthly] ${requestedMonthKey}: ${pagesFetched} page(s), ${eventsSeen} event(s) seen, ${pairsToResolve.size} unique candidate/project pair(s) resolved, ${eventsCounted} counted`);
 
     for (const personId of ALL_PEOPLE_IDS) {
       if (!monthly[requestedMonthKey][personId]) monthly[requestedMonthKey][personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
