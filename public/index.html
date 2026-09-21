@@ -768,14 +768,22 @@ function App() {
   // so moving between months you've already viewed is instant, and only
   // a genuinely new month triggers a fresh live query.
   const [kpiLiveMonthly, setKpiLiveMonthly] = useState({});
+  const [kpiFetchErrors, setKpiFetchErrors] = useState({}); // { [monthKey]: errorMessage } — a month that failed to load, distinct from a month that genuinely has zero activity
   const fetchKpiMonth = useCallback(async (year, month) => {
     const mk = `${year}-${String(month).padStart(2, "0")}`;
     if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
     try {
       const res = await fetch(`/api/league?action=kpi-live-monthly&year=${year}&month=${month}`);
       const d = await res.json();
-      if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
-    } catch (e) { /* silently skip — the page just shows zero/stale for this month */ }
+      if (res.ok && d && d.monthly) {
+        setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
+        setKpiFetchErrors(prev => { if (!prev[mk]) return prev; const next = { ...prev }; delete next[mk]; return next; });
+      } else {
+        setKpiFetchErrors(prev => ({ ...prev, [mk]: (d && d.error) || `Request failed (${res.status})` }));
+      }
+    } catch (e) {
+      setKpiFetchErrors(prev => ({ ...prev, [mk]: e.message || "Network error" }));
+    }
   }, [kpiLiveMonthly]);
   useEffect(() => {
     // Mirrors the exact same "who is being viewed" logic the render code
@@ -4307,6 +4315,31 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           }, y))
         )
       ),
+      // Visible to everyone, not just Super Admin — a failed fetch for a
+      // month currently being viewed shouldn't silently look identical to
+      // that month genuinely having zero activity. Only shows months
+      // actually relevant to what's on screen right now: the single
+      // selected month in the "Everyone" grid, or all 12 months for the
+      // year when a specific person is focused.
+      (() => {
+        const relevantMonthKeys = focusedPerson
+          ? Array.from({ length: 12 }, (_, i) => `${pipelineYear}-${String(i + 1).padStart(2, "0")}`)
+          : [`${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`];
+        const failedMonthKeys = relevantMonthKeys.filter(mk => kpiFetchErrors[mk]);
+        if (failedMonthKeys.length === 0) return null;
+        return React.createElement("div", { style: { marginBottom: 12, padding: "8px 12px", borderRadius: 6, background: "rgba(181,116,79,0.08)", border: "1px solid rgba(181,116,79,0.25)" } },
+          React.createElement("div", { style: { fontSize: 12.5, color: "#B5744F" } },
+            `Couldn't load ${failedMonthKeys.length === 1 ? failedMonthKeys[0] : failedMonthKeys.length + " month(s)"} — this is a genuine load failure, not real zero activity. (${kpiFetchErrors[failedMonthKeys[0]]})`
+          ),
+          React.createElement("button", {
+            onClick: () => failedMonthKeys.forEach(mk => {
+              const [y, m] = mk.split("-").map(Number);
+              fetchKpiMonth(y, m);
+            }),
+            style: { marginTop: 6, padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(181,116,79,0.4)", background: WHITE, color: "#B5744F", fontSize: 12, cursor: "pointer" }
+          }, "Retry")
+        );
+      })(),
       isSuperAdmin && React.createElement("div", { style: { marginBottom: 12 } },
         React.createElement("button", {
           onClick: runAtlasSyncCheck,
