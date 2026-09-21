@@ -769,9 +769,11 @@ function App() {
   // a genuinely new month triggers a fresh live query.
   const [kpiLiveMonthly, setKpiLiveMonthly] = useState({});
   const [kpiFetchErrors, setKpiFetchErrors] = useState({}); // { [monthKey]: errorMessage } — a month that failed to load, distinct from a month that genuinely has zero activity
+  const [kpiFetchLoading, setKpiFetchLoading] = useState({}); // { [monthKey]: true } — a month genuinely still being fetched, distinct from real zeros and from a real failure; a busy month can take 5-10s, this is what makes that visible instead of looking broken or empty
   const fetchKpiMonth = useCallback(async (year, month) => {
     const mk = `${year}-${String(month).padStart(2, "0")}`;
     if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
+    setKpiFetchLoading(prev => ({ ...prev, [mk]: true }));
     try {
       const res = await fetch(`/api/league?action=kpi-live-monthly&year=${year}&month=${month}`);
       const d = await res.json();
@@ -783,6 +785,8 @@ function App() {
       }
     } catch (e) {
       setKpiFetchErrors(prev => ({ ...prev, [mk]: e.message || "Network error" }));
+    } finally {
+      setKpiFetchLoading(prev => { if (!prev[mk]) return prev; const next = { ...prev }; delete next[mk]; return next; });
     }
   }, [kpiLiveMonthly]);
   useEffect(() => {
@@ -4315,6 +4319,20 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           }, y))
         )
       ),
+      // Visible to everyone — a month that's still genuinely loading
+      // (a busy month can take 5-10s to resolve) shouldn't look
+      // identical to real zero activity in the meantime, the same
+      // reasoning as the error banner just below.
+      (() => {
+        const relevantMonthKeys = focusedPerson
+          ? Array.from({ length: 12 }, (_, i) => `${pipelineYear}-${String(i + 1).padStart(2, "0")}`)
+          : [`${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`];
+        const loadingCount = relevantMonthKeys.filter(mk => kpiFetchLoading[mk]).length;
+        if (loadingCount === 0) return null;
+        return React.createElement("div", { style: { marginBottom: 12, padding: "8px 12px", borderRadius: 6, background: "rgba(46,64,91,0.05)", border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 12.5, color: INDIGO_MUTED } },
+          `Loading ${loadingCount === 1 ? relevantMonthKeys.find(mk => kpiFetchLoading[mk]) : loadingCount + " month(s)"} from Atlas — a busy month can take several seconds…`
+        );
+      })(),
       // Visible to everyone, not just Super Admin — a failed fetch for a
       // month currently being viewed shouldn't silently look identical to
       // that month genuinely having zero activity. Only shows months
