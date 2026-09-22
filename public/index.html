@@ -303,6 +303,20 @@ function weekLiveToLegacyShape(data) {
   return { date: data.weekEnd, metric: data.metric, threshold: data.threshold, rows };
 }
 
+// Deliberately separate, brighter variants of Verdigris and Melon-Link,
+// used ONLY for the KPI comparison colour below — not the shared brand
+// constants used everywhere else (team badges, commission status,
+// etc.), which stay exactly as they are. +30% saturation on each,
+// computed precisely (HSL, hue and lightness held constant, saturation
+// scaled by 1.3x), not eyeballed: Verdigris #8EB9B0 (23.5% saturation)
+// -> #88BFB4 (30.5%); Melon-Link #B5744F (40.8% saturation) -> #C47040
+// (53.0%). A genuine, deliberate departure from the literal brand
+// guidelines' "colours must never be altered" rule — a call for Scott
+// to make on his own product, for a functional UI indicator rather than
+// brand marketing collateral, not something to second-guess here.
+const VERDIGRIS_BRIGHT = "#88BFB4";
+const MELON_LINK_BRIGHT = "#C47040";
+
 // A KPI number's own colour against the team average for that same
 // figure — bright, at-a-glance, but on the number itself now, not a
 // box around it (a box was tried first and felt like too much): above
@@ -319,8 +333,8 @@ function avgComparisonColor(value, avgValue) {
   if (avgValue === null || avgValue === undefined || value === null || value === undefined) return null;
   const roundedAvg = Math.round(avgValue);
   const roundedValue = Math.round(value);
-  if (roundedValue > roundedAvg) return VERDIGRIS;
-  if (roundedValue < roundedAvg) return MELON_LINK;
+  if (roundedValue > roundedAvg) return VERDIGRIS_BRIGHT;
+  if (roundedValue < roundedAvg) return MELON_LINK_BRIGHT;
   return MELON;
 }
 
