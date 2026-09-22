@@ -1094,19 +1094,26 @@ function App() {
     }
   }
   async function toggleExcludeConsultant(consultantId) {
-    if (!liveWeekData) return;
+    // Works on whichever week is actually being looked at right now — the
+    // live current week, or a specific past week opened for review from
+    // "Past weeks". Same set-week-config action either way, just aimed
+    // at a different weekKey and refreshing whichever view is active
+    // afterward.
+    const activeWeek = pastWeekData || liveWeekData;
+    if (!activeWeek) return;
     try {
-      const current = liveWeekData.consultants.filter((c) => c.excluded).map((c) => c.consultantId);
+      const current = activeWeek.consultants.filter((c) => c.excluded).map((c) => c.consultantId);
       const excludedConsultants = current.includes(consultantId)
         ? current.filter((id) => id !== consultantId)
         : [...current, consultantId];
       const res = await fetch("/api/league?action=set-week-config", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
-        body: JSON.stringify({ weekKey: liveWeekData.weekKey, metric: liveWeekData.metric, threshold: liveWeekData.threshold, excludedConsultants })
+        body: JSON.stringify({ weekKey: activeWeek.weekKey, metric: activeWeek.metric, threshold: activeWeek.threshold, excludedConsultants })
       });
       if (!res.ok) throw new Error("save failed");
-      await loadLiveWeek();
+      if (pastWeekData) await loadPastWeek(activeWeek.weekKey);
+      else await loadLiveWeek();
     } catch (e) {
       // no-op
     }
@@ -1184,6 +1191,19 @@ function App() {
       .filter((wk) => standingsWeekData[wk])
       .map((wk) => weekLiveToLegacyShape(standingsWeekData[wk]));
   }, [standingsWeekData]);
+  // Weeks that have actually CONCLUDED — everything liveSortedWeeks has,
+  // minus whichever one the backend itself flags as isCurrentWeek. A
+  // week still in progress can keep changing right up until Sunday, so
+  // its points aren't settled yet — Monthly Team Score and the
+  // Quarterly boards should only ever total up genuinely finished
+  // weeks. "This week's leaderboard" below deliberately still uses
+  // liveSortedWeeks (the full set, current week included) — that panel
+  // is meant to show live, in-progress standing, not a settled total.
+  const settledSortedWeeks = useMemo(() => {
+    return allLeagueWeekKeys()
+      .filter((wk) => standingsWeekData[wk] && !standingsWeekData[wk].isCurrentWeek)
+      .map((wk) => weekLiveToLegacyShape(standingsWeekData[wk]));
+  }, [standingsWeekData]);
   const latestWeek = liveSortedWeeks[liveSortedWeeks.length - 1];
   const latestWeekComputed = latestWeek ? computeWeekRows(latestWeek, consultants) : null;
   const latestWeekRows = latestWeekComputed?.rows || [];
@@ -1192,7 +1212,7 @@ function App() {
   const existingWeekForDate = useMemo(() => weeks.find(w => w.date === formDate && w.id !== editingWeekId), [weeks, formDate, editingWeekId]);
   const monthlyTotals = useMemo(() => {
     const byMonth = {};
-    liveSortedWeeks.forEach(w => {
+    settledSortedWeeks.forEach(w => {
       const mk = monthOf(w.date);
       if (!byMonth[mk]) byMonth[mk] = {
         james: 0,
@@ -1206,10 +1226,10 @@ function App() {
       });
     });
     return Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [liveSortedWeeks, consultants]);
+  }, [settledSortedWeeks, consultants]);
   const quarterlyBoards = useMemo(() => {
     const byQuarter = {};
-    liveSortedWeeks.forEach(w => {
+    settledSortedWeeks.forEach(w => {
       const qk = quarterOf(w.date);
       if (!byQuarter[qk]) {
         byQuarter[qk] = {};
@@ -1228,7 +1248,7 @@ function App() {
       });
     });
     return Object.entries(byQuarter).sort((a, b) => b[0].localeCompare(a[0])).map(([qk, obj]) => [qk, Object.values(obj).sort((a, b) => b.net - a.net)]);
-  }, [liveSortedWeeks, consultants]);
+  }, [settledSortedWeeks, consultants]);
   const currentMonthKey = monthOf(todayStr());
   const currentMonthTotals = monthlyTotals.find(([mk]) => mk === currentMonthKey)?.[1] || {
     james: 0,
@@ -2750,7 +2770,7 @@ function App() {
                   isAdmin
                     ? React.createElement(EditableKpiCell, { width: 66, value: r.interviews, isOverridden: r.overridden.interviews, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "interviews", v) })
                     : React.createElement("span", { style: { width: 66, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.interviews),
-                  isAdmin && !viewingPast && React.createElement("button", {
+                  isAdmin && React.createElement("button", {
                     onClick: () => toggleExcludeConsultant(r.consultantId),
                     title: r.excluded ? "Include them in this week's scoring again" : "Exclude them from this week's scoring (e.g. new starter, on leave)",
                     style: { ...ghostStyle, fontSize: 10, padding: "2px 6px", marginTop: 2, color: r.excluded ? VERDIGRIS : MELON_LINK, borderColor: r.excluded ? VERDIGRIS : MELON_LINK }
