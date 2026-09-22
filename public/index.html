@@ -1238,11 +1238,25 @@ function App() {
       .filter((wk) => standingsWeekData[wk] && !standingsWeekData[wk].isCurrentWeek)
       .map((wk) => weekLiveToLegacyShape(standingsWeekData[wk]));
   }, [standingsWeekData]);
+  // The single most recently CONCLUDED week specifically — genuinely
+  // distinct from latestWeek below (which includes the current,
+  // still-open week, for "This week's leaderboard"). "Last week's
+  // winners" is meant to show exactly that: last week, not this one —
+  // kept as its own weekKey (not just the adapted shape settledSortedWeeks
+  // holds) specifically so the panel can link straight into reviewing
+  // that same week over on Weekly Incentive.
+  const lastCompletedWeekKey = useMemo(() => {
+    const keys = allLeagueWeekKeys().filter((wk) => standingsWeekData[wk] && !standingsWeekData[wk].isCurrentWeek);
+    return keys[keys.length - 1];
+  }, [standingsWeekData]);
+  const lastCompletedWeek = lastCompletedWeekKey ? weekLiveToLegacyShape(standingsWeekData[lastCompletedWeekKey]) : null;
+  const lastCompletedWeekComputed = lastCompletedWeek ? computeWeekRows(lastCompletedWeek, consultants) : null;
+  const lastCompletedWeekRows = lastCompletedWeekComputed?.rows || [];
+  const latestWinners = lastCompletedWeekRows.length ? weekTeamWinners(lastCompletedWeekRows) : {};
   const latestWeek = liveSortedWeeks[liveSortedWeeks.length - 1];
   const latestWeekComputed = latestWeek ? computeWeekRows(latestWeek, consultants) : null;
   const latestWeekRows = latestWeekComputed?.rows || [];
   const latestWeekMissing = latestWeekComputed?.missing || [];
-  const latestWinners = latestWeekRows.length ? weekTeamWinners(latestWeekRows) : {};
   const existingWeekForDate = useMemo(() => weeks.find(w => w.date === formDate && w.id !== editingWeekId), [weeks, formDate, editingWeekId]);
   const monthlyTotals = useMemo(() => {
     const byMonth = {};
@@ -2965,32 +2979,41 @@ function App() {
       }, "★ LEADING")))));
     }
 
-    const winnersPanel = latestWeek && /*#__PURE__*/React.createElement(Panel, {
-      style: { flex: 1, minWidth: 260 }
-    }, /*#__PURE__*/React.createElement(SectionTitle, {
-      eyebrow: "Weekly prize",
-      title: "Last week's winners"
-    }), /*#__PURE__*/React.createElement("div", {
-      style: { display: "flex", gap: 16, flexWrap: "wrap" }
-    }, Object.entries(latestWinners).map(([teamId, w]) => /*#__PURE__*/React.createElement("div", {
-      key: teamId,
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        background: "rgba(255,176,140,0.14)",
-        border: `1px solid ${MELON}`,
-        borderRadius: 8,
-        padding: "10px 14px"
-      }
-    }, /*#__PURE__*/React.createElement(Trophy, {
-      size: 18,
-      color: MELON
-    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: { fontFamily: "Georgia, serif", fontSize: 14, color: INDIGO }
-    }, w.name), /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 11.5, color: TEAMS[teamId].color, fontFamily: "'Work Sans', sans-serif", fontWeight: 600 }
-    }, TEAMS[teamId].label, " · ", w.metricValue, latestWeek.metric === METRIC_RATIO ? "%" : "", " ", METRIC_SHORT[latestWeek.metric] || latestWeek.metric.toLowerCase()))))));
+    const winnersPanel = lastCompletedWeek && /*#__PURE__*/React.createElement("div", {
+      style: { flex: 1, minWidth: 260, cursor: "pointer" },
+      onClick: () => { setTab("entry"); loadPastWeek(lastCompletedWeekKey); },
+      title: "Click to see this week's full leaderboard and results"
+    }, /*#__PURE__*/React.createElement(Panel, null,
+      /*#__PURE__*/React.createElement(SectionTitle, {
+        eyebrow: "Weekly prize",
+        title: "Last week's winners"
+      }),
+      /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", gap: 16, flexWrap: "wrap" }
+      }, Object.entries(latestWinners).map(([teamId, w]) => /*#__PURE__*/React.createElement("div", {
+        key: teamId,
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          background: "rgba(255,176,140,0.14)",
+          border: `1px solid ${MELON}`,
+          borderRadius: 8,
+          padding: "10px 14px"
+        }
+      },
+        /*#__PURE__*/React.createElement(Trophy, { size: 18, color: MELON }),
+        /*#__PURE__*/React.createElement("div", null,
+          /*#__PURE__*/React.createElement("div", {
+            style: { fontFamily: "Georgia, serif", fontSize: 14, color: INDIGO }
+          }, w.name),
+          /*#__PURE__*/React.createElement("div", {
+            style: { fontSize: 11.5, color: TEAMS[teamId].color, fontFamily: "'Work Sans', sans-serif", fontWeight: 600 }
+          }, TEAMS[teamId].label, " · ", w.metricValue, lastCompletedWeek.metric === METRIC_RATIO ? "%" : "", " ", METRIC_SHORT[lastCompletedWeek.metric] || lastCompletedWeek.metric.toLowerCase())
+        )
+      ))),
+      React.createElement("div", { style: { fontSize: 11.5, color: INDIGO_MUTED, marginTop: 10 } }, "See full leaderboard & results →")
+    ));
 
     return React.createElement(React.Fragment, null,
       React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
