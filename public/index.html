@@ -2748,9 +2748,26 @@ function App() {
               ),
               React.createElement("input", {
                 type: "number",
-                value: activeWeek && activeWeek.threshold !== null && activeWeek.threshold !== undefined ? activeWeek.threshold : "",
+                // Uncontrolled, not value+onChange — a number input's
+                // onChange fires on every keystroke, which was firing a
+                // full save+reload+Standings-refresh per digit typed
+                // (so typing "60" briefly saved "6" first, and a race
+                // between the two async chains could leave a stale
+                // value showing on Standings). defaultValue + onBlur
+                // saves exactly once, when the user is actually done
+                // editing. The key below forces this input to reset
+                // whenever the viewed week itself changes, since an
+                // uncontrolled input otherwise won't pick up a new
+                // defaultValue on its own.
+                key: activeWeek ? `${activeWeek.weekKey}-threshold` : "threshold-none",
+                defaultValue: activeWeek && activeWeek.threshold !== null && activeWeek.threshold !== undefined ? activeWeek.threshold : "",
                 disabled: !isAdmin || configSaving,
-                onChange: e => setCurrentWeekConfig(activeWeek ? activeWeek.metric : METRIC_CVS_OUT, e.target.value === "" ? null : Number(e.target.value)),
+                onBlur: e => {
+                  const newValue = e.target.value === "" ? null : Number(e.target.value);
+                  const current = activeWeek && activeWeek.threshold !== null && activeWeek.threshold !== undefined ? activeWeek.threshold : null;
+                  if (newValue === current) return; // unchanged — no need to save
+                  setCurrentWeekConfig(activeWeek ? activeWeek.metric : METRIC_CVS_OUT, newValue);
+                },
                 placeholder: (activeWeek ? activeWeek.metric : "") === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
                 style: inputStyle
               })
