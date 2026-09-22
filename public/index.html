@@ -1099,18 +1099,26 @@ function App() {
     }
   }, []);
   async function setCurrentWeekConfig(metric, threshold) {
-    if (!liveWeekData) return;
+    // Works on whichever week is actually being looked at right now — the
+    // live current week, or a specific past week opened for review —
+    // same generalization already applied to toggleExcludeConsultant
+    // just below, for the same reason: correcting a past week's own
+    // metric is a genuine, deliberate director decision, same as
+    // correcting an exclusion or a number.
+    const activeWeek = pastWeekData || liveWeekData;
+    if (!activeWeek) return;
     setConfigSaving(true);
     try {
-      const excludedConsultants = liveWeekData.consultants.filter((c) => c.excluded).map((c) => c.consultantId);
+      const excludedConsultants = activeWeek.consultants.filter((c) => c.excluded).map((c) => c.consultantId);
       const res = await fetch("/api/league?action=set-week-config", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
-        body: JSON.stringify({ weekKey: liveWeekData.weekKey, metric, threshold, excludedConsultants })
+        body: JSON.stringify({ weekKey: activeWeek.weekKey, metric, threshold, excludedConsultants })
       });
       if (!res.ok) throw new Error("save failed");
-      await loadLiveWeek();
-      await refreshStandingsWeek(liveWeekData.weekKey);
+      if (pastWeekData) await loadPastWeek(activeWeek.weekKey);
+      else await loadLiveWeek();
+      await refreshStandingsWeek(activeWeek.weekKey);
     } catch (e) {
       // no-op
     } finally {
@@ -2726,7 +2734,7 @@ function App() {
               React.createElement("label", { style: labelStyle }, "Metric"),
               React.createElement("select", {
                 value: activeWeek ? activeWeek.metric : "",
-                disabled: viewingPast || !isAdmin || configSaving,
+                disabled: !isAdmin || configSaving,
                 onChange: e => setCurrentWeekConfig(e.target.value, activeWeek ? activeWeek.threshold : null),
                 style: inputStyle
               },
@@ -2741,17 +2749,17 @@ function App() {
               React.createElement("input", {
                 type: "number",
                 value: activeWeek && activeWeek.threshold !== null && activeWeek.threshold !== undefined ? activeWeek.threshold : "",
-                disabled: viewingPast || !isAdmin || configSaving,
+                disabled: !isAdmin || configSaving,
                 onChange: e => setCurrentWeekConfig(activeWeek ? activeWeek.metric : METRIC_CVS_OUT, e.target.value === "" ? null : Number(e.target.value)),
                 placeholder: (activeWeek ? activeWeek.metric : "") === METRIC_RATIO ? "e.g. 60" : "e.g. 3",
                 style: inputStyle
               })
             )
           ),
-          viewingPast && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
-            "Viewing a past week — its metric and threshold are fixed as they were scored at the time."
+          viewingPast && isAdmin && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+            "Reviewing a past week — changing its metric or threshold recalculates that week's own ranking and points, which then also updates Standings."
           ),
-          !isAdmin && !viewingPast && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+          !isAdmin && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
             "Only Admins can change this week's metric or threshold — ask Scott or Lee."
           )
         ),
