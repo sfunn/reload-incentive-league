@@ -4356,13 +4356,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
         dueData.people.map((p) => React.createElement("div", {
           key: p.consultantId,
-          style: { display: "flex", alignItems: "baseline", gap: 10 }
+          style: { display: "flex", alignItems: "baseline" }
         },
-          React.createElement("span", { style: { fontWeight: 600, color: INDIGO, fontSize: 14 } }, personDisplayName(p.consultantId)),
+          React.createElement("span", { style: { fontWeight: 600, color: INDIGO, fontSize: 14, width: 200, flexShrink: 0 } }, personDisplayName(p.consultantId)),
           React.createElement("span", { style: { fontWeight: 700, color: INDIGO, fontSize: 15 } }, `£${formatGBP(p.amountDueGBP)}`)
         )),
-        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginTop: 6, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
-          React.createElement("span", { style: { fontWeight: 700, color: INDIGO, fontSize: 14 } }, "Total"),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", marginTop: 6, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("span", { style: { fontWeight: 700, color: INDIGO, fontSize: 14, width: 200, flexShrink: 0 } }, "Total"),
           React.createElement("span", { style: { fontWeight: 700, color: INDIGO, fontSize: 15 } }, `£${formatGBP(dueData.people.reduce((s, p) => s + p.amountDueGBP, 0))}`)
         )
       )
