@@ -303,25 +303,25 @@ function weekLiveToLegacyShape(data) {
   return { date: data.weekEnd, metric: data.metric, threshold: data.threshold, rows };
 }
 
-// A KPI cell's colour against the team average for that same figure —
-// bright, at-a-glance: above average genuinely stands out (green/
-// Verdigris), roughly at average is neutral (orange/Melon), below is a
-// clear flag (red/Melon-Link). Same three-colour convention already
-// established for commission payout status elsewhere in this app
-// (paid/due/withheld), reused here for consistency rather than
-// inventing a second scheme, just built brighter, as asked, since a
-// comparison like this is meant to be glanced at, not studied.
+// A KPI number's own colour against the team average for that same
+// figure — bright, at-a-glance, but on the number itself now, not a
+// box around it (a box was tried first and felt like too much): above
+// average genuinely stands out (green/Verdigris), roughly at average is
+// neutral (orange/Melon), below is a clear flag (red/Melon-Link). Same
+// three-colour convention already established for commission payout
+// status elsewhere in this app (paid/due/withheld), reused here for
+// consistency rather than inventing a second scheme.
 // "At average" uses a whole-number match after rounding both sides —
 // most of these figures are integer counts (CVs, interviews, etc.)
 // compared against a genuinely decimal team average, so an exact,
 // unrounded match would almost never fire in practice.
-function avgComparisonStyle(value, avgValue) {
+function avgComparisonColor(value, avgValue) {
   if (avgValue === null || avgValue === undefined || value === null || value === undefined) return null;
   const roundedAvg = Math.round(avgValue);
   const roundedValue = Math.round(value);
-  if (roundedValue > roundedAvg) return { background: "rgba(142,185,176,0.38)", border: `1.5px solid ${VERDIGRIS}` };
-  if (roundedValue < roundedAvg) return { background: "rgba(181,116,79,0.30)", border: `1.5px solid ${MELON_LINK}` };
-  return { background: "rgba(255,176,140,0.42)", border: `1.5px solid ${MELON}` };
+  if (roundedValue > roundedAvg) return VERDIGRIS;
+  if (roundedValue < roundedAvg) return MELON_LINK;
+  return MELON;
 }
 
 function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue) {
@@ -4527,14 +4527,9 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
     function cellWithAvg(width, value, avgValue, isPercent, bold) {
       const mainText = isPercent ? fmtPipelinePct(value) : value;
       const avgText = avgValue === null || avgValue === undefined ? null : (isPercent ? fmtPipelinePct(avgValue) : Math.round(avgValue * 10) / 10);
-      const comparisonStyle = avgComparisonStyle(value, avgValue);
-      return React.createElement("div", {
-        style: {
-          width, flexShrink: 0, borderRadius: 5, padding: "3px 6px",
-          ...(comparisonStyle || {})
-        }
-      },
-        React.createElement(Cell, { flex: true, bold }, mainText),
+      const comparisonColor = avgComparisonColor(value, avgValue);
+      return React.createElement("div", { style: { width, flexShrink: 0 } },
+        React.createElement(Cell, { flex: true, bold, color: comparisonColor || undefined }, mainText),
         avgText !== null && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 700, marginTop: 2 } }, `avg: ${avgText}`)
       );
     }
@@ -4892,8 +4887,8 @@ function WeekLeaderboardPanel({ week, rows, winners, missing, title, eyebrowPref
 // DISPLAY correction — never touches the underlying weekly Atlas data.
 function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
   const [saving, setSaving] = useState(false);
-  const comparisonStyle = avgComparisonStyle(value, avgValue);
-  return React.createElement("div", { style: { width, flexShrink: 0, borderRadius: 5, padding: "3px 4px", ...(comparisonStyle || {}) } },
+  const comparisonColor = avgComparisonColor(value, avgValue);
+  return React.createElement("div", { style: { width, flexShrink: 0 } },
     React.createElement("input", {
       key: value,
       type: "number",
@@ -4918,8 +4913,8 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
         borderRadius: 4,
         border: `1px solid ${isOverridden ? MELON : INDIGO_HAIRLINE}`,
         background: isOverridden ? "rgba(255,176,140,0.14)" : WHITE,
-        color: INDIGO,
-        fontWeight: isOverridden ? 700 : 400,
+        color: comparisonColor || INDIGO,
+        fontWeight: isOverridden || comparisonColor ? 700 : 400,
         opacity: saving ? 0.5 : 1,
       }
     }),
