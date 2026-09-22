@@ -270,6 +270,39 @@ function recentWeekKeys(n) {
   return keys;
 }
 
+// The Weekly Incentive genuinely started at this specific week — nothing
+// meaningful exists before it, so Standings never needs to look back
+// further than this, no matter how far the calendar year itself goes
+// back. A hardcoded, tightly-scoped constant rather than something
+// configurable, matching the general preference already established
+// throughout this project for exactly this kind of fixed business fact.
+const LEAGUE_START_WEEK_KEY = "2026-W27";
+// All week keys from the league's own start through the current week,
+// oldest first — the complete, bounded set Standings ever needs to
+// fetch. Bounded specifically BECAUSE of LEAGUE_START_WEEK_KEY above:
+// without it, this would grow forever as the calendar year (or years)
+// went on; with it, it only ever grows by one entry per week, forever
+// staying a small, known, fast-to-fetch list.
+function allLeagueWeekKeys() {
+  return recentWeekKeys(60).filter((wk) => wk >= LEAGUE_START_WEEK_KEY).reverse();
+}
+// Converts one ?action=week-live response into the exact shape the
+// existing, proven computeWeekRows/weekTeamWinners functions already
+// expect (see their own definitions above) — deliberately NOT rewriting
+// that scoring logic itself, which decides real points and penalties;
+// only adapting the new live data source's shape to fit the old,
+// unchanged, already-correct algorithm.
+function weekLiveToLegacyShape(data) {
+  const rows = {};
+  for (const c of (Array.isArray(data.consultants) ? data.consultants : [])) {
+    rows[c.consultantId] = {
+      cvs: c.cvsOut, interviews: c.interviews, metricValue: data.metric === METRIC_CVS_OUT ? c.cvsOut : (data.metric === METRIC_RATIO ? (c.cvsOut > 0 ? Math.round((c.interviews / c.cvsOut) * 100) : 0) : c.interviews),
+      team: c.team, excluded: c.excluded,
+    };
+  }
+  return { date: data.weekEnd, metric: data.metric, threshold: data.threshold, rows };
+}
+
 function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue) {
   const stored = kpiOverrides && kpiOverrides[personId] && kpiOverrides[personId][monthKey] && kpiOverrides[personId][monthKey][field];
   return (stored !== undefined && stored !== null) ? { value: stored, isOverridden: true } : { value: computedValue, isOverridden: false };
@@ -665,6 +698,46 @@ function App() {
       setPastWeekLoading(false);
     }
   }, []);
+  // Every week's live data the Standings tab needs, keyed by week key —
+  // acts as a running cache, same principle as the KPI page's own
+  // kpiLiveMonthly: a week already fetched is never re-requested, so
+  // once loaded, Standings stays fast on every subsequent visit. Fetched
+  // ONE AT A TIME, deliberately, not all in parallel — the exact same
+  // reasoning as the KPI page's focused-person 12-month fetch: firing
+  // many requests for many weeks at once risks bursting Atlas's own rate
+  // limit, the same problem solved earlier this session.
+  const [standingsWeekData, setStandingsWeekData] = useState({});
+  const [standingsLoading, setStandingsLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const keys = allLeagueWeekKeys();
+      setStandingsLoading(true);
+      for (const wk of keys) {
+        if (cancelled) break;
+        if (standingsWeekData[wk]) continue;
+        try {
+          const res = await fetch(`/api/league?action=week-live&week=${encodeURIComponent(wk)}`);
+          if (res.ok) {
+            const data = await res.json();
+            // Only store genuinely well-formed responses — an unexpected
+            // or malformed body (e.g. from a network issue returning
+            // something unrelated) is simply skipped, same as any other
+            // failed fetch, rather than stored and crashing downstream
+            // computations that assume a real week-live shape.
+            if (!cancelled && data && Array.isArray(data.consultants)) {
+              setStandingsWeekData((prev) => ({ ...prev, [wk]: data }));
+            }
+          }
+        } catch (e) {
+          // silent -- a single week failing to load just leaves it absent from the totals, rather than blocking every other week
+        }
+      }
+      if (!cancelled) setStandingsLoading(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately only re-runs when the tab is actually opened, not on every standingsWeekData update (which would otherwise re-trigger itself)
+  }, [tab === "standings"]);
   const [liveWeekLoading, setLiveWeekLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [saveState, setSaveState] = useState("idle");
@@ -1100,35 +1173,26 @@ function App() {
     }
   }, [authUser]);
   const sortedWeeks = useMemo(() => [...weeks].sort((a, b) => a.date.localeCompare(b.date)), [weeks]);
-  const latestWeek = sortedWeeks[sortedWeeks.length - 1];
+  // Standings' own live-data equivalent of sortedWeeks — every week from
+  // LEAGUE_START_WEEK_KEY through now that's been fetched so far (see the
+  // standingsWeekData effect above), adapted into the same shape
+  // computeWeekRows already expects, sorted oldest-first same as
+  // sortedWeeks was. Kept deliberately separate from sortedWeeks itself,
+  // which "Ask The Table" below still reads from unchanged.
+  const liveSortedWeeks = useMemo(() => {
+    return allLeagueWeekKeys()
+      .filter((wk) => standingsWeekData[wk])
+      .map((wk) => weekLiveToLegacyShape(standingsWeekData[wk]));
+  }, [standingsWeekData]);
+  const latestWeek = liveSortedWeeks[liveSortedWeeks.length - 1];
   const latestWeekComputed = latestWeek ? computeWeekRows(latestWeek, consultants) : null;
   const latestWeekRows = latestWeekComputed?.rows || [];
   const latestWeekMissing = latestWeekComputed?.missing || [];
   const latestWinners = latestWeekRows.length ? weekTeamWinners(latestWeekRows) : {};
   const existingWeekForDate = useMemo(() => weeks.find(w => w.date === formDate && w.id !== editingWeekId), [weeks, formDate, editingWeekId]);
-  const seasonTotals = useMemo(() => {
-    const totals = {};
-    consultants.forEach(c => {
-      totals[c.id] = {
-        ...c,
-        net: 0,
-        games: 0
-      };
-    });
-    sortedWeeks.forEach(w => {
-      const {
-        rows
-      } = computeWeekRows(w, consultants);
-      rows.forEach(r => {
-        totals[r.id].net += r.net;
-        totals[r.id].games += 1;
-      });
-    });
-    return Object.values(totals).sort((a, b) => b.net - a.net);
-  }, [sortedWeeks, consultants]);
   const monthlyTotals = useMemo(() => {
     const byMonth = {};
-    sortedWeeks.forEach(w => {
+    liveSortedWeeks.forEach(w => {
       const mk = monthOf(w.date);
       if (!byMonth[mk]) byMonth[mk] = {
         james: 0,
@@ -1142,10 +1206,10 @@ function App() {
       });
     });
     return Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [sortedWeeks, consultants]);
+  }, [liveSortedWeeks, consultants]);
   const quarterlyBoards = useMemo(() => {
     const byQuarter = {};
-    sortedWeeks.forEach(w => {
+    liveSortedWeeks.forEach(w => {
       const qk = quarterOf(w.date);
       if (!byQuarter[qk]) {
         byQuarter[qk] = {};
@@ -1164,7 +1228,7 @@ function App() {
       });
     });
     return Object.entries(byQuarter).sort((a, b) => b[0].localeCompare(a[0])).map(([qk, obj]) => [qk, Object.values(obj).sort((a, b) => b.net - a.net)]);
-  }, [sortedWeeks, consultants]);
+  }, [liveSortedWeeks, consultants]);
   const currentMonthKey = monthOf(todayStr());
   const currentMonthTotals = monthlyTotals.find(([mk]) => mk === currentMonthKey)?.[1] || {
     james: 0,
@@ -2717,6 +2781,9 @@ function App() {
   React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED } },
     "This week's leaderboard (🏆 marks each team's own top scorer this week), then monthly team score, then quarterly individual boards, all in one place."
   ),
+  standingsLoading && liveSortedWeeks.length === 0 ? React.createElement(EmptyState, {
+    text: "Loading recent weeks…"
+  }) :
   !latestWeek ? React.createElement(EmptyState, {
     text: "No weeks logged yet. Head to Weekly Incentive to get the league started."
   }) : React.createElement(React.Fragment, null,
