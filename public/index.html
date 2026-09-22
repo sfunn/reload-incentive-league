@@ -4529,8 +4529,8 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       const avgText = avgValue === null || avgValue === undefined ? null : (isPercent ? fmtPipelinePct(avgValue) : Math.round(avgValue * 10) / 10);
       const comparisonColor = avgComparisonColor(value, avgValue);
       return React.createElement("div", { style: { width, flexShrink: 0 } },
-        React.createElement(Cell, { flex: true, bold, color: comparisonColor || undefined }, mainText),
-        avgText !== null && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 700, marginTop: 2 } }, `avg: ${avgText}`)
+        React.createElement(Cell, { flex: true, bold: comparisonColor ? true : bold, fontSize: comparisonColor ? 15 : undefined, color: comparisonColor || undefined }, mainText),
+        avgText !== null && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 400, marginTop: 2 } }, `avg: ${avgText}`)
       );
     }
 
@@ -4817,7 +4817,8 @@ function Cell({
   flex,
   bold,
   color,
-  alignSelf
+  alignSelf,
+  fontSize
 }) {
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4827,7 +4828,7 @@ function Cell({
       flex: flex ? 1 : undefined,
       fontFamily: "'Work Sans', sans-serif",
       fontWeight: bold ? 700 : 400,
-      fontSize: 14,
+      fontSize: fontSize || 14,
       color: color || INDIGO,
       alignSelf: alignSelf || undefined
     }
@@ -4907,7 +4908,7 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
       onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
       style: {
         width: "100%",
-        fontSize: 13,
+        fontSize: comparisonColor ? 15 : 13,
         fontFamily: "'Work Sans', sans-serif",
         padding: "2px 4px",
         borderRadius: 4,
@@ -4918,7 +4919,7 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
         opacity: saving ? 0.5 : 1,
       }
     }),
-    avgValue !== null && avgValue !== undefined && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 700, marginTop: 2 } }, `avg: ${Math.round(avgValue * 10) / 10}`),
+    avgValue !== null && avgValue !== undefined && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 400, marginTop: 2 } }, `avg: ${Math.round(avgValue * 10) / 10}`),
     isOverridden && React.createElement("button", {
       onClick: () => onSave(null),
       title: "Clear this correction and revert to the auto-computed figure",
