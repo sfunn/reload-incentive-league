@@ -738,6 +738,29 @@ function App() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately only re-runs when the tab is actually opened, not on every standingsWeekData update (which would otherwise re-trigger itself)
   }, [tab === "standings"]);
+  // Re-fetches ONE specific week's data and drops it into
+  // standingsWeekData, but ONLY if Standings had already loaded that
+  // week — if it hasn't, there's nothing stale to refresh, the normal
+  // fetch effect above will pick it up correctly whenever it's actually
+  // opened. Needed because a correction made on the Weekly Incentive tab
+  // (an override, an exclusion, a metric change) has no other way to
+  // reach Standings' own separate cached copy of that same week — without
+  // this, a fix made here would silently look unfixed over on Standings
+  // until a full page reload.
+  const refreshStandingsWeek = useCallback(async (weekKey) => {
+    if (!standingsWeekData[weekKey]) return; // nothing cached for this week yet — nothing stale to refresh
+    try {
+      const res = await fetch(`/api/league?action=week-live&week=${encodeURIComponent(weekKey)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.consultants)) {
+          setStandingsWeekData((prev) => ({ ...prev, [weekKey]: data }));
+        }
+      }
+    } catch (e) {
+      // silent — Standings just keeps showing its last-known value for this one week until the next successful refresh
+    }
+  }, [standingsWeekData]);
   const [liveWeekLoading, setLiveWeekLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [saveState, setSaveState] = useState("idle");
@@ -1087,6 +1110,7 @@ function App() {
       });
       if (!res.ok) throw new Error("save failed");
       await loadLiveWeek();
+      await refreshStandingsWeek(liveWeekData.weekKey);
     } catch (e) {
       // no-op
     } finally {
@@ -1114,6 +1138,7 @@ function App() {
       if (!res.ok) throw new Error("save failed");
       if (pastWeekData) await loadPastWeek(activeWeek.weekKey);
       else await loadLiveWeek();
+      await refreshStandingsWeek(activeWeek.weekKey);
     } catch (e) {
       // no-op
     }
@@ -1136,10 +1161,11 @@ function App() {
       if (!res.ok) { setWeekOverrideError(data.error || "Couldn't save that correction."); return; }
       if (liveWeekData && liveWeekData.weekKey === weekKey) await loadLiveWeek();
       if (pastWeekData && pastWeekData.weekKey === weekKey) await loadPastWeek(weekKey);
+      await refreshStandingsWeek(weekKey);
     } catch (e) {
       setWeekOverrideError("Couldn't reach the server — try again.");
     }
-  }, [authUser, liveWeekData, loadLiveWeek]);
+  }, [authUser, liveWeekData, loadLiveWeek, refreshStandingsWeek]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
