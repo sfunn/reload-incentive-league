@@ -708,6 +708,11 @@ function App() {
   // limit, the same problem solved earlier this session.
   const [standingsWeekData, setStandingsWeekData] = useState({});
   const [standingsLoading, setStandingsLoading] = useState(false);
+  // Whether "Last week's winners" has been clicked open into its own
+  // full leaderboard view — no new fetch needed for this at all, since
+  // lastCompletedWeek/lastCompletedWeekRows are already computed from
+  // standingsWeekData, the same data this panel's trophy cards already use.
+  const [showingLastWeekLeaderboard, setShowingLastWeekLeaderboard] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1252,11 +1257,19 @@ function App() {
   const lastCompletedWeek = lastCompletedWeekKey ? weekLiveToLegacyShape(standingsWeekData[lastCompletedWeekKey]) : null;
   const lastCompletedWeekComputed = lastCompletedWeek ? computeWeekRows(lastCompletedWeek, consultants) : null;
   const lastCompletedWeekRows = lastCompletedWeekComputed?.rows || [];
+  // "Last week's winners" — genuinely last week, per lastCompletedWeekRows above.
   const latestWinners = lastCompletedWeekRows.length ? weekTeamWinners(lastCompletedWeekRows) : {};
   const latestWeek = liveSortedWeeks[liveSortedWeeks.length - 1];
   const latestWeekComputed = latestWeek ? computeWeekRows(latestWeek, consultants) : null;
   const latestWeekRows = latestWeekComputed?.rows || [];
   const latestWeekMissing = latestWeekComputed?.missing || [];
+  // "This week's leaderboard"'s OWN trophy icons, deliberately separate
+  // from latestWinners above — this week's own top scorer per team,
+  // computed from latestWeekRows (the current, still-open week), not
+  // last week's. Mixing these up was the exact bug just fixed: this
+  // table's trophy was quietly using last week's winner to decide who
+  // gets the icon this week.
+  const thisWeekWinners = latestWeekRows.length ? weekTeamWinners(latestWeekRows) : {};
   const existingWeekForDate = useMemo(() => weeks.find(w => w.date === formDate && w.id !== editingWeekId), [weeks, formDate, editingWeekId]);
   const monthlyTotals = useMemo(() => {
     const byMonth = {};
@@ -2872,57 +2885,31 @@ function App() {
   !latestWeek ? React.createElement(EmptyState, {
     text: "No weeks logged yet. Head to Weekly Incentive to get the league started."
   }) : React.createElement(React.Fragment, null,
-    React.createElement(Panel, null, /*#__PURE__*/React.createElement(SectionTitle, {
-    eyebrow: `Week ending ${latestWeek.date} — ${latestWeek.metric}`,
-    title: "This week's leaderboard"
-  }), /*#__PURE__*/React.createElement(TableHeader, {
-    cols: ["Rank", "Consultant", "Team", latestWeek.metric === METRIC_CVS_OUT ? "CVs Out" : "Metric", "CVs", "Points"]
-  }), latestWeekRows.map(r => {
-    const isTeamWinner = latestWinners[r.team] && latestWinners[r.team].id === r.id;
-    return /*#__PURE__*/React.createElement(RowLine, {
-    key: r.id,
-    highlighted: r.rank <= 5
-  }, /*#__PURE__*/React.createElement(Cell, {
-    width: 50
-  }, r.rank <= 3 ? /*#__PURE__*/React.createElement(Crown, {
-    size: 14,
-    color: MELON,
-    style: {
-      verticalAlign: "-2px",
-      marginRight: 4
-    }
-  }) : null, r.rank), /*#__PURE__*/React.createElement(Cell, {
-    flex: true
-  }, isTeamWinner && /*#__PURE__*/React.createElement(Trophy, {
-    size: 13,
-    color: MELON,
-    style: { verticalAlign: "-2px", marginRight: 5 }
-  }), r.name), /*#__PURE__*/React.createElement(Cell, {
-    width: 90,
-    color: TEAMS[r.team].color
-  }, TEAMS[r.team].short), /*#__PURE__*/React.createElement(Cell, {
-    width: 70
-  }, r.metricValue, latestWeek.metric === METRIC_RATIO ? "%" : ""), /*#__PURE__*/React.createElement(Cell, {
-    width: 50
-  }, r.cvs), /*#__PURE__*/React.createElement(Cell, {
-    width: 70,
-    bold: true,
-    color: r.net >= 0 ? INDIGO : MELON
-  }, r.net > 0 ? `+${r.net}` : r.net));
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 10,
-      fontSize: 12,
-      color: INDIGO_MUTED
-    }
-  }, latestWeek.metric === METRIC_CVS_OUT ? "Top 5 score league points. Penalties: fewer than 5 CVs Out, or a CV-to-interview ratio below 65%." : "Top 5 score league points. Penalties: fewer than 5 CVs Out, or missed this week's threshold."), latestWeekMissing.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 8,
-      fontSize: 12,
-      color: MELON,
-      fontWeight: 600
-    }
-  }, "Still waiting on: ", teamMissingLabel(latestWeekMissing).join(" · ")))
+    React.createElement(WeekLeaderboardPanel, {
+      week: latestWeek,
+      rows: latestWeekRows,
+      winners: thisWeekWinners,
+      missing: latestWeekMissing,
+      title: "This week's leaderboard"
+    })
+  ),
+  // Opened by clicking "Last week's winners" — the exact same real
+  // leaderboard component as "This week's leaderboard" above, just fed
+  // last week's own rows/winners instead of this week's. No separate
+  // fetch needed: lastCompletedWeek/lastCompletedWeekRows already exist
+  // from computing the trophy cards themselves.
+  showingLastWeekLeaderboard && lastCompletedWeek && React.createElement(React.Fragment, null,
+    React.createElement("div", { style: { display: "flex", justifyContent: "flex-end" } },
+      React.createElement("button", { onClick: () => setShowingLastWeekLeaderboard(false), style: ghostStyle }, "Back to this week's leaderboard")
+    ),
+    React.createElement(WeekLeaderboardPanel, {
+      week: lastCompletedWeek,
+      rows: lastCompletedWeekRows,
+      winners: latestWinners,
+      missing: lastCompletedWeekComputed?.missing || [],
+      title: "Last week's leaderboard",
+      eyebrowPrefix: "Week ending"
+    })
   ),
   monthlyTotals.length === 0 ? /*#__PURE__*/React.createElement(EmptyState, {
     text: "No completed weeks yet — monthly team totals will appear here."
@@ -2981,8 +2968,8 @@ function App() {
 
     const winnersPanel = lastCompletedWeek && /*#__PURE__*/React.createElement("div", {
       style: { flex: 1, minWidth: 260, cursor: "pointer" },
-      onClick: () => { setTab("entry"); loadPastWeek(lastCompletedWeekKey); },
-      title: "Click to see this week's full leaderboard and results"
+      onClick: () => setShowingLastWeekLeaderboard(true),
+      title: "Click to see last week's full leaderboard and results"
     }, /*#__PURE__*/React.createElement(Panel, null,
       /*#__PURE__*/React.createElement(SectionTitle, {
         eyebrow: "Weekly prize",
@@ -4820,6 +4807,51 @@ function Cell({
       alignSelf: alignSelf || undefined
     }
   }, children);
+}
+// A single week's full, ranked leaderboard — rank/crown, consultant name
+// with a trophy if they're their own team's top scorer THAT WEEK, team,
+// metric value, CVs, and points. Extracted as its own reusable component
+// specifically so the exact same table used for "This week's leaderboard"
+// can also be shown for whichever past week someone clicks into from
+// "Last week's winners" — same real leaderboard, not a different,
+// simplified view, just for a different week's data.
+function WeekLeaderboardPanel({ week, rows, winners, missing, title, eyebrowPrefix }) {
+  if (!week) return null;
+  return /*#__PURE__*/React.createElement(Panel, null,
+    /*#__PURE__*/React.createElement(SectionTitle, {
+      eyebrow: `${eyebrowPrefix || "Week ending"} ${week.date} — ${week.metric}`,
+      title
+    }),
+    /*#__PURE__*/React.createElement(TableHeader, {
+      cols: ["Rank", "Consultant", "Team", week.metric === METRIC_CVS_OUT ? "CVs Out" : "Metric", "CVs", "Points"]
+    }),
+    rows.map(r => {
+      const isTeamWinner = winners[r.team] && winners[r.team].id === r.id;
+      return /*#__PURE__*/React.createElement(RowLine, {
+        key: r.id,
+        highlighted: r.rank <= 5
+      },
+        /*#__PURE__*/React.createElement(Cell, { width: 50 },
+          r.rank <= 3 ? /*#__PURE__*/React.createElement(Crown, { size: 14, color: MELON, style: { verticalAlign: "-2px", marginRight: 4 } }) : null,
+          r.rank
+        ),
+        /*#__PURE__*/React.createElement(Cell, { flex: true },
+          isTeamWinner && /*#__PURE__*/React.createElement(Trophy, { size: 13, color: MELON, style: { verticalAlign: "-2px", marginRight: 5 } }),
+          r.name
+        ),
+        /*#__PURE__*/React.createElement(Cell, { width: 90, color: TEAMS[r.team].color }, TEAMS[r.team].short),
+        /*#__PURE__*/React.createElement(Cell, { width: 70 }, r.metricValue, week.metric === METRIC_RATIO ? "%" : ""),
+        /*#__PURE__*/React.createElement(Cell, { width: 50 }, r.cvs),
+        /*#__PURE__*/React.createElement(Cell, { width: 70, bold: true, color: r.net >= 0 ? INDIGO : MELON }, r.net > 0 ? `+${r.net}` : r.net)
+      );
+    }),
+    /*#__PURE__*/React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
+      week.metric === METRIC_CVS_OUT ? "Top 5 score league points. Penalties: fewer than 5 CVs Out, or a CV-to-interview ratio below 65%." : "Top 5 score league points. Penalties: fewer than 5 CVs Out, or missed this week's threshold."
+    ),
+    missing && missing.length > 0 && /*#__PURE__*/React.createElement("div", { style: { marginTop: 8, fontSize: 12, color: MELON, fontWeight: 600 } },
+      "Still waiting on: ", teamMissingLabel(missing).join(" · ")
+    )
+  );
 }
 // An admin-editable version of a Consultant KPIs raw-count figure. Renders
 // a small number input defaulting to the current value (whether that's
