@@ -3780,7 +3780,7 @@ function App() {
         }, c.name))
       )
     ),
-    authUser && commissionViewConsultantId && React.createElement(Panel, null,
+    commissionSubTab !== "due" && authUser && commissionViewConsultantId && React.createElement(Panel, null,
       React.createElement("div", { style: { marginBottom: 16 } },
         React.createElement("div", { style: { fontFamily: "'Work Sans', sans-serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.12em", color: MELON, textTransform: "uppercase", marginBottom: 4 } },
           monthLabel(`${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`)
@@ -3802,7 +3802,7 @@ function App() {
         ))
       )
     ),
-    !authUser ? React.createElement(Panel, null, React.createElement(EmptyState, { text: "Log in to see your commission sheet." })) :
+    commissionSubTab !== "due" && (!authUser ? React.createElement(Panel, null, React.createElement(EmptyState, { text: "Log in to see your commission sheet." })) :
     commissionLoading ? React.createElement(Panel, null, React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…")) :
     commissionError ? React.createElement(Panel, null, React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, commissionError)) :
     !commissionData ? null :
@@ -4307,7 +4307,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           "These brackets only apply to this person for this specific year — changing them never affects other years or other people."
         )
       )
-    ),
+    )),
     commissionSubTab === "due" && React.createElement(Panel, null,
       React.createElement(SectionTitle, {
         eyebrow: "Super Admin only — payroll export",
