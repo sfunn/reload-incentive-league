@@ -110,6 +110,16 @@ const COORDINATORS = [
   { id: "zoe-coordinator", name: "Alexandra" },
 ];
 
+// A display name for anyone the Commission Due page might list —
+// consultants, team leads (both in DEAL_CONSULTANTS), or coordinators
+// (their own separate array above). Falls back to the raw id itself
+// rather than showing nothing, so a genuinely unrecognised id is still
+// visible on the page rather than silently disappearing.
+function personDisplayName(consultantId) {
+  const found = DEAL_CONSULTANTS.find((c) => c.id === consultantId) || COORDINATORS.find((c) => c.id === consultantId);
+  return found ? found.name : consultantId;
+}
+
 // How a deal came in — set by either Scott/Lee (admin table) or the
 // consultant themselves (their own Commission page).
 const SOURCE_OPTIONS = ["Cold Call", "InMail", "Email Campaigns", "Recommendation", "WhatsApp", "Octopus", "Other"];
@@ -743,6 +753,13 @@ function App() {
   // limit, the same problem solved earlier this session.
   const [standingsWeekData, setStandingsWeekData] = useState({});
   const [standingsLoading, setStandingsLoading] = useState(false);
+  // Commission Due (Super Admin only, payroll export) tab state.
+  const [dueMonth, setDueMonth] = useState(new Date().getUTCMonth() + 1);
+  const [dueYear, setDueYear] = useState(new Date().getUTCFullYear());
+  const [dueData, setDueData] = useState(null);
+  const [dueLoading, setDueLoading] = useState(false);
+  const [dueError, setDueError] = useState(null);
+  const [dueCopyState, setDueCopyState] = useState("idle"); // idle | copied
   // Whether "Last week's winners" has been clicked open into its own
   // full leaderboard view — no new fetch needed for this at all, since
   // lastCompletedWeek/lastCompletedWeekRows are already computed from
@@ -2233,6 +2250,32 @@ function App() {
     if (tab === "commission") loadCommission();
   }, [tab, commissionViewConsultantId, commissionYear]);
 
+  // Commission Due (Super Admin, payroll export): everyone's commission
+  // actually due in one specific month, on one page, for pasting
+  // straight into an email to payroll — deliberately no per-deal
+  // breakdown, just name and total, since that's all payroll needs.
+  const loadCommissionDue = useCallback(async () => {
+    if (!authUser || !isSuperAdmin) return;
+    setDueLoading(true);
+    setDueError(null);
+    try {
+      const res = await fetch(`/api/commission?action=compute-all-due&year=${dueYear}&month=${dueMonth}`, {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
+      const data = await res.json();
+      if (!res.ok || !data || !Array.isArray(data.people)) throw new Error((data && data.error) || "Couldn't load");
+      setDueData(data);
+    } catch (e) {
+      setDueError(e.message || "Couldn't load commission due");
+      setDueData(null);
+    } finally {
+      setDueLoading(false);
+    }
+  }, [authUser, isSuperAdmin, dueYear, dueMonth]);
+  useEffect(() => {
+    if (tab === "commissiondue") loadCommissionDue();
+  }, [tab, dueYear, dueMonth]);
+
   async function saveBands() {
     setBandsSaving(true);
     setBandsError("");
@@ -2537,6 +2580,9 @@ function App() {
   }] : []), ...(authUser && isSuperAdmin ? [{
     id: "managelogins",
     label: "Manage Logins"
+  }, {
+    id: "commissiondue",
+    label: "Commission Due"
   }] : []), {
     id: "ask",
     label: "Ask The Table"
@@ -3080,6 +3126,66 @@ function App() {
     bold: true,
     color: r.net >= 0 ? INDIGO : MELON
   }, r.net > 0 ? `+${r.net}` : r.net)))))
+), tab === "commissiondue" && /*#__PURE__*/React.createElement("div", {
+  style: { display: "flex", flexDirection: "column", gap: 20 }
+},
+  /*#__PURE__*/React.createElement(Panel, null,
+    /*#__PURE__*/React.createElement(SectionTitle, {
+      eyebrow: "Super Admin only — payroll export",
+      title: "Commission Due"
+    }),
+    /*#__PURE__*/React.createElement("div", { style: { color: INDIGO_MUTED, fontSize: 13, marginBottom: 16 } },
+      "Everyone's total commission actually due in one specific month, on one page — pick a month, then copy and paste straight into an email to payroll."
+    ),
+    /*#__PURE__*/React.createElement("div", { style: { display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 20, flexWrap: "wrap" } },
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("label", { style: labelStyle }, "Month"),
+        /*#__PURE__*/React.createElement("select", {
+          value: dueMonth,
+          onChange: (e) => setDueMonth(Number(e.target.value)),
+          style: inputStyle
+        }, ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].map((m, i) =>
+          /*#__PURE__*/React.createElement("option", { key: i, value: i + 1 }, m)
+        ))
+      ),
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("label", { style: labelStyle }, "Year"),
+        /*#__PURE__*/React.createElement("select", {
+          value: dueYear,
+          onChange: (e) => setDueYear(Number(e.target.value)),
+          style: inputStyle
+        }, [dueYear - 2, dueYear - 1, dueYear, dueYear + 1].filter((y, i, arr) => arr.indexOf(y) === i).sort().map((y) =>
+          /*#__PURE__*/React.createElement("option", { key: y, value: y }, y)
+        ))
+      ),
+      dueData && dueData.people.length > 0 && /*#__PURE__*/React.createElement("button", {
+        onClick: () => {
+          const rows = dueData.people.map((p) => `${personDisplayName(p.consultantId)}\t£${p.amountDueGBP.toFixed(2)}`);
+          const text = rows.join("\n");
+          navigator.clipboard.writeText(text).then(() => {
+            setDueCopyState("copied");
+            setTimeout(() => setDueCopyState("idle"), 2000);
+          });
+        },
+        style: { ...ghostStyle, background: dueCopyState === "copied" ? "rgba(142,185,176,0.25)" : undefined }
+      }, dueCopyState === "copied" ? "Copied!" : "Copy for payroll")
+    ),
+
+    dueLoading ? /*#__PURE__*/React.createElement(EmptyState, { text: "Loading…" }) :
+    dueError ? /*#__PURE__*/React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, dueError) :
+    !dueData || dueData.people.length === 0 ? /*#__PURE__*/React.createElement(EmptyState, { text: "Nobody has any commission due this month." }) :
+    /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement(TableHeader, { cols: ["Name", "Amount Due"] }),
+      dueData.people.map((p) => /*#__PURE__*/React.createElement(RowLine, { key: p.consultantId },
+        /*#__PURE__*/React.createElement(Cell, { flex: true }, personDisplayName(p.consultantId)),
+        /*#__PURE__*/React.createElement(Cell, { width: 140, bold: true }, `£${p.amountDueGBP.toFixed(2)}`)
+      )),
+      /*#__PURE__*/React.createElement(RowLine, { key: "total" },
+        /*#__PURE__*/React.createElement(Cell, { flex: true, bold: true }, "Total"),
+        /*#__PURE__*/React.createElement(Cell, { width: 140, bold: true }, `£${dueData.people.reduce((s, p) => s + p.amountDueGBP, 0).toFixed(2)}`)
+      )
+    )
+  )
 ), tab === "ask" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
