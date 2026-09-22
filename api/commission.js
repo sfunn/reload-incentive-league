@@ -182,6 +182,190 @@ const DEFAULT_FLAT_RATE = 500;
 // rather than the tiered bracket system consultants use.
 const COORDINATOR_IDS = new Set(["izzy-coordinator", "zoe-coordinator"]);
 
+// Byte-identical copies of the consultant/team-lead rosters from
+// league.js — needed here only for ?action=compute-all-due, to know
+// who to loop over. Kept as an exact copy (same convention already used
+// elsewhere in this project for things like isoWeekKey) rather than
+// importing across API files, since each serverless function here is
+// self-contained.
+const DEFAULT_TEAM_BY_CONSULTANT = {
+  "alex-silverman": "james",
+  "ash-thiara": "james",
+  "jack-thompson": "james",
+  "max-hart": "james",
+  "oleg-sokyrka": "james",
+  "alex-aparo": "josh",
+  "jack-routledge": "josh",
+  "joe-purton": "josh",
+  "josh-davis": "josh",
+  "natasha-barnard": "josh",
+};
+const TEAM_LEAD_BY_CONSULTANT = {
+  "james-lancer": "james",
+  "josh-stark": "josh",
+};
+
+// The full commission computation for ONE person, for ONE year —
+// extracted out of the ?action=compute handler below so it can be
+// reused by ?action=compute-all-due (the "everyone's commission due
+// this month, for payroll" page) without duplicating this calculation
+// a second time. This is the exact same logic, unchanged, just no
+// longer inline inside the request handler — the ONLY difference from
+// before is that this returns a plain object instead of calling
+// res.status(200).json(...) directly, so a caller can either respond
+// with it (the single-person endpoint) or fold it into a loop over
+// everyone (the new one).
+function computePersonCommission(consultantId, year, allRecords, allRates, placements, allSettings) {
+  const personSettings = allSettings[consultantId] || {};
+
+  // --- COORDINATOR: flat fee per deal they're manually assigned to ---
+  if (COORDINATOR_IDS.has(consultantId)) {
+    const flatRate =
+      carryForwardValue(personSettings.flatRateByYear, year) || DEFAULT_FLAT_RATE;
+
+    const yearRecords = allRecords.filter((r) => effectiveYear(r, placements) === year && r.coordinatorId === consultantId);
+    const withOrderDate = yearRecords.map((r) => {
+      const placement = r.placementId ? placements[r.placementId] : null;
+      const orderDate = (placement && placement.startDate) || r.feeDate;
+      const candidateName = (placement && placement.candidateName) || r.notes || null;
+      const startDate = (placement && placement.startDate) || r.feeDate || null;
+      const hasPlacementName = !!(placement && placement.candidateName);
+      const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+      return { ...r, orderDate, candidateName, startDate, hasPlacementName, clientCompanyName };
+    });
+    withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+
+    const lines = withOrderDate.map((r) => ({
+      feeId: r.feeId,
+      splitId: r.splitId,
+      feeDate: r.feeDate,
+      startDate: r.startDate,
+      commission: flatRate,
+      paid: r.paid,
+      paidMarkedAt: r.paidMarkedAt,
+      source: r.source || null,
+      candidateName: r.candidateName,
+      clientCompanyName: r.clientCompanyName,
+      originalCurrency: r.currency,
+      originalAmount: r.totalAmount,
+      usdAmount: convertToUSDEquivalent(r, allRates),
+      monthOverrides: r.monthOverrides || {},
+      hasPlacementName: r.hasPlacementName,
+    }));
+    const linesWithSchedule = lines.map((l) => ({ ...l, payout: singleMonthPayout(l) }));
+    const totalCommission = lines.reduce((sum, l) => sum + l.commission, 0);
+    const placementBreakdown = {
+      placements: {
+        count: lines.filter((l) => l.hasPlacementName).length,
+        totalCommission: lines.filter((l) => l.hasPlacementName).reduce((s, l) => s + l.commission, 0),
+      },
+      onsiteFees: {
+        count: lines.filter((l) => !l.hasPlacementName).length,
+        totalCommission: lines.filter((l) => !l.hasPlacementName).reduce((s, l) => s + l.commission, 0),
+      },
+    };
+
+    return {
+      consultantId,
+      year,
+      isCoordinator: true,
+      flatRate,
+      dealCount: placementBreakdown.placements.count, // genuine placements only, never onsite fees -- matches every other "deals" count in this app
+      totalCommission,
+      target: (personSettings.targets && personSettings.targets[year]) || null,
+      lines: linesWithSchedule,
+      heldBackCount: 0,
+      placementBreakdown,
+    };
+  }
+
+  // --- CONSULTANT: tiered brackets, cumulative through the year ---
+  // A bracket schedule set for a year carries forward to every later
+  // year automatically, until a new one is explicitly saved for some
+  // later year — e.g. a promotion at the end of 2026 that changes 2027
+  // onward, without touching 2026's own numbers. Falls back to the
+  // standard ladder only if this person has never had any year set.
+  const bands = carryForwardValue(personSettings.bandsByYear, year) || STANDARD_BANDS;
+  const target = (personSettings.targets && personSettings.targets[year]) || null;
+
+  const yearRecords = allRecords.filter(
+    (r) => effectiveYear(r, placements) === year && r.consultantId === consultantId
+  );
+
+  // Order by placement start date where we have it; fall back to the
+  // fee's own date if the placement webhook hasn't given us a start date
+  // for that deal yet.
+  const withOrderDate = yearRecords.map((r) => {
+    const placement = r.placementId ? placements[r.placementId] : null;
+    const orderDate = (placement && placement.startDate) || r.feeDate;
+    const candidateName = (placement && placement.candidateName) || r.notes || null;
+    const startDate = (placement && placement.startDate) || r.feeDate || null;
+    const hasPlacementName = !!(placement && placement.candidateName);
+    const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
+    return { ...r, orderDate, candidateName, startDate, hasPlacementName, clientCompanyName };
+  });
+  withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+
+  const dealsForEngine = withOrderDate.map((r) => {
+    const uplift = appliesNatashaCitadelUplift(r, year);
+    const rawGbp = convertToGBP(r, allRates);
+    const rawUsd = convertToUSDEquivalent(r, allRates);
+    return {
+      feeId: r.feeId,
+      splitId: r.splitId,
+      gbpAmount: (uplift && rawGbp !== null) ? rawGbp * SPECIAL_RATE_MULTIPLIER : rawGbp,
+      feeDate: r.feeDate,
+      startDate: r.startDate,
+      paid: r.paid,
+      paidMarkedAt: r.paidMarkedAt,
+      source: r.source,
+      candidateName: r.candidateName,
+      clientCompanyName: r.clientCompanyName,
+      originalCurrency: r.currency,
+      originalAmount: r.totalAmount,
+      usdAmount: (uplift && rawUsd !== null) ? rawUsd * SPECIAL_RATE_MULTIPLIER : rawUsd,
+      monthOverrides: r.monthOverrides || {},
+      hasPlacementName: r.hasPlacementName,
+    };
+  });
+
+  const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
+  const usableDeals = dealsForEngine.filter((d) => d.gbpAmount !== null);
+
+  const { lines, totalGBP, totalCommission } = computeCommissionLines(usableDeals, bands);
+  const linesWithSchedule = lines.map((l) => ({ ...l, payout: payoutSchedule(l) }));
+
+  // A single deal can split into multiple lines across bracket boundaries,
+  // so count DISTINCT deals (by feeId+splitId), not lines, while still
+  // summing commission across every line for the £ totals.
+  const dealKey = (l) => `${l.feeId}|${l.splitId}`;
+  const placementLines = lines.filter((l) => l.hasPlacementName);
+  const onsiteLines = lines.filter((l) => !l.hasPlacementName);
+  const placementBreakdown = {
+    placements: {
+      count: new Set(placementLines.map(dealKey)).size,
+      totalCommission: placementLines.reduce((s, l) => s + l.commission, 0),
+    },
+    onsiteFees: {
+      count: new Set(onsiteLines.map(dealKey)).size,
+      totalCommission: onsiteLines.reduce((s, l) => s + l.commission, 0),
+    },
+  };
+
+  return {
+    consultantId,
+    year,
+    isCoordinator: false,
+    bands,
+    target,
+    totalGBP,
+    totalCommission,
+    lines: linesWithSchedule,
+    heldBackCount: heldBack, // deals whose currency has no GBP rate set yet for their month
+    placementBreakdown,
+  };
+}
+
 function monthKeyFromDateStr(dateStr) {
   const d = dateStr ? new Date(dateStr) : new Date();
   const y = d.getUTCFullYear();
@@ -361,154 +545,60 @@ module.exports = async (req, res) => {
     const allRates = (await kv.get(FX_KEY)) || {};
     const placements = (await kv.get(PLACEMENTS_KEY)) || {};
     const allSettings = (await kv.get(SETTINGS_KEY)) || {};
-    const personSettings = allSettings[consultantId] || {};
 
-    // --- COORDINATOR: flat fee per deal they're manually assigned to ---
-    if (COORDINATOR_IDS.has(consultantId)) {
-      const flatRate =
-        carryForwardValue(personSettings.flatRateByYear, year) || DEFAULT_FLAT_RATE;
+    const result = computePersonCommission(consultantId, year, allRecords, allRates, placements, allSettings);
+    return res.status(200).json(result);
+  }
 
-      const yearRecords = allRecords.filter((r) => effectiveYear(r, placements) === year && r.coordinatorId === consultantId);
-      const withOrderDate = yearRecords.map((r) => {
-        const placement = r.placementId ? placements[r.placementId] : null;
-        const orderDate = (placement && placement.startDate) || r.feeDate;
-        const candidateName = (placement && placement.candidateName) || r.notes || null;
-        const startDate = (placement && placement.startDate) || r.feeDate || null;
-        const hasPlacementName = !!(placement && placement.candidateName);
-        const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
-        return { ...r, orderDate, candidateName, startDate, hasPlacementName, clientCompanyName };
-      });
-      withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+  // --- GET compute-all-due: Super Admin only. Everyone's total commission
+  // actually due in one specific calendar month, for handing to payroll. ---
+  if (req.method === "GET" && action === "compute-all-due") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
 
-      const lines = withOrderDate.map((r) => ({
-        feeId: r.feeId,
-        splitId: r.splitId,
-        feeDate: r.feeDate,
-        startDate: r.startDate,
-        commission: flatRate,
-        paid: r.paid,
-        paidMarkedAt: r.paidMarkedAt,
-        source: r.source || null,
-        candidateName: r.candidateName,
-        clientCompanyName: r.clientCompanyName,
-        originalCurrency: r.currency,
-        originalAmount: r.totalAmount,
-        usdAmount: convertToUSDEquivalent(r, allRates),
-        monthOverrides: r.monthOverrides || {},
-        hasPlacementName: r.hasPlacementName,
-      }));
-      const linesWithSchedule = lines.map((l) => ({ ...l, payout: singleMonthPayout(l) }));
-      const totalCommission = lines.reduce((sum, l) => sum + l.commission, 0);
-      const placementBreakdown = {
-        placements: {
-          count: lines.filter((l) => l.hasPlacementName).length,
-          totalCommission: lines.filter((l) => l.hasPlacementName).reduce((s, l) => s + l.commission, 0),
-        },
-        onsiteFees: {
-          count: lines.filter((l) => !l.hasPlacementName).length,
-          totalCommission: lines.filter((l) => !l.hasPlacementName).reduce((s, l) => s + l.commission, 0),
-        },
-      };
+    const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getUTCFullYear();
+    const month = req.query.month ? parseInt(req.query.month, 10) : new Date().getUTCMonth() + 1; // 1-12
 
-      return res.status(200).json({
-        consultantId,
-        year,
-        isCoordinator: true,
-        flatRate,
-        dealCount: placementBreakdown.placements.count, // genuine placements only, never onsite fees -- matches every other "deals" count in this app
-        totalCommission,
-        target: (personSettings.targets && personSettings.targets[year]) || null,
-        lines: linesWithSchedule,
-        heldBackCount: 0,
-        placementBreakdown,
-      });
+    const allRecords = (await kv.get(RECORDS_KEY)) || [];
+    const allRates = (await kv.get(FX_KEY)) || {};
+    const placements = (await kv.get(PLACEMENTS_KEY)) || {};
+    const allSettings = (await kv.get(SETTINGS_KEY)) || {};
+
+    const everyoneIds = [
+      ...Object.keys(DEFAULT_TEAM_BY_CONSULTANT),
+      ...Object.keys(TEAM_LEAD_BY_CONSULTANT),
+      ...COORDINATOR_IDS,
+    ];
+
+    const people = [];
+    for (const consultantId of everyoneIds) {
+      let dueAmount = 0;
+      // A deal's own commission YEAR (effectiveYear, based on its
+      // placement start date) is a different thing from when its 4-
+      // month installment schedule actually starts (paidMarkedAt, when
+      // the invoice was genuinely settled) — a deal counted in one
+      // commission year can still have installments landing well into
+      // the next. Checking year-1 through year+1 covers the realistic
+      // range without assuming the two always line up.
+      for (const y of [year - 1, year, year + 1]) {
+        const result = computePersonCommission(consultantId, y, allRecords, allRates, placements, allSettings);
+        for (const line of result.lines) {
+          for (const installment of line.payout) {
+            if (!installment.paidDate || installment.status === "withheld") continue;
+            const d = new Date(installment.paidDate);
+            if (d.getUTCFullYear() === year && d.getUTCMonth() + 1 === month) {
+              dueAmount += installment.amount;
+            }
+          }
+        }
+      }
+      if (dueAmount > 0.005) {
+        people.push({ consultantId, amountDueGBP: Math.round(dueAmount * 100) / 100 });
+      }
     }
 
-    // --- CONSULTANT: tiered brackets, cumulative through the year ---
-    // A bracket schedule set for a year carries forward to every later
-    // year automatically, until a new one is explicitly saved for some
-    // later year — e.g. a promotion at the end of 2026 that changes 2027
-    // onward, without touching 2026's own numbers. Falls back to the
-    // standard ladder only if this person has never had any year set.
-    const bands = carryForwardValue(personSettings.bandsByYear, year) || STANDARD_BANDS;
-    const target = (personSettings.targets && personSettings.targets[year]) || null;
-
-    const yearRecords = allRecords.filter(
-      (r) => effectiveYear(r, placements) === year && r.consultantId === consultantId
-    );
-
-    // Order by placement start date where we have it; fall back to the
-    // fee's own date if the placement webhook hasn't given us a start date
-    // for that deal yet.
-    const withOrderDate = yearRecords.map((r) => {
-      const placement = r.placementId ? placements[r.placementId] : null;
-      const orderDate = (placement && placement.startDate) || r.feeDate;
-      const candidateName = (placement && placement.candidateName) || r.notes || null;
-      const startDate = (placement && placement.startDate) || r.feeDate || null;
-      const hasPlacementName = !!(placement && placement.candidateName);
-      const clientCompanyName = (placement && placement.clientCompanyName) || r.projectClientName || null;
-      return { ...r, orderDate, candidateName, startDate, hasPlacementName, clientCompanyName };
-    });
-    withOrderDate.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
-
-    const dealsForEngine = withOrderDate.map((r) => {
-      const uplift = appliesNatashaCitadelUplift(r, year);
-      const rawGbp = convertToGBP(r, allRates);
-      const rawUsd = convertToUSDEquivalent(r, allRates);
-      return {
-        feeId: r.feeId,
-        splitId: r.splitId,
-        gbpAmount: (uplift && rawGbp !== null) ? rawGbp * SPECIAL_RATE_MULTIPLIER : rawGbp,
-        feeDate: r.feeDate,
-        startDate: r.startDate,
-        paid: r.paid,
-        paidMarkedAt: r.paidMarkedAt,
-        source: r.source,
-        candidateName: r.candidateName,
-        clientCompanyName: r.clientCompanyName,
-        originalCurrency: r.currency,
-        originalAmount: r.totalAmount,
-        usdAmount: (uplift && rawUsd !== null) ? rawUsd * SPECIAL_RATE_MULTIPLIER : rawUsd,
-        monthOverrides: r.monthOverrides || {},
-        hasPlacementName: r.hasPlacementName,
-      };
-    });
-
-    const heldBack = dealsForEngine.filter((d) => d.gbpAmount === null).length;
-    const usableDeals = dealsForEngine.filter((d) => d.gbpAmount !== null);
-
-    const { lines, totalGBP, totalCommission } = computeCommissionLines(usableDeals, bands);
-    const linesWithSchedule = lines.map((l) => ({ ...l, payout: payoutSchedule(l) }));
-
-    // A single deal can split into multiple lines across bracket boundaries,
-    // so count DISTINCT deals (by feeId+splitId), not lines, while still
-    // summing commission across every line for the £ totals.
-    const dealKey = (l) => `${l.feeId}|${l.splitId}`;
-    const placementLines = lines.filter((l) => l.hasPlacementName);
-    const onsiteLines = lines.filter((l) => !l.hasPlacementName);
-    const placementBreakdown = {
-      placements: {
-        count: new Set(placementLines.map(dealKey)).size,
-        totalCommission: placementLines.reduce((s, l) => s + l.commission, 0),
-      },
-      onsiteFees: {
-        count: new Set(onsiteLines.map(dealKey)).size,
-        totalCommission: onsiteLines.reduce((s, l) => s + l.commission, 0),
-      },
-    };
-
-    return res.status(200).json({
-      consultantId,
-      year,
-      isCoordinator: false,
-      bands,
-      target,
-      totalGBP,
-      totalCommission,
-      lines: linesWithSchedule,
-      heldBackCount: heldBack, // deals whose currency has no GBP rate set yet for their month
-      placementBreakdown,
-    });
+    people.sort((a, b) => b.amountDueGBP - a.amountDueGBP);
+    return res.status(200).json({ year, month, people });
   }
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
