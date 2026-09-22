@@ -303,6 +303,27 @@ function weekLiveToLegacyShape(data) {
   return { date: data.weekEnd, metric: data.metric, threshold: data.threshold, rows };
 }
 
+// A KPI cell's colour against the team average for that same figure —
+// bright, at-a-glance: above average genuinely stands out (green/
+// Verdigris), roughly at average is neutral (orange/Melon), below is a
+// clear flag (red/Melon-Link). Same three-colour convention already
+// established for commission payout status elsewhere in this app
+// (paid/due/withheld), reused here for consistency rather than
+// inventing a second scheme, just built brighter, as asked, since a
+// comparison like this is meant to be glanced at, not studied.
+// "At average" uses a whole-number match after rounding both sides —
+// most of these figures are integer counts (CVs, interviews, etc.)
+// compared against a genuinely decimal team average, so an exact,
+// unrounded match would almost never fire in practice.
+function avgComparisonStyle(value, avgValue) {
+  if (avgValue === null || avgValue === undefined || value === null || value === undefined) return null;
+  const roundedAvg = Math.round(avgValue);
+  const roundedValue = Math.round(value);
+  if (roundedValue > roundedAvg) return { background: "rgba(142,185,176,0.38)", border: `1.5px solid ${VERDIGRIS}` };
+  if (roundedValue < roundedAvg) return { background: "rgba(181,116,79,0.30)", border: `1.5px solid ${MELON_LINK}` };
+  return { background: "rgba(255,176,140,0.42)", border: `1.5px solid ${MELON}` };
+}
+
 function kpiOverrideValue(kpiOverrides, personId, monthKey, field, computedValue) {
   const stored = kpiOverrides && kpiOverrides[personId] && kpiOverrides[personId][monthKey] && kpiOverrides[personId][monthKey][field];
   return (stored !== undefined && stored !== null) ? { value: stored, isOverridden: true } : { value: computedValue, isOverridden: false };
@@ -2467,11 +2488,14 @@ function App() {
   }
   // Colour coding for a payout month chip, matching the Excel convention:
   // green = already paid, orange = due this real calendar month,
-  // red = withheld (a fine), grey = future / not due yet.
+  // red = withheld (a fine), grey = future / not due yet. Brightened
+  // (higher tint opacity, plus a solid border in the full brand colour)
+  // to genuinely stand out at a glance, same request and same treatment
+  // as the new KPI average-comparison colouring just below.
   function payoutStatusStyle(status) {
-    if (status === "paid") return { background: "rgba(142,185,176,0.25)", color: INDIGO };
-    if (status === "due") return { background: "rgba(255,176,140,0.35)", color: INDIGO };
-    if (status === "withheld") return { background: "rgba(181,116,79,0.20)", color: MELON_LINK };
+    if (status === "paid") return { background: "rgba(142,185,176,0.42)", color: INDIGO, border: `1.5px solid ${VERDIGRIS}` };
+    if (status === "due") return { background: "rgba(255,176,140,0.48)", color: INDIGO, border: `1.5px solid ${MELON}` };
+    if (status === "withheld") return { background: "rgba(181,116,79,0.32)", color: MELON_LINK, border: `1.5px solid ${MELON_LINK}` };
     return { background: "rgba(46,64,91,0.05)", color: INDIGO_MUTED };
   }
 
@@ -4503,9 +4527,15 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
     function cellWithAvg(width, value, avgValue, isPercent, bold) {
       const mainText = isPercent ? fmtPipelinePct(value) : value;
       const avgText = avgValue === null || avgValue === undefined ? null : (isPercent ? fmtPipelinePct(avgValue) : Math.round(avgValue * 10) / 10);
-      return React.createElement(Cell, { width, bold },
-        mainText,
-        avgText !== null && React.createElement("div", { style: { fontSize: 10, color: INDIGO_MUTED, fontWeight: 400, marginTop: 1 } }, `avg: ${avgText}`)
+      const comparisonStyle = avgComparisonStyle(value, avgValue);
+      return React.createElement("div", {
+        style: {
+          width, flexShrink: 0, borderRadius: 5, padding: "3px 6px",
+          ...(comparisonStyle || {})
+        }
+      },
+        React.createElement(Cell, { flex: true, bold }, mainText),
+        avgText !== null && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 700, marginTop: 2 } }, `avg: ${avgText}`)
       );
     }
 
@@ -4862,7 +4892,8 @@ function WeekLeaderboardPanel({ week, rows, winners, missing, title, eyebrowPref
 // DISPLAY correction — never touches the underlying weekly Atlas data.
 function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
   const [saving, setSaving] = useState(false);
-  return React.createElement("div", { style: { width, flexShrink: 0 } },
+  const comparisonStyle = avgComparisonStyle(value, avgValue);
+  return React.createElement("div", { style: { width, flexShrink: 0, borderRadius: 5, padding: "3px 4px", ...(comparisonStyle || {}) } },
     React.createElement("input", {
       key: value,
       type: "number",
@@ -4892,7 +4923,7 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
         opacity: saving ? 0.5 : 1,
       }
     }),
-    avgValue !== null && avgValue !== undefined && React.createElement("div", { style: { fontSize: 10, color: INDIGO_MUTED, fontWeight: 400, marginTop: 1 } }, `avg: ${Math.round(avgValue * 10) / 10}`),
+    avgValue !== null && avgValue !== undefined && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 700, marginTop: 2 } }, `avg: ${Math.round(avgValue * 10) / 10}`),
     isOverridden && React.createElement("button", {
       onClick: () => onSave(null),
       title: "Clear this correction and revert to the auto-computed figure",
