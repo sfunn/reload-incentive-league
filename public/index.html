@@ -766,6 +766,12 @@ function App() {
   const [dueLoading, setDueLoading] = useState(false);
   const [dueError, setDueError] = useState(null);
   const [dueCopyState, setDueCopyState] = useState("idle"); // idle | copied
+  // Which candidate breakdown popover is currently open, if any --
+  // { consultantName, metricLabel, candidates: [{candidateName, projectName}] } | null.
+  // Lets a CVs Out / Interviews number be clicked to see the actual
+  // candidates behind it, for reconciling a mismatched week/month
+  // against Atlas by name rather than just a bare count.
+  const [viewingCandidates, setViewingCandidates] = useState(null);
   // Which sub-view of "My Commission" is showing -- "mine" (the existing
   // personal/per-consultant view) or "due" (the payroll export), a
   // Super-Admin-only toggle inside the one tab rather than its own
@@ -985,6 +991,13 @@ function App() {
   // so moving between months you've already viewed is instant, and only
   // a genuinely new month triggers a fresh live query.
   const [kpiLiveMonthly, setKpiLiveMonthly] = useState({});
+  // Candidate-level breakdown behind kpiLiveMonthly's own numbers, kept
+  // as its own separate, parallel state (same monthKey structure) rather
+  // than folded into kpiLiveMonthly itself, since most of this page's
+  // maths (computeMonthPipelineRows, averages, etc.) only ever needs the
+  // plain counts — this stays untouched by them, fetched alongside for
+  // the one thing that actually needs it: showing who's behind a number.
+  const [kpiLiveMonthlyDetails, setKpiLiveMonthlyDetails] = useState({});
   const [kpiFetchErrors, setKpiFetchErrors] = useState({}); // { [monthKey]: errorMessage } — a month that failed to load, distinct from a month that genuinely has zero activity
   const [kpiFetchLoading, setKpiFetchLoading] = useState({}); // { [monthKey]: true } — a month genuinely still being fetched, distinct from real zeros and from a real failure; a busy month can take 5-10s, this is what makes that visible instead of looking broken or empty
   const fetchKpiMonth = useCallback(async (year, month) => {
@@ -996,6 +1009,7 @@ function App() {
       const d = await res.json();
       if (res.ok && d && d.monthly) {
         setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
+        if (d.monthlyDetails) setKpiLiveMonthlyDetails(prev => ({ ...prev, ...d.monthlyDetails }));
         setKpiFetchErrors(prev => { if (!prev[mk]) return prev; const next = { ...prev }; delete next[mk]; return next; });
       } else {
         setKpiFetchErrors(prev => ({ ...prev, [mk]: (d && d.error) || `Request failed (${res.status})` }));
@@ -2602,7 +2616,7 @@ function App() {
       color: INDIGO,
       fontFamily: "'Work Sans', sans-serif"
     }
-  }, /*#__PURE__*/React.createElement("style", null, fontImport), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("style", null, fontImport), /*#__PURE__*/React.createElement(CandidateBreakdownModal, { viewing: viewingCandidates, onClose: () => setViewingCandidates(null) }), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "24px 24px 0",
       background: WHITE,
@@ -2935,10 +2949,10 @@ function App() {
                 },
                   React.createElement("span", { style: { width: 120, flexShrink: 0, textDecoration: r.excluded ? "line-through" : "none", paddingTop: 4 } }, r.name),
                   isAdmin
-                    ? React.createElement(EditableKpiCell, { width: 55, value: r.cvsOut, isOverridden: r.overridden.cvsOut, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "cvsOut", v) })
+                    ? React.createElement(EditableKpiCell, { width: 55, value: r.cvsOut, isOverridden: r.overridden.cvsOut, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "cvsOut", v), candidates: r.candidates && r.candidates.cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: "CVs Out", candidates }) })
                     : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.cvsOut),
                   isAdmin
-                    ? React.createElement(EditableKpiCell, { width: 66, value: r.interviews, isOverridden: r.overridden.interviews, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "interviews", v) })
+                    ? React.createElement(EditableKpiCell, { width: 66, value: r.interviews, isOverridden: r.overridden.interviews, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "interviews", v), candidates: r.candidates && r.candidates.interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: "Interviews", candidates }) })
                     : React.createElement("span", { style: { width: 66, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.interviews),
                   isAdmin && React.createElement("button", {
                     onClick: () => toggleExcludeConsultant(r.consultantId),
@@ -4356,7 +4370,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             // any destination that only accepts plain text (e.g. Notepad).
             const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
             const tableRows = dueData.people.map((p) =>
-              `<tr><td style="padding:2px 16px 2px 0;">${escapeHtml(personDisplayName(p.consultantId))}</td><td style="padding:2px 0;font-weight:bold;">£${escapeHtml(formatGBP(p.amountDueGBP))}</td></tr>`
+              `<tr><td style="padding:2px 16px 2px 0;">${escapeHtml(personDisplayName(p.consultantId))}</td><td style="padding:2px 0;">£${escapeHtml(formatGBP(p.amountDueGBP))}</td></tr>`
             ).join("");
             const html = `<table style="border-collapse:collapse;font-family:sans-serif;">${tableRows}</table>`;
             const plainRows = dueData.people.map((p) => `${personDisplayName(p.consultantId)}\t£${formatGBP(p.amountDueGBP)}`);
@@ -4821,10 +4835,10 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 ? React.createElement(EditableKpiCell, { width: 78, value: m.phoneHours, isOverridden: m.overrides.phoneHours, avgValue: monthAvg.phoneHours, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "phoneHours", v) })
                 : cellWithAvg(78, m.phoneHours, monthAvg.phoneHours, false),
               isAdmin
-                ? React.createElement(EditableKpiCell, { width: 78, value: m.cvs, isOverridden: m.overrides.cvs, avgValue: monthAvg.cvs, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "cvs", v) })
+                ? React.createElement(EditableKpiCell, { width: 78, value: m.cvs, isOverridden: m.overrides.cvs, avgValue: monthAvg.cvs, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "cvs", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `CVs Out — ${m.monthKey}`, candidates }) })
                 : cellWithAvg(78, m.cvs, monthAvg.cvs, false),
               isAdmin
-                ? React.createElement(EditableKpiCell, { width: 86, value: m.interviews, isOverridden: m.overrides.interviews, avgValue: monthAvg.interviews, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "interviews", v) })
+                ? React.createElement(EditableKpiCell, { width: 86, value: m.interviews, isOverridden: m.overrides.interviews, avgValue: monthAvg.interviews, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "interviews", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Interviews — ${m.monthKey}`, candidates }) })
                 : cellWithAvg(86, m.interviews, monthAvg.interviews, false),
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 66, value: m.onsite, isOverridden: m.overrides.onsite, avgValue: monthAvg.onsite, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "onsite", v) })
@@ -4876,10 +4890,10 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               ? React.createElement(EditableKpiCell, { width: 78, value: r.phoneHours, isOverridden: r.overrides.phoneHours, onSave: (v) => saveKpiOverride(r.id, monthKey, "phoneHours", v) })
               : React.createElement(Cell, { width: 78 }, r.phoneHours),
             isAdmin
-              ? React.createElement(EditableKpiCell, { width: 78, value: r.cvs, isOverridden: r.overrides.cvs, onSave: (v) => saveKpiOverride(r.id, monthKey, "cvs", v) })
+              ? React.createElement(EditableKpiCell, { width: 78, value: r.cvs, isOverridden: r.overrides.cvs, onSave: (v) => saveKpiOverride(r.id, monthKey, "cvs", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `CVs Out — ${monthKey}`, candidates }) })
               : React.createElement(Cell, { width: 78 }, r.cvs),
             isAdmin
-              ? React.createElement(EditableKpiCell, { width: 86, value: r.interviews, isOverridden: r.overrides.interviews, onSave: (v) => saveKpiOverride(r.id, monthKey, "interviews", v) })
+              ? React.createElement(EditableKpiCell, { width: 86, value: r.interviews, isOverridden: r.overrides.interviews, onSave: (v) => saveKpiOverride(r.id, monthKey, "interviews", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Interviews — ${monthKey}`, candidates }) })
               : React.createElement(Cell, { width: 86 }, r.interviews),
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 66, value: r.onsite, isOverridden: r.overrides.onsite, onSave: (v) => saveKpiOverride(r.id, monthKey, "onsite", v) })
@@ -5010,6 +5024,50 @@ function Cell({
 // can also be shown for whichever past week someone clicks into from
 // "Last week's winners" — same real leaderboard, not a different,
 // simplified view, just for a different week's data.
+// A simple overlay listing the actual candidates behind one CVs Out /
+// Interviews number — click the number, see the names, reconcile a
+// mismatched week or month against Atlas directly rather than staring
+// at a bare count wondering what's missing. `viewing` is null when
+// closed, or { consultantName, metricLabel, candidates } when open.
+function CandidateBreakdownModal({ viewing, onClose }) {
+  if (!viewing) return null;
+  return React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      background: "rgba(46,64,91,0.35)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center"
+    }
+  },
+    React.createElement("div", {
+      onClick: (e) => e.stopPropagation(),
+      style: { background: WHITE, borderRadius: 10, padding: "20px 24px", maxWidth: 480, width: "90%", maxHeight: "70vh", overflowY: "auto", boxShadow: "0 8px 32px rgba(46,64,91,0.25)" }
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 } },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 11, color: INDIGO_MUTED, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 } }, viewing.metricLabel),
+          React.createElement("h3", { style: { fontFamily: "Georgia, serif", fontWeight: 400, fontSize: 20, color: INDIGO, margin: "2px 0 0" } }, viewing.consultantName)
+        ),
+        React.createElement("button", { onClick: onClose, style: { ...ghostStyle, padding: "4px 10px" } }, "Close")
+      ),
+      !viewing.candidates || viewing.candidates.length === 0 ?
+        React.createElement("div", { style: { color: INDIGO_MUTED, fontSize: 13 } }, "No candidate breakdown available for this figure — it may have been manually corrected rather than computed live, or the live data hasn't loaded yet.") :
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          viewing.candidates.map((c, i) => React.createElement("div", {
+            key: i,
+            style: { padding: "8px 10px", background: "rgba(46,64,91,0.04)", borderRadius: 6 }
+          },
+            React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: INDIGO } }, c.candidateName || "Unknown candidate"),
+            c.projectName && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginTop: 2 } }, c.projectName)
+          ))
+        ),
+      viewing.candidates && viewing.candidates.length > 0 && React.createElement("div", { style: { marginTop: 12, fontSize: 11.5, color: INDIGO_MUTED } },
+        `${viewing.candidates.length} candidate${viewing.candidates.length === 1 ? "" : "s"} make up this figure.`
+      )
+    )
+  );
+}
+
 function WeekLeaderboardPanel({ week, rows, winners, missing, title, eyebrowPrefix }) {
   if (!week) return null;
   return /*#__PURE__*/React.createElement(Panel, null,
@@ -5055,7 +5113,7 @@ function WeekLeaderboardPanel({ week, rows, winners, missing, title, eyebrowPref
 // React to remount it whenever the true value changes underneath (e.g.
 // after a save resolves), so the field never shows stale text. Purely a
 // DISPLAY correction — never touches the underlying weekly Atlas data.
-function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
+function EditableKpiCell({ value, isOverridden, onSave, width, avgValue, candidates, onViewCandidates }) {
   const [saving, setSaving] = useState(false);
   const comparisonColor = avgComparisonColor(value, avgValue);
   return React.createElement("div", { style: { width, flexShrink: 0 } },
@@ -5093,7 +5151,17 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue }) {
       onClick: () => onSave(null),
       title: "Clear this correction and revert to the auto-computed figure",
       style: { fontSize: 9, color: MELON_LINK, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, textAlign: "left" }
-    }, "revert to auto")
+    }, "revert to auto"),
+    // Only shown when live candidate-level data actually exists for
+    // this cell (never for a manually overridden figure, since that
+    // number no longer reflects Atlas's own live computation at all) —
+    // opens the breakdown modal so a mismatched count can be checked
+    // against the real candidate names behind it.
+    candidates && !isOverridden && React.createElement("button", {
+      onClick: () => onViewCandidates(candidates),
+      title: "See which candidates make up this number",
+      style: { fontSize: 9, color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, textAlign: "left", textDecoration: "underline" }
+    }, `who? (${candidates.length})`)
   );
 }
 const labelStyle = {
