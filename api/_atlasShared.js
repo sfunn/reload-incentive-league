@@ -142,6 +142,34 @@ async function lookupCandidateOwnerEmail(projectId, candidateId) {
   return owner ? owner.email : null;
 }
 
+// The same underlying Atlas endpoint as the owner-email lookup above,
+// but ALSO capturing the candidate's own name — added specifically so
+// a live CVs Out / Interviews count can be broken down into the actual
+// candidates behind it (e.g. reconciling "this week doesn't match,
+// something's missing" against Atlas by name, not just a bare number).
+// Deliberately a SEPARATE function from lookupCandidateOwnerEmail
+// rather than changing that one's return shape — it's called directly
+// (expecting a plain email string back) by atlas-webhook.js and
+// atlas-reconcile-cron.js, and touching its shape would mean carefully
+// updating both of those production-critical paths for no reason this
+// one specifically needs. The exact field Atlas uses for a candidate's
+// name isn't confirmed anywhere else in this codebase, so this tries
+// the couple of most likely shapes and falls back to null (which the
+// frontend shows as "Unknown candidate") rather than guessing wrong
+// and silently mislabelling someone.
+async function lookupCandidateDetails(projectId, candidateId) {
+  const res = await fetchAtlasWithRetry(
+    `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
+    { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+  );
+  if (!res.ok) throw new Error(`Atlas candidate lookup failed: ${res.status}`);
+  const json = await res.json();
+  const data = json.data || {};
+  const owner = data.owner;
+  const name = data.name || data.fullName || (data.firstName || data.lastName ? `${data.firstName || ""} ${data.lastName || ""}`.trim() : null) || null;
+  return { email: owner ? owner.email : null, name };
+}
+
 const CANDIDATE_OWNER_CACHE_KEY = "atlas-candidate-owner-cache"; // { [candidateId]: email | null }
 // A cached wrapper around the lookup above — used by any live, on-the-fly
 // computation (e.g. the KPI page's own live query) that may need to look
@@ -167,6 +195,26 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
   return email;
 }
 
+const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache"; // { [candidateId]: { email, name } | null }
+// Same caching principle as lookupCandidateOwnerEmailCached above, its
+// own separate cache key and shape ({email, name} objects, not bare
+// email strings) so it can't collide with or be corrupted by the
+// existing owner-only cache, or vice versa.
+async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
+  const cache = (await kv.get(CANDIDATE_DETAILS_CACHE_KEY)) || {};
+  if (candidateId in cache) return cache[candidateId];
+  let details = null;
+  try {
+    details = await lookupCandidateDetails(projectId, candidateId);
+  } catch (e) {
+    console.error("[atlas-shared] cached candidate details lookup failed:", e.message);
+    return null; // deliberately NOT cached — a transient failure shouldn't poison the cache
+  }
+  cache[candidateId] = details;
+  await kv.set(CANDIDATE_DETAILS_CACHE_KEY, cache);
+  return details;
+}
+
 // The exact same tally-writing logic the webhook uses — writes both the
 // weekly tally (needed for the Weekly Incentive competition itself) and
 // the per-event monthly tally (needed for exact month-level KPI
@@ -186,6 +234,11 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
 // touch caching itself, deliberately: caching is the caller's decision.
 async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs = 45000) {
   const people = {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
+  // Same counts as `people` above, but broken down to the actual
+  // candidates behind each number — added so a mismatched week/month
+  // can be reconciled against Atlas by name, not just a bare count.
+  // { [consultantId]: { cvsOut: [{candidateName, projectName}], interviews: [...], ... } }
+  const peopleDetails = {};
   const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}`
   const pairsToResolve = new Map(); // `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> }
   let eventsSeen = 0, eventsCounted = 0;
@@ -253,23 +306,26 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
       const projectName = await lookupProjectName(kv, projectId);
       if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
-      const email = await lookupCandidateOwnerEmailCached(kv, projectId, candidateId);
+      const details = await lookupCandidateDetailsCached(kv, projectId, candidateId);
+      const email = details ? details.email : null;
       const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
       if (!consultantId) return null;
-      return { consultantId, metrics };
+      return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: projectName || null };
     }));
 
     for (const r of resolved) {
       if (!r) continue;
       if (!people[r.consultantId]) people[r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
+      if (!peopleDetails[r.consultantId]) peopleDetails[r.consultantId] = { cvsOut: [], interviews: [], onsite: [], offers: [] };
       for (const metric of r.metrics) {
         people[r.consultantId][metric] += 1;
+        peopleDetails[r.consultantId][metric].push({ candidateName: r.candidateName, projectName: r.projectName });
         eventsCounted++;
       }
     }
   }
 
-  return { people, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched };
+  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched };
 }
 
 // Byte-identical copy of league.js's own isoWeekToDates — same principle
@@ -362,6 +418,8 @@ module.exports = {
   lookupProjectName,
   lookupCandidateOwnerEmail,
   lookupCandidateOwnerEmailCached,
+  lookupCandidateDetails,
+  lookupCandidateDetailsCached,
   isoWeekToDates,
   computeKpiLiveForRange,
   computeMonthlyKpiLive,
