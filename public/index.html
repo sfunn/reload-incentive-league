@@ -4339,25 +4339,44 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         ),
         dueData && dueData.people.length > 0 && React.createElement("button", {
           onClick: () => {
-            // Plain tab-separated text doesn't create real, fixed columns
-            // once pasted somewhere else -- a single tab just jumps to
-            // the NEXT tab stop the destination app happens to use, so a
-            // longer name can push past one tab stop into the next while
-            // shorter names land inside the same one, throwing the
-            // amount column out of line depending on name length (this
-            // is exactly what was happening with Natasha's name, the
-            // longest one here). Padding every name to the same fixed
-            // width with spaces before the tab means every row's tab
-            // character starts from the identical column position, so
-            // it lands on the same tab stop regardless of the
-            // destination app's own tab width.
-            const nameColumnWidth = Math.max(...dueData.people.map((p) => personDisplayName(p.consultantId).length)) + 2;
-            const rows = dueData.people.map((p) => `${personDisplayName(p.consultantId).padEnd(nameColumnWidth, " ")}\t£${formatGBP(p.amountDueGBP)}`);
-            const text = rows.join("\n");
-            navigator.clipboard.writeText(text).then(() => {
+            // Plain tab-separated text isn't actually reliable here: an
+            // email body renders in a proportional font, not a monospace
+            // one, so even padding every name to the exact same CHARACTER
+            // count (tried first) doesn't give the exact same PIXEL
+            // width, since letters themselves vary in width ("W" is much
+            // wider than "i") -- so a tab stop, which advances by pixel
+            // position, can still land in a different spot per row
+            // regardless of how carefully the character count is padded.
+            // The genuinely robust fix is to stop relying on tab stops
+            // at all and copy an actual HTML table instead, which
+            // guarantees real column alignment in any app that accepts
+            // rich paste (Outlook, Word, Gmail's rich compose, etc.),
+            // completely independent of font or name length. A plain-text
+            // tab-separated fallback still rides along underneath it, for
+            // any destination that only accepts plain text (e.g. Notepad).
+            const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const tableRows = dueData.people.map((p) =>
+              `<tr><td style="padding:2px 16px 2px 0;">${escapeHtml(personDisplayName(p.consultantId))}</td><td style="padding:2px 0;font-weight:bold;">£${escapeHtml(formatGBP(p.amountDueGBP))}</td></tr>`
+            ).join("");
+            const html = `<table style="border-collapse:collapse;font-family:sans-serif;">${tableRows}</table>`;
+            const plainRows = dueData.people.map((p) => `${personDisplayName(p.consultantId)}\t£${formatGBP(p.amountDueGBP)}`);
+            const plainText = plainRows.join("\n");
+            const copyDone = () => {
               setDueCopyState("copied");
               setTimeout(() => setDueCopyState("idle"), 2000);
-            });
+            };
+            if (window.ClipboardItem) {
+              const item = new ClipboardItem({
+                "text/html": new Blob([html], { type: "text/html" }),
+                "text/plain": new Blob([plainText], { type: "text/plain" }),
+              });
+              navigator.clipboard.write([item]).then(copyDone);
+            } else {
+              // Older browsers without ClipboardItem support -- falls
+              // back to the plain-text version, still correct, just not
+              // guaranteed to align in a proportional-font destination.
+              navigator.clipboard.writeText(plainText).then(copyDone);
+            }
           },
           style: { ...ghostStyle, background: dueCopyState === "copied" ? "rgba(142,185,176,0.25)" : undefined }
         }, dueCopyState === "copied" ? "Copied!" : "Copy for payroll")
