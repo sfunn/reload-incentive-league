@@ -4339,7 +4339,20 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         ),
         dueData && dueData.people.length > 0 && React.createElement("button", {
           onClick: () => {
-            const rows = dueData.people.map((p) => `${personDisplayName(p.consultantId)}\t£${formatGBP(p.amountDueGBP)}`);
+            // Plain tab-separated text doesn't create real, fixed columns
+            // once pasted somewhere else -- a single tab just jumps to
+            // the NEXT tab stop the destination app happens to use, so a
+            // longer name can push past one tab stop into the next while
+            // shorter names land inside the same one, throwing the
+            // amount column out of line depending on name length (this
+            // is exactly what was happening with Natasha's name, the
+            // longest one here). Padding every name to the same fixed
+            // width with spaces before the tab means every row's tab
+            // character starts from the identical column position, so
+            // it lands on the same tab stop regardless of the
+            // destination app's own tab width.
+            const nameColumnWidth = Math.max(...dueData.people.map((p) => personDisplayName(p.consultantId).length)) + 2;
+            const rows = dueData.people.map((p) => `${personDisplayName(p.consultantId).padEnd(nameColumnWidth, " ")}\t£${formatGBP(p.amountDueGBP)}`);
             const text = rows.join("\n");
             navigator.clipboard.writeText(text).then(() => {
               setDueCopyState("copied");
