@@ -280,14 +280,16 @@ module.exports = async (req, res) => {
     // tool for anyone who wants it fresher than that, on demand.
     const CACHE_TTL_MS = isRecent ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
-    let computed;
+    let computed, computedDetails;
     if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       computed = cached.people;
+      computedDetails = cached.peopleDetails || {};
     } else {
       try {
         const live = await computeWeeklyKpiLive(kv, weekKey);
         computed = live.people;
-        await kv.set(CACHE_KEY, { people: computed, cachedAt: Date.now() });
+        computedDetails = live.peopleDetails;
+        await kv.set(CACHE_KEY, { people: computed, peopleDetails: computedDetails, cachedAt: Date.now() });
       } catch (e) {
         console.error("[week-live] live Atlas query failed:", e.message);
         return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
@@ -333,6 +335,7 @@ module.exports = async (req, res) => {
       team: teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId],
       excluded: excluded.includes(consultantId),
       ...applyOverrides(consultantId, computed[consultantId] || {}),
+      candidates: computedDetails[consultantId] || null,
     }));
 
     // Team leads' own activity — a separate array, deliberately never
@@ -343,6 +346,7 @@ module.exports = async (req, res) => {
       consultantId,
       team: TEAM_LEAD_BY_CONSULTANT[consultantId],
       ...applyOverrides(consultantId, computed[consultantId] || {}),
+      candidates: computedDetails[consultantId] || null,
     }));
 
     return res.status(200).json({
@@ -420,7 +424,7 @@ module.exports = async (req, res) => {
     const cached = await kv.get(CACHE_KEY);
     if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
-      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: cached.monthly } });
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: cached.monthly }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails || {} } });
     }
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
@@ -438,9 +442,9 @@ module.exports = async (req, res) => {
       if (!live.people[personId]) live.people[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
     }
 
-    await kv.set(CACHE_KEY, { monthly: live.people, cachedAt: Date.now() });
+    await kv.set(CACHE_KEY, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
 
-    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: live.people } });
+    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: live.people }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails } });
   }
 
   if (req.method === "GET" && action === "placement-counts") {
