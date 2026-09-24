@@ -282,7 +282,27 @@ module.exports = async (req, res) => {
       }
     }
 
-    return res.status(200).json({ weekKey, rawStageEvent: firstEvent, rawCandidateDetail });
+    // Also fetching the project detail endpoint directly — the same
+    // endpoint lookupProjectName() itself calls — since that function's
+    // "flat name field" assumption is exactly the same kind of guess
+    // that turned out wrong for the candidate lookup twice already, and
+    // its output directly feeds the CitSec Options exclusion check, so
+    // it's worth confirming with certainty rather than assuming it's
+    // fine because nobody's flagged it yet.
+    let rawProjectDetail = null;
+    if (projectId) {
+      try {
+        const projRes = await fetchAtlasWithRetry(
+          `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+        rawProjectDetail = projRes.ok ? await projRes.json() : { error: `project detail request failed: ${projRes.status}` };
+      } catch (e) {
+        rawProjectDetail = { error: `project detail request failed: ${e.message}` };
+      }
+    }
+
+    return res.status(200).json({ weekKey, rawStageEvent: firstEvent, rawCandidateDetail, rawProjectDetail });
   }
 
   if (req.method === "GET" && action === "week-live") {
