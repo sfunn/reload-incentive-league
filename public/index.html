@@ -963,10 +963,17 @@ function App() {
   const [pipelineMonth, setPipelineMonth] = useState(new Date().getUTCMonth() + 1); // 1-12
   const [pipelineFocusId, setPipelineFocusId] = useState(null); // admin-only: focus on one person, all months + total
   const [placementCounts, setPlacementCounts] = useState({});
+  // Candidate-level breakdown behind Deals Agreed, same principle as
+  // kpiLiveMonthlyDetails above — its own parallel state, since most of
+  // this page's own maths only ever needs the plain counts.
+  const [placementDetails, setPlacementDetails] = useState({});
   useEffect(() => {
     fetch("/api/league?action=placement-counts")
       .then(r => r.json())
-      .then(d => setPlacementCounts(d.placementCounts || {}))
+      .then(d => {
+        setPlacementCounts(d.placementCounts || {});
+        setPlacementDetails(d.placementDetails || {});
+      })
       .catch(() => {});
   }, []);
   const [kpiOverrides, setKpiOverrides] = useState({});
@@ -4874,13 +4881,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 ? React.createElement(EditableKpiCell, { width: 86, value: m.interviews, isOverridden: m.overrides.interviews, avgValue: monthAvg.interviews, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "interviews", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Interviews — ${m.monthKey}`, candidates }) })
                 : cellWithAvg(86, m.interviews, monthAvg.interviews, false),
               isAdmin
-                ? React.createElement(EditableKpiCell, { width: 66, value: m.onsite, isOverridden: m.overrides.onsite, avgValue: monthAvg.onsite, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "onsite", v) })
+                ? React.createElement(EditableKpiCell, { width: 66, value: m.onsite, isOverridden: m.overrides.onsite, avgValue: monthAvg.onsite, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "onsite", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).onsite, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Onsite — ${m.monthKey}`, candidates }) })
                 : cellWithAvg(66, m.onsite, monthAvg.onsite, false),
               isAdmin
-                ? React.createElement(EditableKpiCell, { width: 66, value: m.offers, isOverridden: m.overrides.offers, avgValue: monthAvg.offers, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "offers", v) })
+                ? React.createElement(EditableKpiCell, { width: 66, value: m.offers, isOverridden: m.overrides.offers, avgValue: monthAvg.offers, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "offers", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).offers, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Offers — ${m.monthKey}`, candidates }) })
                 : cellWithAvg(66, m.offers, monthAvg.offers, false),
               isAdmin
-                ? React.createElement(EditableKpiCell, { width: 96, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v) })
+                ? React.createElement(EditableKpiCell, { width: 96, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v), candidates: (placementDetails[focusedPerson.id] || {})[m.monthKey], onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Deals Agreed — ${m.monthKey}`, candidates }) })
                 : cellWithAvg(96, m.placements, monthAvg.placements, false),
               cellWithAvg(96, pipelinePctOrNull(m.interviews, m.cvs), monthAvg.pctCvInterview, true),
               cellWithAvg(104, pipelinePctOrNull(m.onsite, m.interviews), monthAvg.pctInterviewOnsite, true),
@@ -4929,13 +4936,13 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               ? React.createElement(EditableKpiCell, { width: 86, value: r.interviews, isOverridden: r.overrides.interviews, onSave: (v) => saveKpiOverride(r.id, monthKey, "interviews", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Interviews — ${monthKey}`, candidates }) })
               : React.createElement(Cell, { width: 86 }, r.interviews),
             isAdmin
-              ? React.createElement(EditableKpiCell, { width: 66, value: r.onsite, isOverridden: r.overrides.onsite, onSave: (v) => saveKpiOverride(r.id, monthKey, "onsite", v) })
+              ? React.createElement(EditableKpiCell, { width: 66, value: r.onsite, isOverridden: r.overrides.onsite, onSave: (v) => saveKpiOverride(r.id, monthKey, "onsite", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).onsite, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Onsite — ${monthKey}`, candidates }) })
               : React.createElement(Cell, { width: 66 }, r.onsite),
             isAdmin
-              ? React.createElement(EditableKpiCell, { width: 66, value: r.offers, isOverridden: r.overrides.offers, onSave: (v) => saveKpiOverride(r.id, monthKey, "offers", v) })
+              ? React.createElement(EditableKpiCell, { width: 66, value: r.offers, isOverridden: r.overrides.offers, onSave: (v) => saveKpiOverride(r.id, monthKey, "offers", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).offers, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Offers — ${monthKey}`, candidates }) })
               : React.createElement(Cell, { width: 66 }, r.offers),
             isAdmin
-              ? React.createElement(EditableKpiCell, { width: 96, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v) })
+              ? React.createElement(EditableKpiCell, { width: 96, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v), candidates: (placementDetails[r.id] || {})[monthKey], onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Deals Agreed — ${monthKey}`, candidates }) })
               : React.createElement(Cell, { width: 96 }, r.placements),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
@@ -5091,7 +5098,8 @@ function CandidateBreakdownModal({ viewing, onClose }) {
             style: { padding: "8px 10px", background: "rgba(46,64,91,0.04)", borderRadius: 6 }
           },
             React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: INDIGO } }, c.candidateName || "Unknown candidate"),
-            c.projectName && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginTop: 2 } }, c.projectName)
+            c.jobRole && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginTop: 2 } }, c.jobRole),
+            c.projectName && React.createElement("div", { style: { fontSize: 11.5, color: INDIGO_MUTED, marginTop: 1 } }, c.projectName)
           ))
         ),
       viewing.candidates && viewing.candidates.length > 0 && React.createElement("div", { style: { marginTop: 12, fontSize: 11.5, color: INDIGO_MUTED } },
