@@ -197,7 +197,14 @@ async function lookupCandidateDetails(projectId, candidateId) {
     data.name || data.fullName ||
     (data.firstName || data.lastName ? `${data.firstName || ""} ${data.lastName || ""}`.trim() : null) ||
     null;
-  return { email: owner ? owner.email : null, name };
+  // The specific job/pipeline title (e.g. "Aaron Rosen: PDT - SWE
+  // Pipeline") — genuinely distinct from the client/company name
+  // (lookupProjectName, e.g. "PDT Partners"), and confirmed sitting
+  // right here in this SAME candidate-detail response already being
+  // fetched (data.project.jobRole), so no separate lookup or extra
+  // Atlas call is needed to get it.
+  const jobRole = (data.project && data.project.jobRole) || null;
+  return { email: owner ? owner.email : null, name, jobRole };
 }
 
 const CANDIDATE_OWNER_CACHE_KEY = "atlas-candidate-owner-cache"; // { [candidateId]: email | null }
@@ -360,7 +367,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       const email = details ? details.email : null;
       const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
       if (!consultantId) return null;
-      return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: projectName || null };
+      return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: projectName || null, jobRole: (details && details.jobRole) || null };
     }));
 
     for (const r of resolved) {
@@ -369,7 +376,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       if (!peopleDetails[r.consultantId]) peopleDetails[r.consultantId] = { cvsOut: [], interviews: [], onsite: [], offers: [] };
       for (const metric of r.metrics) {
         people[r.consultantId][metric] += 1;
-        peopleDetails[r.consultantId][metric].push({ candidateName: r.candidateName, projectName: r.projectName });
+        peopleDetails[r.consultantId][metric].push({ candidateName: r.candidateName, projectName: r.projectName, jobRole: r.jobRole });
         eventsCounted++;
       }
     }
