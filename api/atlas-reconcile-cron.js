@@ -219,9 +219,9 @@ module.exports = async function handler(req, res) {
 // Each event needs its own round-trip to Atlas for an owner lookup (plus a
 // The second job this file does — see the branch near the top of the
 // main handler. Keeps BOTH the KPI page's current-month cache
-// (?action=kpi-live-monthly, atlas-kpi-cache-v3:{monthKey}) AND the Weekly
+// (?action=kpi-live-monthly, atlas-kpi-cache-v4:{monthKey}) AND the Weekly
 // Incentive's current-week cache (?action=week-live,
-// atlas-week-cache-v3:{weekKey}) warm ahead of time, using the EXACT SAME
+// atlas-week-cache-v4:{weekKey}) warm ahead of time, using the EXACT SAME
 // proven computation each page itself uses on demand (computeMonthlyKpiLive
 // / computeWeeklyKpiLive, both in _atlasShared.js) — not a second,
 // different implementation with its own accuracy question, the identical
@@ -264,7 +264,7 @@ async function warmKpiCache(req, res) {
     // doing nothing), and was never including the candidate breakdown
     // at all, which would have forced a live recompute on every real
     // page load regardless of how "warm" this made the cache look.
-    await kv.set(`atlas-kpi-cache-v3:${monthKey}`, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
+    await kv.set(`atlas-kpi-cache-v4:${monthKey}`, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
     result.month = {
       ok: true,
       pagesFetched: live.pagesFetched,
@@ -280,7 +280,7 @@ async function warmKpiCache(req, res) {
   try {
     const liveWeek = await computeWeeklyKpiLive(kv, weekKey);
     // Same reasoning as the month cache just above.
-    await kv.set(`atlas-week-cache-v3:${weekKey}`, { people: liveWeek.people, peopleDetails: liveWeek.peopleDetails, cachedAt: Date.now() });
+    await kv.set(`atlas-week-cache-v4:${weekKey}`, { people: liveWeek.people, peopleDetails: liveWeek.peopleDetails, cachedAt: Date.now() });
     result.week = {
       ok: true,
       pagesFetched: liveWeek.pagesFetched,
