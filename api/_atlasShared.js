@@ -166,7 +166,20 @@ async function lookupCandidateDetails(projectId, candidateId) {
   const json = await res.json();
   const data = json.data || {};
   const owner = data.owner;
-  const name = data.name || data.fullName || (data.firstName || data.lastName ? `${data.firstName || ""} ${data.lastName || ""}`.trim() : null) || null;
+  // Atlas nests a candidate's actual name under its own "person" object
+  // (person.firstName / person.lastName) rather than flat on the
+  // candidate itself — confirmed from the exact shape already used
+  // elsewhere in this codebase for stage-event payloads
+  // (candidate.person.firstName/lastName, e.g. in the webhook and its
+  // own tests). The flatter shapes are kept as fallbacks in case a
+  // future Atlas response varies, but person.* is the one actually
+  // confirmed to exist.
+  const person = data.person || {};
+  const name =
+    (person.firstName || person.lastName ? `${person.firstName || ""} ${person.lastName || ""}`.trim() : null) ||
+    data.name || data.fullName ||
+    (data.firstName || data.lastName ? `${data.firstName || ""} ${data.lastName || ""}`.trim() : null) ||
+    null;
   return { email: owner ? owner.email : null, name };
 }
 
