@@ -335,7 +335,12 @@ module.exports = async (req, res) => {
     const weeksSinceEnded = (Date.now() - new Date(`${sunday}T23:59:59.999Z`).getTime()) / (7 * 24 * 60 * 60 * 1000);
     const isRecent = isCurrentWeek || weeksSinceEnded < 2;
 
-    const CACHE_KEY = `atlas-week-cache-v3:${weekKey}`;
+    const CACHE_KEY = `atlas-week-cache-v4:${weekKey}`;
+    // "-v4": a week cached under "-v3" would be missing the jobRole
+    // field entirely (added after "-v3" existed), same reasoning as
+    // every previous bump — a cache written before a new piece of data
+    // existed can't have that data, and "does peopleDetails exist" alone
+    // doesn't catch a breakdown that's just missing its newest field.
     // "-v3" now, for the SAME reason "-v2" existed: a week cached
     // between the candidate-name fix and the LATER project-name fix
     // would have correct candidate names but still-null project names
@@ -510,7 +515,8 @@ module.exports = async (req, res) => {
     // already over essentially doesn't change. Either way, this means a
     // page load reads an already-computed answer far more often than it
     // pays the full live-query cost itself.
-    const CACHE_KEY = `atlas-kpi-cache-v3:${requestedMonthKey}`;
+    const CACHE_KEY = `atlas-kpi-cache-v4:${requestedMonthKey}`;
+    // "-v4" for the same reason as week-live's own cache key just above.
     // "-v3" for the exact same reason as week-live's own cache key just
     // above (see its comment) — a month cached between the candidate-
     // name fix and the LATER project-name fix would have correct
@@ -585,6 +591,13 @@ module.exports = async (req, res) => {
     ]);
     const seen = new Set(); // dedupe key: consultantId|placementId
     const byConsultantMonth = {};
+    // Candidate-level breakdown alongside the counts above, same
+    // principle as the candidate-stage-events path just above it in
+    // this file (compute-all-due's own popover) — except this one needs
+    // no extra Atlas call at all, since candidateName and the client's
+    // company name are already sitting right here on the placement
+    // object already in KV.
+    const byConsultantMonthDetails = {};
     // Scott's rule: CitSec Options is excluded from every consultant KPI
     // number, including Deals Agreed here. Only affects records created
     // after this field started being captured — existing records from
@@ -604,8 +617,14 @@ module.exports = async (req, res) => {
       const mk = monthKeyFromDateStr(r.feeDate);
       if (!byConsultantMonth[r.consultantId]) byConsultantMonth[r.consultantId] = {};
       byConsultantMonth[r.consultantId][mk] = (byConsultantMonth[r.consultantId][mk] || 0) + 1;
+      if (!byConsultantMonthDetails[r.consultantId]) byConsultantMonthDetails[r.consultantId] = {};
+      if (!byConsultantMonthDetails[r.consultantId][mk]) byConsultantMonthDetails[r.consultantId][mk] = [];
+      byConsultantMonthDetails[r.consultantId][mk].push({
+        candidateName,
+        projectName: placement.clientCompanyName || r.projectClientName || null,
+      });
     }
-    return res.status(200).json({ placementCounts: byConsultantMonth });
+    return res.status(200).json({ placementCounts: byConsultantMonth, placementDetails: byConsultantMonthDetails });
   }
 
   // Manual corrections to the Consultant KPIs page — only ever a MONTHLY
