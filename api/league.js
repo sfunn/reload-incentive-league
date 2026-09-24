@@ -253,10 +253,15 @@ module.exports = async (req, res) => {
     if (!weekKey) return res.status(400).json({ error: "week is required, e.g. ?week=2026-W38" });
     const { monday, sunday } = isoWeekToDates(weekKey);
 
+    // Fetches every candidate from the week now, not just the first one
+    // — the earlier, single-candidate version couldn't have caught this
+    // exact issue (some candidates showing a job role, some not), since
+    // it always showed the same first candidate every time, no matter
+    // which one actually needed checking.
     let apiRes;
     try {
       apiRes = await fetchAtlasWithRetry(
-        `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?createdAfter=${monday}&createdBefore=${sunday}&pageSize=5`,
+        `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?createdAfter=${monday}&createdBefore=${sunday}&pageSize=20`,
         { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
       );
     } catch (e) {
@@ -264,45 +269,43 @@ module.exports = async (req, res) => {
     }
     if (!apiRes.ok) return res.status(502).json({ error: `stage-events request failed: ${apiRes.status}` });
     const stageJson = await apiRes.json();
-    const firstEvent = (stageJson.data || [])[0];
-    if (!firstEvent) return res.status(200).json({ note: `No events found for ${weekKey} at all`, rawStageEvent: null, rawCandidateDetail: null });
+    const events = stageJson.data || [];
+    if (events.length === 0) return res.status(200).json({ note: `No events found for ${weekKey} at all`, candidates: [] });
 
-    const candidateId = firstEvent.candidate && firstEvent.candidate.id;
-    const projectId = firstEvent.project && firstEvent.project.id;
-    let rawCandidateDetail = null;
-    if (candidateId && projectId) {
+    // A compact summary per candidate rather than the full raw blob for
+    // every one of them — the earlier, single-candidate version returned
+    // everything unmodified (including each project's own huge stages
+    // list), which is fine for one candidate but would be an unreadably
+    // large paste for twenty. Still pulling from the real, raw response
+    // fields directly (movedBy.name, person.firstName/lastName,
+    // project.jobRole, owner.email) — nothing reshaped or guessed at,
+    // just narrowed to what's actually relevant to this diagnosis.
+    const candidates = await Promise.all(events.map(async (event) => {
+      const candidateId = event.candidate && event.candidate.id;
+      const projectId = event.project && event.project.id;
+      if (!candidateId || !projectId) return { consultant: event.movedBy && event.movedBy.name, error: "event missing candidate or project id" };
       try {
         const candRes = await fetchAtlasWithRetry(
           `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
           { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
         );
-        rawCandidateDetail = candRes.ok ? await candRes.json() : { error: `candidate detail request failed: ${candRes.status}` };
+        if (!candRes.ok) return { consultant: event.movedBy && event.movedBy.name, candidateId, error: `candidate detail request failed: ${candRes.status}` };
+        const candJson = await candRes.json();
+        const data = candJson.data || {};
+        const person = data.person || {};
+        return {
+          consultant: event.movedBy && event.movedBy.name,
+          candidateId,
+          candidateName: `${person.firstName || ""} ${person.lastName || ""}`.trim() || null,
+          jobRole: (data.project && data.project.jobRole) || null,
+          projectId,
+        };
       } catch (e) {
-        rawCandidateDetail = { error: `candidate detail request failed: ${e.message}` };
+        return { consultant: event.movedBy && event.movedBy.name, candidateId, error: e.message };
       }
-    }
+    }));
 
-    // Also fetching the project detail endpoint directly — the same
-    // endpoint lookupProjectName() itself calls — since that function's
-    // "flat name field" assumption is exactly the same kind of guess
-    // that turned out wrong for the candidate lookup twice already, and
-    // its output directly feeds the CitSec Options exclusion check, so
-    // it's worth confirming with certainty rather than assuming it's
-    // fine because nobody's flagged it yet.
-    let rawProjectDetail = null;
-    if (projectId) {
-      try {
-        const projRes = await fetchAtlasWithRetry(
-          `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
-          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-        );
-        rawProjectDetail = projRes.ok ? await projRes.json() : { error: `project detail request failed: ${projRes.status}` };
-      } catch (e) {
-        rawProjectDetail = { error: `project detail request failed: ${e.message}` };
-      }
-    }
-
-    return res.status(200).json({ weekKey, rawStageEvent: firstEvent, rawCandidateDetail, rawProjectDetail });
+    return res.status(200).json({ weekKey, eventCount: events.length, candidates });
   }
 
   if (req.method === "GET" && action === "week-live") {
