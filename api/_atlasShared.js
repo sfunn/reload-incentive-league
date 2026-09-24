@@ -208,11 +208,25 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
   return email;
 }
 
-const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache"; // { [candidateId]: { email, name } | null }
+const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache-v2"; // { [candidateId]: { email, name } | null }
 // Same caching principle as lookupCandidateOwnerEmailCached above, its
 // own separate cache key and shape ({email, name} objects, not bare
 // email strings) so it can't collide with or be corrupted by the
 // existing owner-only cache, or vice versa.
+//
+// The "-v2" suffix is deliberate, not decorative: the first version of
+// this lookup guessed the wrong field for a candidate's name (tried a
+// flat "name" field; Atlas actually nests it under person.firstName /
+// person.lastName), and every candidate looked up under that first,
+// wrong version got PERMANENTLY cached with name: null — this cache has
+// no expiry at all, so once poisoned, a candidate would show "Unknown
+// candidate" forever, even after the underlying lookup logic was fixed,
+// since the cache check short-circuits before the corrected logic ever
+// runs again for that same candidate. Renaming the key means every
+// candidate gets looked up fresh, under the corrected logic, exactly
+// once, rather than needing every poisoned entry found and cleared by
+// hand. A null name is also deliberately NOT cached below, for the same
+// reason: a transient miss shouldn't calcify into a permanent one.
 async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
   const cache = (await kv.get(CANDIDATE_DETAILS_CACHE_KEY)) || {};
   if (candidateId in cache) return cache[candidateId];
@@ -223,8 +237,14 @@ async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
     console.error("[atlas-shared] cached candidate details lookup failed:", e.message);
     return null; // deliberately NOT cached — a transient failure shouldn't poison the cache
   }
-  cache[candidateId] = details;
-  await kv.set(CANDIDATE_DETAILS_CACHE_KEY, cache);
+  // A genuine failure to find a name at all is also deliberately NOT
+  // cached — see the comment above the cache key: caching a null name
+  // forever is exactly the bug this fix is undoing, so this must not
+  // reintroduce the same failure mode for any future edge case.
+  if (details && details.name) {
+    cache[candidateId] = details;
+    await kv.set(CANDIDATE_DETAILS_CACHE_KEY, cache);
+  }
   return details;
 }
 
