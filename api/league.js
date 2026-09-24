@@ -335,7 +335,17 @@ module.exports = async (req, res) => {
     const weeksSinceEnded = (Date.now() - new Date(`${sunday}T23:59:59.999Z`).getTime()) / (7 * 24 * 60 * 60 * 1000);
     const isRecent = isCurrentWeek || weeksSinceEnded < 2;
 
-    const CACHE_KEY = `atlas-week-cache-v2:${weekKey}`;
+    const CACHE_KEY = `atlas-week-cache-v3:${weekKey}`;
+    // "-v3" now, for the SAME reason "-v2" existed: a week cached
+    // between the candidate-name fix and the LATER project-name fix
+    // would have correct candidate names but still-null project names
+    // baked in, and "does peopleDetails exist" alone doesn't catch a
+    // breakdown that's only partially correct. Bumping this every time
+    // a piece of what it contains gets fixed is a blunt tool, but a
+    // reliable one — the alternative (checking that every single nested
+    // field is non-null) is its own source of false positives, since a
+    // genuinely missing name for some other reason would look identical
+    // to a poisoned one.
     // "-v2" is deliberate, not decorative: a week cached DURING the
     // brief window between the wrong candidate-name fix and the
     // corrected one would have peopleDetails present (so the earlier
@@ -500,7 +510,11 @@ module.exports = async (req, res) => {
     // already over essentially doesn't change. Either way, this means a
     // page load reads an already-computed answer far more often than it
     // pays the full live-query cost itself.
-    const CACHE_KEY = `atlas-kpi-cache-v2:${requestedMonthKey}`;
+    const CACHE_KEY = `atlas-kpi-cache-v3:${requestedMonthKey}`;
+    // "-v3" for the exact same reason as week-live's own cache key just
+    // above (see its comment) — a month cached between the candidate-
+    // name fix and the LATER project-name fix would have correct
+    // candidate names but still-null project names baked in.
     // "-v2" for the exact same reason as week-live's own cache key just
     // above (see its comment) — a month cached during the brief window
     // between the wrong candidate-name fix and the corrected one would
