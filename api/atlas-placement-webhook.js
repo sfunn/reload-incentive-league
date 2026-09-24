@@ -1,7 +1,29 @@
 import { kv } from "@vercel/kv";
 import { Webhook } from "svix";
 
-const PLACEMENTS_KEY = "atlas-placements";
+// ============================================================================
+// CONFIG
+// ============================================================================
+// This map is SEPARATE from the one in atlas-webhook.js on purpose: the Deal
+// Lead Award includes James and Josh (team leaders), whereas the CVs Out /
+// Interviews league table does not.
+const EMAIL_TO_CONSULTANT = {
+  "alex@reloadsearch.com": "alex-silverman",
+  "ash@reloadsearch.com": "ash-thiara",
+  "jack@reloadsearch.com": "jack-thompson",
+  "max@reloadsearch.com": "max-hart",
+  "oleg@reloadsearch.com": "oleg-sokyrka",
+  "alexander@reloadsearch.com": "alex-aparo",
+  "jackr@reloadsearch.com": "jack-routledge",
+  "joe@reloadsearch.com": "joe-purton",
+  "joshd@reloadsearch.com": "josh-davis",
+  "natasha@reloadsearch.com": "natasha-barnard",
+  "james@reloadsearch.com": "james-lancer",
+  "josh@reloadsearch.com": "josh-stark",
+  "scott@reloadsearch.com": "scott-finn",
+  "lee@reloadsearch.com": "lee-mamo",
+};
+// ============================================================================
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -12,6 +34,94 @@ function getRawBody(req) {
   });
 }
 
+function yearFromDateStr(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  return d.getUTCFullYear();
+}
+
+// Every fee event includes a projectId even when there's no placement
+// connected yet — and a project always belongs to a client company in
+// Atlas. So when a fee has no linked placement (and therefore no client
+// name from that route), this gives us a real fallback instead of a blank.
+async function lookupProjectClientName(projectId) {
+  if (!projectId) return null;
+  try {
+    const res = await fetch(
+      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const company = json.data && json.data.company;
+    return company ? company.name : null;
+  } catch (e) {
+    console.error("[atlas-fee-webhook] project client lookup failed:", e.message);
+    return null;
+  }
+}
+
+// Scott's rule: CitSec Options is excluded from every consultant KPI
+// number entirely, including "Deals Agreed" on the Consultant KPIs page,
+// which is computed from these fee records over in league.js. Storing the
+// project's own name on every record (not just when there's no placement)
+// is what makes that filter possible downstream. Cached by project id
+// (shared KV key with atlas-webhook.js's own identical lookup) so a
+// project's name is only ever fetched from Atlas once, not on every fee
+// event tied to that same project.
+const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache-v2"; // { [projectId]: projectName }
+async function lookupProjectName(projectId) {
+  if (!projectId) return null;
+  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
+  if (projectId in cache) return cache[projectId];
+  let name = null;
+  try {
+    const res = await fetch(
+      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+    );
+    if (res.ok) {
+      const json = await res.json();
+      // A project has no flat "name" field at all — confirmed directly
+      // from Atlas's own raw response. This is the client's own name
+      // (json.data.company.name), the exact same field
+      // lookupProjectClientName() above already uses, and the "-v2" cache
+      // key is deliberate too: this function and _atlasShared.js's own
+      // copy of it SHARE this cache key, and both were guessing the
+      // wrong field before, so every project id already looked up was
+      // permanently cached with a null name — silently defeating the
+      // CitSec Options exclusion on every fee record written since this
+      // webhook first shipped. Renaming the key clears that out and
+      // forces a genuinely fresh, correct lookup for every project.
+      const data = json.data || {};
+      name = (data.company && data.company.name) || null;
+    }
+  } catch (e) {
+    console.error("[atlas-fee-webhook] project name lookup failed:", e.message);
+  }
+  cache[projectId] = name;
+  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
+  return name;
+}
+
+// Fee/split "share" is treated as a percentage (e.g. "50" meaning 50%) when
+// present. If a split has no share (or there's only one split), it gets
+// full credit for the fee amount.
+function computeShareAmount(totalAmount, share, splitCount) {
+  const amount = parseFloat(totalAmount);
+  if (isNaN(amount)) return null;
+  if (share === null || share === undefined || share === "") {
+    // No explicit share — if there's only one split, they get it all;
+    // if there are multiple splits with no share info, divide evenly
+    // as a safe fallback (better than double-counting or dropping it).
+    return splitCount > 1 ? amount / splitCount : amount;
+  }
+  const pct = parseFloat(share);
+  if (isNaN(pct)) return splitCount > 1 ? amount / splitCount : amount;
+  return amount * (pct / 100);
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -19,7 +129,7 @@ export default async function handler(req, res) {
 
   const rawBody = await getRawBody(req);
 
-  console.log("[atlas-placement-webhook] rawBody length:", rawBody.length);
+  console.log("[atlas-fee-webhook] rawBody length:", rawBody.length);
 
   const svixHeaders = {
     "svix-id": req.headers["svix-id"] || req.headers["webhook-id"],
@@ -29,41 +139,126 @@ export default async function handler(req, res) {
 
   let payload;
   try {
-    const wh = new Webhook(process.env.ATLAS_PLACEMENT_WEBHOOK_SECRET);
+    const wh = new Webhook(process.env.ATLAS_FEE_WEBHOOK_SECRET);
     payload = wh.verify(rawBody, svixHeaders);
   } catch (e) {
-    console.error("[atlas-placement-webhook] verification failed:", e.message);
+    console.error("[atlas-fee-webhook] verification failed:", e.message);
     return res.status(401).json({ error: "Invalid webhook signature" });
   }
 
-  if (payload.event !== "placement.created" && payload.event !== "placement.updated") {
-    console.log("[atlas-placement-webhook] skipped: not a placement event. event was:", payload.event);
-    return res.status(200).json({ ok: true, skipped: true, reason: "not a placement event" });
+  if (payload.event !== "financial.feeCreated" && payload.event !== "financial.feeUpdated") {
+    console.log("[atlas-fee-webhook] skipped: not a fee event. event was:", payload.event);
+    return res.status(200).json({ ok: true, skipped: true, reason: "not a fee event" });
   }
 
   const data = payload.data || {};
-  const { id: placementId, startDate, candidate, client } = data;
+  const { id: feeId, feeDate, amount, currency, splits, placementId, projectId, notes } = data;
 
-  if (!placementId) {
-    console.log("[atlas-placement-webhook] skipped: missing placement id");
-    return res.status(200).json({ ok: true, skipped: true, reason: "missing placement id" });
+  if (!feeId || !amount || !currency || !Array.isArray(splits) || splits.length === 0) {
+    console.log("[atlas-fee-webhook] skipped: missing fields. data was:", JSON.stringify(data));
+    return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
   }
 
-  const all = (await kv.get(PLACEMENTS_KEY)) || {};
-  all[placementId] = {
-    candidateName: (candidate && candidate.name) || null,
-    clientCompanyName: (client && client.companyName) || null,
-    startDate: startDate || null,
-    updatedAt: new Date().toISOString(),
-  };
-  await kv.set(PLACEMENTS_KEY, all);
+  const year = yearFromDateStr(feeDate) || new Date().getUTCFullYear();
 
-  console.log(
-    "[atlas-placement-webhook] recorded placement:",
-    JSON.stringify({ placementId, candidateName: all[placementId].candidateName })
-  );
+  // Only bother calling out to Atlas for the project's client when there's
+  // no placement connected — if a placement exists, its own webhook will
+  // supply the client name via the normal join, so this avoids an
+  // unnecessary API call on the common case.
+  const projectClientName = placementId ? null : await lookupProjectClientName(projectId);
+  // Unlike the client-name lookup above, this one always runs regardless
+  // of placement — every record needs its own project name so the
+  // CitSec Options exclusion can be applied downstream in league.js.
+  const projectName = await lookupProjectName(projectId);
 
-  return res.status(200).json({ ok: true, placementId });
+  // Load existing records, strip out any prior entries for this fee (so
+  // financial.feeUpdated replaces cleanly instead of duplicating), then
+  // add fresh entries — one per split.
+  const RECORDS_KEY = "atlas-fee-records";
+  const existing = (await kv.get(RECORDS_KEY)) || [];
+  // Preserve any "paid" status already set on a matching split before we
+  // rebuild it below — a financial.feeUpdated re-send shouldn't silently
+  // wipe out a deal Scott/Lee already marked as paid.
+  const priorPaidBySplit = {};
+  existing.forEach((r) => {
+    if (r.feeId === feeId) {
+      priorPaidBySplit[r.splitId] = {
+        paid: r.paid,
+        paidMarkedAt: r.paidMarkedAt,
+        monthOverrides: r.monthOverrides,
+        source: r.source,
+        coordinatorId: r.coordinatorId,
+        consultantEmail: r.consultantEmail,
+        consultantId: r.consultantId,
+        consultantName: r.consultantName,
+      };
+    }
+  });
+  const filtered = existing.filter((r) => r.feeId !== feeId);
+
+  const newRecords = [];
+  for (const split of splits) {
+    const prior = priorPaidBySplit[split.id] || {
+      paid: false, paidMarkedAt: null, monthOverrides: {}, source: null, coordinatorId: null,
+      consultantEmail: null, consultantId: null, consultantName: null,
+    };
+
+    // Atlas uses TWO DIFFERENT shapes for fee-earner info depending on the
+    // event type: financial.feeCreated nests it as split.feeEarner.email,
+    // while financial.feeUpdated flattens it to split.feeEarnerEmail. Not
+    // handling both meant every single feeUpdated event silently read as
+    // "no owner" — this line fixes that at the source, with the "keep
+    // whatever we already knew" fallback below as a safety net for any
+    // future case where an event genuinely has neither.
+    const incomingEmail = (split.feeEarner && split.feeEarner.email) || split.feeEarnerEmail || null;
+    const incomingName = (split.feeEarner && split.feeEarner.name) || split.feeEarnerName || null;
+    const email = incomingEmail || prior.consultantEmail;
+    const consultantId = incomingEmail
+      ? (EMAIL_TO_CONSULTANT[incomingEmail] || null)
+      : prior.consultantId;
+    const consultantName = incomingEmail ? incomingName : prior.consultantName;
+    const shareAmount = computeShareAmount(amount, split.share, splits.length);
+
+    const record = {
+      feeId,
+      splitId: split.id,
+      feeDate: feeDate || null,
+      year,
+      currency,
+      totalAmount: parseFloat(amount),
+      share: split.share || null,
+      shareAmount,
+      consultantEmail: email || null,
+      consultantId,
+      consultantName,
+      placementId: placementId || null,
+      notes: notes || null,
+      projectClientName: projectClientName || null,
+      projectName: projectName || null,
+      paid: prior.paid,
+      paidMarkedAt: prior.paidMarkedAt,
+      monthOverrides: prior.monthOverrides || {},
+      source: prior.source || null,
+      coordinatorId: prior.coordinatorId || null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    console.log(
+      "[atlas-fee-webhook] recorded split:",
+      JSON.stringify({ feeId, email, consultantId, shareAmount, currency, keptFromPrior: !incomingEmail })
+    );
+
+    if (!consultantId) {
+      console.log("[atlas-fee-webhook] note: no consultant mapped for owner email:", email);
+    }
+
+    newRecords.push(record);
+  }
+
+  const updated = [...filtered, ...newRecords];
+  await kv.set(RECORDS_KEY, updated);
+
+  return res.status(200).json({ ok: true, feeId, recordsAdded: newRecords.length, year });
 }
 
 export const config = {
