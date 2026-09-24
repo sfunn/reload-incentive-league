@@ -232,7 +232,7 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
   return email;
 }
 
-const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache-v2"; // { [candidateId]: { email, name } | null }
+const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache-v3"; // { [candidateId]: { email, name, jobRole } | null }
 // Same caching principle as lookupCandidateOwnerEmailCached above, its
 // own separate cache key and shape ({email, name} objects, not bare
 // email strings) so it can't collide with or be corrupted by the
@@ -251,6 +251,13 @@ const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache-v2"; // { [ca
 // once, rather than needing every poisoned entry found and cleared by
 // hand. A null name is also deliberately NOT cached below, for the same
 // reason: a transient miss shouldn't calcify into a permanent one.
+//
+// "-v3" now, for the exact same reason: jobRole was added to this same
+// lookup afterward, and every candidate already cached under "-v2" (a
+// plain {email, name} object, no jobRole key at all) would keep
+// returning without it forever otherwise — bumping the composite
+// week/month cache alone wasn't enough, since that recompute still
+// calls straight back into this same, still-poisoned cache underneath.
 async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
   const cache = (await kv.get(CANDIDATE_DETAILS_CACHE_KEY)) || {};
   if (candidateId in cache) return cache[candidateId];
