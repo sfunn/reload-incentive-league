@@ -27,7 +27,13 @@ const OFFER_COUNTED_KEY = "atlas-offer-counted";
 // project, no matter how many times that stage gets touched.
 const CVS_OUT_COUNTED_KEY = "atlas-cvsout-counted";
 
-const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache";
+const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache-v2";
+// "-v2" because this cache key is SHARED with atlas-fee-webhook.js's own
+// copy of this same lookup (see its own comment for the full story) —
+// both were extracting the wrong field (a flat "name" that doesn't
+// exist; the real field is company.name) and both wrote into this same
+// cache, so every project id looked up by either one got permanently
+// stuck with a null name. Both files' cache key must stay in sync.
 const EXCLUDED_PROJECT_NAME = "citsec options";
 
 const EMAIL_TO_CONSULTANT = {
@@ -121,7 +127,18 @@ async function lookupProjectName(kv, projectId) {
     );
     if (res.ok) {
       const json = await res.json();
-      name = (json.data && json.data.name) || null;
+      // A project has no flat "name" field at all — confirmed directly
+      // from Atlas's own raw response (it returns jobRole and a nested
+      // company.name instead). This is genuinely the client's own name,
+      // e.g. "PDT Partners" — the same field atlas-fee-webhook.js's own
+      // lookupProjectClientName() already uses (json.data.company.name),
+      // proven correct there since it's what's driven this exact CitSec
+      // Options exclusion in production commission/KPI data all along.
+      // Deliberately matching that proven field rather than guessing
+      // again, since a guess is exactly what got this wrong twice
+      // already this session for the candidate-name lookup.
+      const data = json.data || {};
+      name = (data.company && data.company.name) || null;
     }
   } catch (e) {
     console.error("[atlas-shared] project name lookup failed:", e.message);
