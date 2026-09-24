@@ -281,9 +281,17 @@ module.exports = async (req, res) => {
     const CACHE_TTL_MS = isRecent ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
     let computed, computedDetails;
-    if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+    // A cache entry written before this candidate-breakdown feature
+    // existed has no peopleDetails field at all -- treated here as
+    // stale regardless of age, forcing a fresh recompute, rather than
+    // silently serving a technically-fresh-by-timestamp result that's
+    // missing information it's now supposed to carry. Without this, the
+    // very first deploy of this feature would show no candidate
+    // breakdowns for anyone until every cache entry happened to expire
+    // naturally, up to 6 hours away for the current week.
+    if (cached && cached.cachedAt && cached.peopleDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       computed = cached.people;
-      computedDetails = cached.peopleDetails || {};
+      computedDetails = cached.peopleDetails;
     } else {
       try {
         const live = await computeWeeklyKpiLive(kv, weekKey);
@@ -422,9 +430,14 @@ module.exports = async (req, res) => {
     // many times between each real refresh.
     const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
-    if (cached && cached.cachedAt && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+    // Same reasoning as week-live's own cache check just above: a cache
+    // entry from before this feature existed has no monthlyDetails at
+    // all, and is treated as stale regardless of its age so it gets
+    // recomputed fresh rather than silently serving an
+    // information-incomplete result for up to 6 hours.
+    if (cached && cached.cachedAt && cached.monthlyDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
-      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: cached.monthly }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails || {} } });
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: cached.monthly }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails } });
     }
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
