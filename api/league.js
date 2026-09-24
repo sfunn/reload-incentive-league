@@ -4,6 +4,7 @@ const {
   EXCLUDED_PROJECT_NAME,
   computeMonthlyKpiLive,
   computeWeeklyKpiLive,
+  fetchAtlasWithRetry,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
@@ -233,6 +234,55 @@ module.exports = async (req, res) => {
       };
     });
     return res.status(200).json({ weekKey: config.weekKey, weekStart: monday, weekEnd: sunday, metric: config.metric, threshold: config.threshold, consultants, teamLeads });
+  }
+
+  // A temporary, Super-Admin-only diagnostic: returns Atlas's own raw,
+  // unmodified response for one real candidate from a given week —
+  // added specifically because two successive guesses at where Atlas
+  // puts a candidate's name (a flat "name" field, then a nested
+  // "person.firstName/lastName") both turned out wrong, and a third
+  // blind guess isn't a good use of anyone's time. This shows the
+  // actual shape directly instead, so the real field can be identified
+  // with certainty rather than guessed at again. Safe to remove once
+  // the candidate-name field is confirmed and permanently fixed.
+  if (req.method === "GET" && action === "debug-candidate-raw") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+
+    const weekKey = req.query.week;
+    if (!weekKey) return res.status(400).json({ error: "week is required, e.g. ?week=2026-W38" });
+    const { monday, sunday } = isoWeekToDates(weekKey);
+
+    let apiRes;
+    try {
+      apiRes = await fetchAtlasWithRetry(
+        `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?createdAfter=${monday}&createdBefore=${sunday}&pageSize=5`,
+        { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+      );
+    } catch (e) {
+      return res.status(502).json({ error: `stage-events request failed: ${e.message}` });
+    }
+    if (!apiRes.ok) return res.status(502).json({ error: `stage-events request failed: ${apiRes.status}` });
+    const stageJson = await apiRes.json();
+    const firstEvent = (stageJson.data || [])[0];
+    if (!firstEvent) return res.status(200).json({ note: `No events found for ${weekKey} at all`, rawStageEvent: null, rawCandidateDetail: null });
+
+    const candidateId = firstEvent.candidate && firstEvent.candidate.id;
+    const projectId = firstEvent.project && firstEvent.project.id;
+    let rawCandidateDetail = null;
+    if (candidateId && projectId) {
+      try {
+        const candRes = await fetchAtlasWithRetry(
+          `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+        rawCandidateDetail = candRes.ok ? await candRes.json() : { error: `candidate detail request failed: ${candRes.status}` };
+      } catch (e) {
+        rawCandidateDetail = { error: `candidate detail request failed: ${e.message}` };
+      }
+    }
+
+    return res.status(200).json({ weekKey, rawStageEvent: firstEvent, rawCandidateDetail });
   }
 
   if (req.method === "GET" && action === "week-live") {
