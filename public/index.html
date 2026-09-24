@@ -772,6 +772,11 @@ function App() {
   // candidates behind it, for reconciling a mismatched week/month
   // against Atlas by name rather than just a bare count.
   const [viewingCandidates, setViewingCandidates] = useState(null);
+  // Temporary diagnostic state (Super Admin only) — see the "Show raw
+  // Atlas data" button on Weekly Incentive. Safe to remove once the
+  // candidate-name field is confirmed and permanently fixed.
+  const [debugCandidateRaw, setDebugCandidateRaw] = useState(null);
+  const [debugCandidateLoading, setDebugCandidateLoading] = useState(false);
   // Which sub-view of "My Commission" is showing -- "mine" (the existing
   // personal/per-consultant view) or "due" (the payroll export), a
   // Super-Admin-only toggle inside the one tab rather than its own
@@ -2912,6 +2917,34 @@ function App() {
           !isAdmin && React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: INDIGO_MUTED } },
             "Only Admins can change this week's metric or threshold — ask Scott or Lee."
           )
+        ),
+        // Temporary diagnostic (Super Admin only) — see the state
+        // comment above for why this exists. Safe to remove once the
+        // candidate-name field is confirmed and permanently fixed.
+        isSuperAdmin && activeWeek && React.createElement(Panel, null,
+          React.createElement(SectionTitle, { eyebrow: "Temporary — for fixing the candidate-name lookup", title: "Show raw Atlas data" }),
+          React.createElement("button", {
+            onClick: async () => {
+              setDebugCandidateLoading(true);
+              setDebugCandidateRaw(null);
+              try {
+                const res = await fetch(`/api/league?action=debug-candidate-raw&week=${activeWeek.weekKey}`, {
+                  headers: { Authorization: `Bearer ${authUser.token}` }
+                });
+                const data = await res.json();
+                setDebugCandidateRaw(data);
+              } catch (e) {
+                setDebugCandidateRaw({ error: e.message });
+              } finally {
+                setDebugCandidateLoading(false);
+              }
+            },
+            disabled: debugCandidateLoading,
+            style: ghostStyle
+          }, debugCandidateLoading ? "Fetching…" : `Show raw Atlas data for ${activeWeek.weekKey}`),
+          debugCandidateRaw && React.createElement("pre", {
+            style: { marginTop: 12, padding: 12, background: "rgba(46,64,91,0.05)", borderRadius: 6, fontSize: 11.5, overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }
+          }, JSON.stringify(debugCandidateRaw, null, 2))
         ),
         React.createElement(Panel, null,
           React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 } },
