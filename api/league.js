@@ -315,7 +315,17 @@ module.exports = async (req, res) => {
     const weeksSinceEnded = (Date.now() - new Date(`${sunday}T23:59:59.999Z`).getTime()) / (7 * 24 * 60 * 60 * 1000);
     const isRecent = isCurrentWeek || weeksSinceEnded < 2;
 
-    const CACHE_KEY = `atlas-week-cache:${weekKey}`;
+    const CACHE_KEY = `atlas-week-cache-v2:${weekKey}`;
+    // "-v2" is deliberate, not decorative: a week cached DURING the
+    // brief window between the wrong candidate-name fix and the
+    // corrected one would have peopleDetails present (so the earlier
+    // "does peopleDetails even exist" staleness check let it through),
+    // but every candidateName inside it permanently null, since that's
+    // exactly what the wrong extraction produced at the time. Renaming
+    // the key throws away every cache entry from before this point
+    // wholesale, guaranteeing a genuinely fresh recompute rather than
+    // needing to detect "peopleDetails exists but is secretly poisoned"
+    // as its own special case.
     // 6 hours, not 15 minutes — the background job that keeps this warm
     // (atlas-reconcile-cron.js) can only run once a day on this Vercel
     // plan (Hobby caps cron at daily; a more frequent schedule fails
@@ -470,7 +480,13 @@ module.exports = async (req, res) => {
     // already over essentially doesn't change. Either way, this means a
     // page load reads an already-computed answer far more often than it
     // pays the full live-query cost itself.
-    const CACHE_KEY = `atlas-kpi-cache:${requestedMonthKey}`;
+    const CACHE_KEY = `atlas-kpi-cache-v2:${requestedMonthKey}`;
+    // "-v2" for the exact same reason as week-live's own cache key just
+    // above (see its comment) — a month cached during the brief window
+    // between the wrong candidate-name fix and the corrected one would
+    // have monthlyDetails present but every candidateName inside it
+    // permanently null, which the earlier "does monthlyDetails even
+    // exist" check alone wasn't strict enough to catch.
     const now = new Date();
     const isCurrentMonth = year === now.getUTCFullYear() && month === now.getUTCMonth() + 1;
     // 6 hours, not 15 minutes — see the matching comment on week-live's
