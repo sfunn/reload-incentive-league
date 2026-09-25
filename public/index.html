@@ -2990,10 +2990,10 @@ function App() {
                   React.createElement("span", { style: { width: 120, flexShrink: 0, textDecoration: r.excluded ? "line-through" : "none", paddingTop: 4 } }, r.name),
                   isAdmin
                     ? React.createElement(EditableKpiCell, { width: 55, value: r.cvsOut, isOverridden: r.overridden.cvsOut, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "cvsOut", v), candidates: r.candidates && r.candidates.cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: "CVs Out", candidates }) })
-                    : React.createElement("span", { style: { width: 55, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.cvsOut),
+                    : React.createElement(ReadOnlyKpiCell, { width: 55, value: r.cvsOut, candidates: r.candidates && r.candidates.cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: "CVs Out", candidates }) }),
                   isAdmin
                     ? React.createElement(EditableKpiCell, { width: 66, value: r.interviews, isOverridden: r.overridden.interviews, onSave: (v) => saveWeekOverride(r.consultantId, activeWeek.weekKey, "interviews", v), candidates: r.candidates && r.candidates.interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: "Interviews", candidates }) })
-                    : React.createElement("span", { style: { width: 66, flexShrink: 0, fontWeight: 700, paddingTop: 4 } }, r.interviews),
+                    : React.createElement(ReadOnlyKpiCell, { width: 66, value: r.interviews, candidates: r.candidates && r.candidates.interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: "Interviews", candidates }) }),
                   isAdmin && React.createElement("button", {
                     onClick: () => toggleExcludeConsultant(r.consultantId),
                     title: r.excluded ? "Include them in this week's scoring again" : "Exclude them from this week's scoring (e.g. new starter, on leave)",
@@ -4747,13 +4747,18 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
     // ten real consultants for the same period — only used in the focused
     // (single-person) view, never the "Everyone" grid, where all ten
     // numbers already sit side by side.
-    function cellWithAvg(width, value, avgValue, isPercent, bold) {
+    function cellWithAvg(width, value, avgValue, isPercent, bold, candidates, onViewCandidates) {
       const mainText = isPercent ? fmtPipelinePct(value) : value;
       const avgText = avgValue === null || avgValue === undefined ? null : (isPercent ? fmtPipelinePct(avgValue) : Math.round(avgValue * 10) / 10);
       const comparisonColor = avgComparisonColor(value, avgValue);
       return React.createElement("div", { style: { width, flexShrink: 0 } },
         React.createElement(Cell, { flex: true, bold: comparisonColor ? true : bold, fontSize: comparisonColor ? 15 : undefined, color: comparisonColor || undefined }, mainText),
-        avgText !== null && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 400, marginTop: 2 } }, `avg: ${avgText}`)
+        avgText !== null && React.createElement("div", { style: { fontSize: 12.5, color: INDIGO, fontWeight: 400, marginTop: 2 } }, `avg: ${avgText}`),
+        candidates && React.createElement("button", {
+          onClick: () => onViewCandidates(candidates),
+          title: "See which candidates make up this number",
+          style: { fontSize: 9, color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, display: "block", textAlign: "left", textDecoration: "underline" }
+        }, `who? (${candidates.length})`)
       );
     }
 
@@ -4876,19 +4881,19 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 : cellWithAvg(78, m.phoneHours, monthAvg.phoneHours, false),
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 78, value: m.cvs, isOverridden: m.overrides.cvs, avgValue: monthAvg.cvs, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "cvs", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `CVs Out — ${m.monthKey}`, candidates }) })
-                : cellWithAvg(78, m.cvs, monthAvg.cvs, false),
+                : cellWithAvg(78, m.cvs, monthAvg.cvs, false, false, ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).cvsOut, (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `CVs Out — ${m.monthKey}`, candidates })),
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 86, value: m.interviews, isOverridden: m.overrides.interviews, avgValue: monthAvg.interviews, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "interviews", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Interviews — ${m.monthKey}`, candidates }) })
-                : cellWithAvg(86, m.interviews, monthAvg.interviews, false),
+                : cellWithAvg(86, m.interviews, monthAvg.interviews, false, false, ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).interviews, (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Interviews — ${m.monthKey}`, candidates })),
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 66, value: m.onsite, isOverridden: m.overrides.onsite, avgValue: monthAvg.onsite, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "onsite", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).onsite, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Onsite — ${m.monthKey}`, candidates }) })
-                : cellWithAvg(66, m.onsite, monthAvg.onsite, false),
+                : cellWithAvg(66, m.onsite, monthAvg.onsite, false, false, ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).onsite, (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Onsite — ${m.monthKey}`, candidates })),
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 66, value: m.offers, isOverridden: m.overrides.offers, avgValue: monthAvg.offers, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "offers", v), candidates: ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).offers, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Offers — ${m.monthKey}`, candidates }) })
-                : cellWithAvg(66, m.offers, monthAvg.offers, false),
+                : cellWithAvg(66, m.offers, monthAvg.offers, false, false, ((kpiLiveMonthlyDetails[m.monthKey] || {})[focusedPerson.id] || {}).offers, (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Offers — ${m.monthKey}`, candidates })),
               isAdmin
                 ? React.createElement(EditableKpiCell, { width: 96, value: m.placements, isOverridden: m.overrides.placements, avgValue: monthAvg.placements, onSave: (v) => saveKpiOverride(focusedPerson.id, m.monthKey, "placements", v), candidates: (placementDetails[focusedPerson.id] || {})[m.monthKey], onViewCandidates: (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Deals Agreed — ${m.monthKey}`, candidates }) })
-                : cellWithAvg(96, m.placements, monthAvg.placements, false),
+                : cellWithAvg(96, m.placements, monthAvg.placements, false, false, (placementDetails[focusedPerson.id] || {})[m.monthKey], (candidates) => setViewingCandidates({ consultantName: focusedPerson.name, metricLabel: `Deals Agreed — ${m.monthKey}`, candidates })),
               cellWithAvg(96, pipelinePctOrNull(m.interviews, m.cvs), monthAvg.pctCvInterview, true),
               cellWithAvg(104, pipelinePctOrNull(m.onsite, m.interviews), monthAvg.pctInterviewOnsite, true),
               cellWithAvg(96, pipelinePctOrNull(m.offers, m.onsite), monthAvg.pctOnsiteOffer, true),
@@ -4931,19 +4936,19 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               : React.createElement(Cell, { width: 78 }, r.phoneHours),
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 78, value: r.cvs, isOverridden: r.overrides.cvs, onSave: (v) => saveKpiOverride(r.id, monthKey, "cvs", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `CVs Out — ${monthKey}`, candidates }) })
-              : React.createElement(Cell, { width: 78 }, r.cvs),
+              : React.createElement(ReadOnlyKpiCell, { width: 78, value: r.cvs, candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).cvsOut, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `CVs Out — ${monthKey}`, candidates }) }),
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 86, value: r.interviews, isOverridden: r.overrides.interviews, onSave: (v) => saveKpiOverride(r.id, monthKey, "interviews", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Interviews — ${monthKey}`, candidates }) })
-              : React.createElement(Cell, { width: 86 }, r.interviews),
+              : React.createElement(ReadOnlyKpiCell, { width: 86, value: r.interviews, candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).interviews, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Interviews — ${monthKey}`, candidates }) }),
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 66, value: r.onsite, isOverridden: r.overrides.onsite, onSave: (v) => saveKpiOverride(r.id, monthKey, "onsite", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).onsite, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Onsite — ${monthKey}`, candidates }) })
-              : React.createElement(Cell, { width: 66 }, r.onsite),
+              : React.createElement(ReadOnlyKpiCell, { width: 66, value: r.onsite, candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).onsite, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Onsite — ${monthKey}`, candidates }) }),
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 66, value: r.offers, isOverridden: r.overrides.offers, onSave: (v) => saveKpiOverride(r.id, monthKey, "offers", v), candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).offers, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Offers — ${monthKey}`, candidates }) })
-              : React.createElement(Cell, { width: 66 }, r.offers),
+              : React.createElement(ReadOnlyKpiCell, { width: 66, value: r.offers, candidates: ((kpiLiveMonthlyDetails[monthKey] || {})[r.id] || {}).offers, onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Offers — ${monthKey}`, candidates }) }),
             isAdmin
               ? React.createElement(EditableKpiCell, { width: 96, value: r.placements, isOverridden: r.overrides.placements, onSave: (v) => saveKpiOverride(r.id, monthKey, "placements", v), candidates: (placementDetails[r.id] || {})[monthKey], onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Deals Agreed — ${monthKey}`, candidates }) })
-              : React.createElement(Cell, { width: 96 }, r.placements),
+              : React.createElement(ReadOnlyKpiCell, { width: 96, value: r.placements, candidates: (placementDetails[r.id] || {})[monthKey], onViewCandidates: (candidates) => setViewingCandidates({ consultantName: r.name, metricLabel: `Deals Agreed — ${monthKey}`, candidates }) }),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.interviews, r.cvs)),
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, pipelinePct(r.onsite, r.interviews)),
             React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, pipelinePct(r.offers, r.onsite)),
@@ -5202,6 +5207,23 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue, candida
       onClick: () => onViewCandidates(candidates),
       title: "See which candidates make up this number",
       style: { fontSize: 9, color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, textAlign: "left", textDecoration: "underline" }
+    }, `who? (${candidates.length})`)
+  );
+}
+// The read-only counterpart to EditableKpiCell above, for anyone who
+// isn't an admin — same live figure, same "who?" breakdown link when
+// candidate data exists, just without the editable input or the
+// override controls, which stay admin-only. Viewing who a number is
+// made up of is a different, lesser permission than being able to
+// change that number, so this is deliberately its own component rather
+// than just always rendering EditableKpiCell for everyone.
+function ReadOnlyKpiCell({ value, width, candidates, onViewCandidates }) {
+  return React.createElement("div", { style: { width, flexShrink: 0, paddingTop: 4 } },
+    React.createElement("span", { style: { fontWeight: 700 } }, value),
+    candidates && React.createElement("button", {
+      onClick: () => onViewCandidates(candidates),
+      title: "See which candidates make up this number",
+      style: { fontSize: 9, color: INDIGO_MUTED, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, display: "block", textAlign: "left", textDecoration: "underline" }
     }, `who? (${candidates.length})`)
   );
 }
