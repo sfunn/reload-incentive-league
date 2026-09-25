@@ -253,31 +253,51 @@ module.exports = async (req, res) => {
     if (!weekKey) return res.status(400).json({ error: "week is required, e.g. ?week=2026-W38" });
     const { monday, sunday } = isoWeekToDates(weekKey);
 
-    // Fetches every candidate from the week now, not just the first one
-    // — the earlier, single-candidate version couldn't have caught this
-    // exact issue (some candidates showing a job role, some not), since
-    // it always showed the same first candidate every time, no matter
-    // which one actually needed checking.
-    let apiRes;
-    try {
-      apiRes = await fetchAtlasWithRetry(
-        `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?createdAfter=${monday}&createdBefore=${sunday}&pageSize=20`,
-        { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-      );
-    } catch (e) {
-      return res.status(502).json({ error: `stage-events request failed: ${e.message}` });
+    // Pages through every event for the week now, not just the first
+    // 20 — a prior version stopped at one page, and a real week's
+    // eventCount landing exactly on that page size was the tell: a
+    // specific candidate genuinely being investigated could sit
+    // anywhere past that cutoff and never show up at all. Same
+    // pagination shape (cursorDate/cursorId, pagination.hasMore) already
+    // proven in computeKpiLiveForRange itself, capped generously (10
+    // pages, 100 each) to stay well inside one request's time budget.
+    let events = [];
+    let cursorDate = null, cursorId = null;
+    let pagesFetched = 0;
+    const MAX_PAGES = 10;
+    while (pagesFetched < MAX_PAGES) {
+      const params = new URLSearchParams({ createdAfter: monday, createdBefore: sunday, pageSize: "100" });
+      if (cursorDate && cursorId) {
+        params.set("cursorDate", cursorDate);
+        params.set("cursorId", cursorId);
+      }
+      let apiRes;
+      try {
+        apiRes = await fetchAtlasWithRetry(
+          `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+      } catch (e) {
+        return res.status(502).json({ error: `stage-events request failed: ${e.message}` });
+      }
+      if (!apiRes.ok) return res.status(502).json({ error: `stage-events request failed: ${apiRes.status}` });
+      const stageJson = await apiRes.json();
+      events = events.concat(stageJson.data || []);
+      pagesFetched++;
+      const pagination = stageJson.pagination || {};
+      if (!pagination.hasMore) break;
+      cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
+      cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
+      if (!cursorDate || !cursorId) break;
     }
-    if (!apiRes.ok) return res.status(502).json({ error: `stage-events request failed: ${apiRes.status}` });
-    const stageJson = await apiRes.json();
-    const events = stageJson.data || [];
     if (events.length === 0) return res.status(200).json({ note: `No events found for ${weekKey} at all`, candidates: [] });
 
     // A compact summary per candidate rather than the full raw blob for
     // every one of them — the earlier, single-candidate version returned
     // everything unmodified (including each project's own huge stages
     // list), which is fine for one candidate but would be an unreadably
-    // large paste for twenty. Still pulling from the real, raw response
-    // fields directly (movedBy.name, person.firstName/lastName,
+    // large paste for a whole week. Still pulling from the real, raw
+    // response fields directly (movedBy.name, person.firstName/lastName,
     // project.jobRole, owner.email) — nothing reshaped or guessed at,
     // just narrowed to what's actually relevant to this diagnosis.
     const candidates = await Promise.all(events.map(async (event) => {
@@ -305,7 +325,7 @@ module.exports = async (req, res) => {
       }
     }));
 
-    return res.status(200).json({ weekKey, eventCount: events.length, candidates });
+    return res.status(200).json({ weekKey, eventCount: events.length, pagesFetched, truncated: pagesFetched >= MAX_PAGES, candidates });
   }
 
   if (req.method === "GET" && action === "week-live") {
