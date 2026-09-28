@@ -90,6 +90,15 @@ const PROJECT_NAME_CACHE_PREFIX = "atlas-project-details:";
 // exist on a plain string. SHARED with atlas-fee-webhook.js's own copy
 // of this same lookup, which must use the identical prefix.
 const EXCLUDED_PROJECT_NAME = "citsec options";
+// The funnel order the four metrics sit in, used to decide what a
+// candidate's LATEST recorded stage actually confirms. A candidate
+// moved to Onsite and then moved straight back to 1st Stage Interview
+// (a real, confirmed scenario — a wrong click, corrected immediately)
+// should not still show as having reached Onsite just because that
+// stage was touched at some point; what should count is determined by
+// where they genuinely, currently stand, not by the highest point ever
+// briefly touched along the way.
+const METRIC_RANK = { cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -370,10 +379,15 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   // can be reconciled against Atlas by name, not just a bare count.
   // { [consultantId]: { cvsOut: [{candidateName, projectName}], interviews: [...], ... } }
   const peopleDetails = saved ? saved.peopleDetails : {};
-  const seenDedupeKeys = new Set(saved ? saved.seenDedupeKeys : []); // `${candidateId}:${projectId}:${metric}`
-  // `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> } — pairs found
-  // but not yet resolved, whether from earlier runs (resumed below) or this one's own fetching.
-  const pairsToResolve = new Map((saved ? saved.unresolvedPairs : []).map(([k, v]) => [k, { ...v, metrics: new Set(v.metrics) }]));
+  const seenDedupeKeys = new Set(saved ? saved.seenDedupeKeys : []); // Atlas's own event id, or a synthetic fallback when missing
+  // `${candidateId}:${projectId}` -> { projectId, candidateId, events: [{metric, movedAt}] }
+  // — every genuinely distinct mapped stage-move event seen for this
+  // pair, kept in full (not deduped down to a Set of which metrics were
+  // EVER touched) so the resolve step below can look at the pair's
+  // actual chronological order and decide what their current, final
+  // state really is — pairs found but not yet resolved, whether from
+  // earlier runs (resumed below) or this one's own fetching.
+  const pairsToResolve = new Map(saved ? saved.unresolvedPairs : []);
   let eventsSeen = saved ? saved.eventsSeen : 0;
   let eventsCounted = saved ? saved.eventsCounted : 0;
   let cursorDate = saved ? saved.cursorDate : null;
@@ -438,15 +452,28 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       const candidateId = event.candidate && event.candidate.id;
       if (!projectId || !candidateId) continue;
 
-      const dedupeKey = `${candidateId}:${projectId}:${metric}`;
+      // Deduped by the EVENT's own id now, not by candidate:project:metric
+      // — a real scenario showed exactly why the old key was wrong: a
+      // candidate moved to Onsite, then moved straight back to 1st Stage
+      // Interview (a genuine correction of a wrong click, confirmed
+      // directly), and the old dedup key would have permanently locked in
+      // "reached onsite" the moment that first event was seen, with no
+      // way for the later, corrective move to ever be considered at all,
+      // since candidate:project:onsite was already marked seen. Deduping
+      // by event id instead still protects against the same literal
+      // event being processed twice (e.g. Atlas redelivering it, or
+      // pagination overlap), while preserving every genuinely distinct
+      // transition — including a backward one — for the ranking logic
+      // below to actually use.
+      const dedupeKey = event.id || `${candidateId}:${projectId}:${metric}:${event.movedAt}`;
       if (seenDedupeKeys.has(dedupeKey)) continue;
       seenDedupeKeys.add(dedupeKey);
 
       const pairKey = `${candidateId}:${projectId}`;
       if (!pairsToResolve.has(pairKey)) {
-        pairsToResolve.set(pairKey, { projectId, candidateId, metrics: new Set() });
+        pairsToResolve.set(pairKey, { projectId, candidateId, events: [] });
       }
-      pairsToResolve.get(pairKey).metrics.add(metric);
+      pairsToResolve.get(pairKey).events.push({ metric, movedAt: event.movedAt || null });
     }
 
     const pagination = json.pagination || {};
@@ -492,7 +519,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       break;
     }
     const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
-    const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
+    const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, events }) => {
       const projectDetails = await lookupProjectDetails(kv, projectId);
       const projectJobRole = projectDetails ? projectDetails.jobRole : null;
       // The exclusion check compares against the PROJECT's own title
@@ -505,13 +532,39 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       const email = details ? details.email : null;
       const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
       if (!consultantId) return null;
+      // The candidate's chronologically LAST recorded event decides what
+      // genuinely counts — sorted here rather than trusted to already
+      // arrive in order, since events for the same pair can land across
+      // different pages, or even different resumed runs. Its metric's
+      // rank sets the ceiling: everything at or below that rank counts
+      // (a candidate currently at Onsite genuinely did pass through CV
+      // Sent and Interview too), but nothing ABOVE it does, even if an
+      // earlier event in their history briefly touched a higher stage —
+      // that's precisely the "moved to Onsite, moved straight back"
+      // scenario this whole restructure exists to handle correctly.
+      const sorted = events.slice().sort((a, b) => new Date(a.movedAt || 0) - new Date(b.movedAt || 0));
+      const finalMetric = sorted[sorted.length - 1].metric;
+      const finalRank = METRIC_RANK[finalMetric];
+      // Confirmed by Scott directly: reaching a stage implies every
+      // earlier one in the funnel genuinely happened too, whether or not
+      // Atlas has its own separate, discrete event recorded for each one
+      // individually (a candidate can be dropped straight into a later
+      // stage without a recruiter ever explicitly logging "CV Sent" as
+      // its own step) — so every metric AT OR BELOW the final rank
+      // counts, not only the ones with their own recorded event. The
+      // final rank itself is still what a genuine backward move lowers:
+      // Onsite followed by a move straight back to 1st Stage Interview
+      // means the final rank is Interview's, so Onsite sits above it and
+      // is correctly excluded — this combines both real, confirmed rules
+      // rather than picking one over the other.
+      const metricsToCount = Object.keys(METRIC_RANK).filter((m) => METRIC_RANK[m] <= finalRank);
       // projectName here is deliberately the CLIENT COMPANY (e.g. "PDT
       // Partners"), not the project's own title — jobRole is already
       // shown as its own, separate field below, so showing it twice
       // under two different labels was a real, visible bug: every
       // candidate in a breakdown showed the identical text twice
       // instead of the job title alongside the actual client.
-      return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
+      return { consultantId, metrics: metricsToCount, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
     }));
 
     for (let bi = 0; bi < batch.length; bi++) {
@@ -539,7 +592,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       await kv.set(progressCacheKey, {
         cursorDate, cursorId, people, peopleDetails,
         seenDedupeKeys: Array.from(seenDedupeKeys),
-        unresolvedPairs: Array.from(pairsToResolve.entries()).map(([k, v]) => [k, { ...v, metrics: Array.from(v.metrics) }]),
+        unresolvedPairs: Array.from(pairsToResolve.entries()),
         eventsSeen, eventsCounted,
       });
     }
