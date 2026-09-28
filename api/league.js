@@ -5,6 +5,7 @@ const {
   computeMonthlyKpiLive,
   computeWeeklyKpiLive,
   fetchAtlasWithRetry,
+  metricForStageName,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
@@ -326,6 +327,93 @@ module.exports = async (req, res) => {
     }));
 
     return res.status(200).json({ weekKey, eventCount: events.length, pagesFetched, truncated: pagesFetched >= MAX_PAGES, candidates });
+  }
+
+  if (req.method === "GET" && action === "debug-stage-name-coverage") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+
+    // What prompted this: a real pipeline (Citadel US Java Pipeline) uses
+    // "CV Submitted" instead of "CV Sent" for the same underlying step —
+    // any candidate moved through a differently-named equivalent stage,
+    // in ANY pipeline, was silently invisible to CVs Out, Interviews,
+    // Onsite or Offers alike, for as long as those metrics only matched
+    // one exact string apiece, with no signal anywhere that anything was
+    // being missed. This tallies every distinct stage name actually seen
+    // across the whole range in one pass — no per-candidate or
+    // per-project Atlas lookups at all, so it's fast even across a full
+    // month — and reports which ones aren't mapping to any of the four
+    // metrics, so a naming variant like that one surfaces on its own
+    // instead of needing someone to spot it by chance in Atlas's own UI.
+    const weekKey = req.query.week;
+    const monthParam = req.query.month; // "2026-09"
+    if (!weekKey && !monthParam) return res.status(400).json({ error: "week or month is required, e.g. ?month=2026-09 or ?week=2026-W38" });
+
+    let createdAfter, createdBefore, rangeLabel;
+    if (weekKey) {
+      const { monday, sunday } = isoWeekToDates(weekKey);
+      createdAfter = `${monday}T00:00:00.000Z`;
+      createdBefore = `${sunday}T23:59:59.999Z`;
+      rangeLabel = weekKey;
+    } else {
+      const [yearStr, monthStr] = monthParam.split("-");
+      const year = Number(yearStr);
+      const month = Number(monthStr);
+      const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      createdAfter = `${yearStr}-${monthStr}-01T00:00:00.000Z`;
+      createdBefore = `${yearStr}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
+      rangeLabel = monthParam;
+    }
+
+    const tally = {}; // { [stageName]: { count, mappedMetric } }
+    let cursorDate = null, cursorId = null;
+    let pagesFetched = 0;
+    let eventsSeen = 0;
+    const MAX_PAGES = 100;
+    const startTime = Date.now();
+    let truncated = false;
+    while (pagesFetched < MAX_PAGES) {
+      if (Date.now() - startTime > 45000) { truncated = true; break; }
+      const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
+      if (cursorDate && cursorId) {
+        params.set("cursorDate", cursorDate);
+        params.set("cursorId", cursorId);
+      }
+      const apiRes = await fetchAtlasWithRetry(
+        `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
+        { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+      );
+      if (!apiRes.ok) return res.status(502).json({ error: `stage-events request failed: ${apiRes.status}` });
+      const json = await apiRes.json();
+      pagesFetched++;
+      for (const event of json.data || []) {
+        eventsSeen++;
+        if (event.isReverted) continue;
+        const stageName = (event.stageTo && event.stageTo.name) || "(no stage name)";
+        if (!tally[stageName]) tally[stageName] = { count: 0, mappedMetric: metricForStageName(stageName) };
+        tally[stageName].count++;
+      }
+      const pagination = json.pagination || {};
+      if (!pagination.hasMore) break;
+      cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
+      cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
+      if (!cursorDate || !cursorId) break;
+    }
+    if (pagesFetched >= MAX_PAGES) truncated = true;
+
+    const stageNames = Object.entries(tally)
+      .map(([stageName, v]) => ({ stageName, count: v.count, mappedMetric: v.mappedMetric }))
+      .sort((a, b) => b.count - a.count);
+    const unmapped = stageNames.filter((s) => !s.mappedMetric);
+
+    return res.status(200).json({
+      range: rangeLabel, eventsSeen, pagesFetched, truncated,
+      note: unmapped.length > 0
+        ? `${unmapped.length} distinct stage name(s) aren't mapping to any of the four metrics — see "unmappedStageNames" below. Some of these are genuinely fine (offer-rejected, hired, sourcing-only stages, etc. were never meant to count) — but any that look like a CV-out/interview/onsite/offer equivalent under a different name is a real gap.`
+        : "Every stage name seen in this range maps to a known metric — no gaps found.",
+      unmappedStageNames: unmapped,
+      allStageNames: stageNames,
+    });
   }
 
   if (req.method === "GET" && action === "week-live") {
