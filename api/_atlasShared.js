@@ -287,17 +287,39 @@ async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
 // computation, so it gets the identical, already-proven logic rather
 // than a second implementation with its own new bugs to find. Does NOT
 // touch caching itself, deliberately: caching is the caller's decision.
-async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs = 45000) {
-  const people = {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
+//
+// progressKey (optional) is the piece that makes running this multiple
+// times in a row actually advance through a busy month, rather than
+// each run independently re-fetching from page 1 and getting a
+// different, disconnected slice depending on how far it got before
+// time ran out — which is exactly what two real runs showed happening
+// (1200 events seen, then 1400 on the next, neither building on the
+// other, since nothing about where the first run stopped was ever
+// remembered). When provided, this function loads whatever an earlier,
+// incomplete run left off at (the fetch cursor, everything counted so
+// far, and any pairs found but not yet resolved), continues from
+// exactly there, and saves the updated state back if it's still not
+// finished — genuine forward progress across runs, not several
+// independent, overlapping attempts at the same early slice.
+async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs = 45000, progressKey = null) {
+  const PROGRESS_CACHE_PREFIX = "atlas-kpi-progress:";
+  const progressCacheKey = progressKey ? `${PROGRESS_CACHE_PREFIX}${progressKey}` : null;
+  const saved = progressCacheKey ? await kv.get(progressCacheKey) : null;
+
+  const people = saved ? saved.people : {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
   // Same counts as `people` above, but broken down to the actual
   // candidates behind each number — added so a mismatched week/month
   // can be reconciled against Atlas by name, not just a bare count.
   // { [consultantId]: { cvsOut: [{candidateName, projectName}], interviews: [...], ... } }
-  const peopleDetails = {};
-  const seenDedupeKeys = new Set(); // `${candidateId}:${projectId}:${metric}`
-  const pairsToResolve = new Map(); // `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> }
-  let eventsSeen = 0, eventsCounted = 0;
-  let cursorDate = null, cursorId = null;
+  const peopleDetails = saved ? saved.peopleDetails : {};
+  const seenDedupeKeys = new Set(saved ? saved.seenDedupeKeys : []); // `${candidateId}:${projectId}:${metric}`
+  // `${candidateId}:${projectId}` -> { projectId, candidateId, metrics: Set<string> } — pairs found
+  // but not yet resolved, whether from earlier runs (resumed below) or this one's own fetching.
+  const pairsToResolve = new Map((saved ? saved.unresolvedPairs : []).map(([k, v]) => [k, { ...v, metrics: new Set(v.metrics) }]));
+  let eventsSeen = saved ? saved.eventsSeen : 0;
+  let eventsCounted = saved ? saved.eventsCounted : 0;
+  let cursorDate = saved ? saved.cursorDate : null;
+  let cursorId = saved ? saved.cursorId : null;
   let pagesFetched = 0;
   // A busy month (several consultants with 100+ CVs each) genuinely
   // exceeds the old cap of 20 pages / 2000 events, and that cap was
@@ -309,6 +331,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   const LOOKUP_CONCURRENCY = 15; // stays well inside Atlas's own 1200 requests/60s limit
   const startTime = Date.now();
   let hitPageCap = false;
+  let fetchComplete = false;
   // Fetching pages and resolving owners were sharing ONE clock — on a
   // genuinely busy month, fetching more pages (needed to avoid the
   // silent-truncation bug above) simply left less of that shared budget
@@ -369,18 +392,18 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     }
 
     const pagination = json.pagination || {};
-    if (!pagination.hasMore) break;
+    if (!pagination.hasMore) { fetchComplete = true; break; }
     cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
     cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
-    if (!cursorDate || !cursorId) break;
+    if (!cursorDate || !cursorId) { fetchComplete = true; break; }
   }
-  // The loop above can only exit two ways: an explicit break (genuinely
-  // ran out of data), or the while condition itself going false (hit
-  // MAX_PAGES with more still available) — this distinguishes the two,
-  // since silently hitting the cap and returning an incomplete count as
-  // if it were complete is exactly the bug that caused a real undercount
-  // against Atlas's own numbers.
+  // The loop above can only exit three ways: genuinely ran out of data
+  // (fetchComplete = true), or the page cap, or the fetch phase's own
+  // time ceiling — the latter two both mean there's more left to fetch,
+  // whether that shows up as the while condition itself going false or
+  // the explicit time-based break above.
   if (pagesFetched >= MAX_PAGES) hitPageCap = true;
+  if (hitPageCap) fetchComplete = false;
 
   const pairs = Array.from(pairsToResolve.values());
   // Resolving a pair's owner/project ALREADY caches it as it goes
@@ -410,6 +433,10 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: projectName || null, jobRole: (details && details.jobRole) || null };
     }));
 
+    for (let bi = 0; bi < batch.length; bi++) {
+      pairsToResolve.delete(`${batch[bi].candidateId}:${batch[bi].projectId}`);
+    }
+
     for (const r of resolved) {
       if (!r) continue;
       if (!people[r.consultantId]) people[r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
@@ -422,7 +449,22 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     }
   }
 
-  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched, hitPageCap, resolutionIncomplete };
+  const isFullyComplete = fetchComplete && !resolutionIncomplete;
+  if (progressCacheKey) {
+    if (isFullyComplete) {
+      // Genuinely done — nothing left to resume, so nothing left to remember.
+      await kv.del(progressCacheKey).catch(() => {});
+    } else {
+      await kv.set(progressCacheKey, {
+        cursorDate, cursorId, people, peopleDetails,
+        seenDedupeKeys: Array.from(seenDedupeKeys),
+        unresolvedPairs: Array.from(pairsToResolve.entries()).map(([k, v]) => [k, { ...v, metrics: Array.from(v.metrics) }]),
+        eventsSeen, eventsCounted,
+      });
+    }
+  }
+
+  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched, hitPageCap, resolutionIncomplete, isFullyComplete };
 }
 
 // Byte-identical copy of league.js's own isoWeekToDates — same principle
@@ -453,7 +495,7 @@ async function computeMonthlyKpiLive(kv, year, month, timeBudgetMs = 45000) {
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
   const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
-  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs);
+  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs, `month:${year}-${monthStr}`);
 }
 
 // Thin wrapper over the generic range computation, for a single ISO week
@@ -466,7 +508,7 @@ async function computeWeeklyKpiLive(kv, weekKey, timeBudgetMs = 45000) {
   const { monday, sunday } = isoWeekToDates(weekKey);
   const createdAfter = `${monday}T00:00:00.000Z`;
   const createdBefore = `${sunday}T23:59:59.999Z`;
-  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs);
+  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs, `week:${weekKey}`);
 }
 
 async function writeTally(kv, consultantId, metric, movedAt) {
