@@ -406,6 +406,17 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   if (hitPageCap) fetchComplete = false;
 
   const pairs = Array.from(pairsToResolve.values());
+  // Snapshotted BEFORE the resolve loop below starts deleting entries
+  // from pairsToResolve as it goes (needed so an incomplete run can
+  // persist exactly which pairs are still pending) — pairsToResolve.size
+  // now means something different by the time this function returns
+  // (how many are STILL unresolved, ideally 0), not how many existed in
+  // total. Reusing that same field for "how many were resolved" was a
+  // real, contradictory-looking bug: a run that finished catching up
+  // entirely reported "0 pairs resolved" alongside a genuinely nonzero
+  // events-counted figure, since 0 remaining were left in the map, not
+  // because nothing was actually processed.
+  const totalPairsThisCall = pairs.length;
   // Resolving a pair's owner/project ALREADY caches it as it goes
   // (lookupCandidateDetailsCached / lookupProjectName each write their
   // own KV entry the moment they succeed) — so throwing away the whole
@@ -464,7 +475,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     }
   }
 
-  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched, hitPageCap, resolutionIncomplete, isFullyComplete };
+  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: totalPairsThisCall - pairsToResolve.size, pairsPending: pairsToResolve.size, pagesFetched, hitPageCap, resolutionIncomplete, isFullyComplete };
 }
 
 // Byte-identical copy of league.js's own isoWeekToDates — same principle
