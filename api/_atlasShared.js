@@ -309,10 +309,26 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   const LOOKUP_CONCURRENCY = 15; // stays well inside Atlas's own 1200 requests/60s limit
   const startTime = Date.now();
   let hitPageCap = false;
+  // Fetching pages and resolving owners were sharing ONE clock — on a
+  // genuinely busy month, fetching more pages (needed to avoid the
+  // silent-truncation bug above) simply left less of that shared budget
+  // for resolving, which is the slower, rate-limited half. A real run
+  // showed this directly: raising the page cap fetched MORE events
+  // (2221 vs 2000) but resolved FEWER pairs (328 vs 441) in the same
+  // 45s, because more of it was spent just fetching. Giving fetching
+  // its own, smaller ceiling means resolving is always guaranteed a
+  // real, substantial share of the total budget, regardless of how
+  // busy the fetch phase turns out to be. Running out of fetch time
+  // early is treated exactly like hitting the page cap (hitPageCap =
+  // true) rather than a hard failure — a partial, honestly-labelled
+  // result is far more useful than throwing away everything resolved
+  // so far over a single slow phase.
+  const FETCH_PHASE_TIME_BUDGET_MS = Math.min(20000, timeBudgetMs * 0.45);
 
   while (pagesFetched < MAX_PAGES) {
-    if (Date.now() - startTime > timeBudgetMs) {
-      throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s fetching pages — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen so far). Try again in a minute.`);
+    if (Date.now() - startTime > FETCH_PHASE_TIME_BUDGET_MS) {
+      hitPageCap = true;
+      break;
     }
     const params = new URLSearchParams({ createdAfter, createdBefore, pageSize: "100" });
     if (cursorDate && cursorId) {
@@ -367,9 +383,21 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   if (pagesFetched >= MAX_PAGES) hitPageCap = true;
 
   const pairs = Array.from(pairsToResolve.values());
+  // Resolving a pair's owner/project ALREADY caches it as it goes
+  // (lookupCandidateDetailsCached / lookupProjectName each write their
+  // own KV entry the moment they succeed) — so throwing away the whole
+  // run on a timeout here was discarding a complete, aggregated result
+  // for the sake of the pairs that DIDN'T finish in time, when most of
+  // the ones that DID finish are already safely persisted regardless.
+  // Returning a partial, honestly-flagged result (resolutionIncomplete)
+  // instead means a busy month still produces something immediately
+  // useful, and the pairs already resolved here won't need re-fetching
+  // from Atlas on the next run either.
+  let resolutionIncomplete = false;
   for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
     if (Date.now() - startTime > timeBudgetMs) {
-      throw new Error(`Timed out after ${Math.round((Date.now() - startTime) / 1000)}s resolving owners — likely a sustained Atlas rate limit rather than a one-off blip (${eventsSeen} events seen, ${eventsCounted} counted so far). Try again in a minute.`);
+      resolutionIncomplete = true;
+      break;
     }
     const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
     const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
@@ -394,7 +422,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     }
   }
 
-  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched, hitPageCap };
+  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched, hitPageCap, resolutionIncomplete };
 }
 
 // Byte-identical copy of league.js's own isoWeekToDates — same principle
