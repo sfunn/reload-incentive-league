@@ -70,11 +70,12 @@ async function lookupProjectClientName(projectId) {
 // (shared KV key with atlas-webhook.js's own identical lookup) so a
 // project's name is only ever fetched from Atlas once, not on every fee
 // event tied to that same project.
-const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache"; // { [projectId]: projectName }
+const PROJECT_NAME_CACHE_PREFIX = "atlas-project-name:"; // one key per project — SHARED with _atlasShared.js's own copy of this lookup
 async function lookupProjectName(projectId) {
   if (!projectId) return null;
-  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
-  if (projectId in cache) return cache[projectId];
+  const cacheKey = `${PROJECT_NAME_CACHE_PREFIX}${projectId}`;
+  const cached = await kv.get(cacheKey);
+  if (cached !== null && cached !== undefined) return cached;
   let name = null;
   try {
     const res = await fetch(
@@ -83,13 +84,27 @@ async function lookupProjectName(projectId) {
     );
     if (res.ok) {
       const json = await res.json();
-      name = (json.data && json.data.name) || null;
+      // "CitSec Options" (the value the exclusion check compares
+      // against) is the PROJECT's own title, e.g. "Aaron Rosen: PDT -
+      // SWE Pipeline" — confirmed directly, not the client company name
+      // (that's company.name, a genuinely different field, e.g. "PDT
+      // Partners", used for projectClientName above). This function
+      // guessed company.name for a while, on the assumption "CitSec
+      // Options" was itself a company name — it isn't, so that guess
+      // meant the exclusion this feeds was still checking the wrong
+      // field even after that "fix". jobRole sits flat on this
+      // project-detail response (json.data.jobRole), no nested lookup
+      // needed. One key per project rather than one shared object for
+      // every project ever seen, too — see _atlasShared.js's own copy of
+      // this function for the fuller reasoning on that, since both must
+      // stay on the identical key prefix.
+      const data = json.data || {};
+      name = data.jobRole || null;
     }
   } catch (e) {
     console.error("[atlas-fee-webhook] project name lookup failed:", e.message);
   }
-  cache[projectId] = name;
-  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
+  if (name !== null) await kv.set(cacheKey, name);
   return name;
 }
 
