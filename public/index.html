@@ -4834,7 +4834,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         kpiWarmResult && React.createElement("div", { style: { fontSize: 12.5, color: kpiWarmResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           kpiWarmResult.ok
             ? (kpiWarmResult.month && kpiWarmResult.month.ok
-                ? `Warmed ${kpiWarmResult.monthKey} directly — ${kpiWarmResult.month.eventsSeen} event(s) seen, ${kpiWarmResult.month.eventsCounted} counted, ${kpiWarmResult.month.pairsResolved} unique candidate/project pair(s) resolved. This normally runs automatically on a schedule — use this only if it's clearly stale and you don't want to wait.`
+                ? `Warmed ${kpiWarmResult.monthKey} directly — ${kpiWarmResult.month.eventsSeen} event(s) seen, ${kpiWarmResult.month.eventsCounted} counted, ${kpiWarmResult.month.pairsResolved} unique candidate/project pair(s) resolved.${kpiWarmResult.month.hitPageCap ? " ⚠️ This month has MORE events than one run could fetch — the numbers above may still be an undercount. Run this again to keep making progress." : ""} This normally runs automatically on a schedule — use this only if it's clearly stale and you don't want to wait.`
                 : `Warming the month's own cache failed: ${(kpiWarmResult.month && kpiWarmResult.month.error) || "unknown error"} (the week's cache may still have warmed separately — check Weekly Incentive)`)
             : `Warming failed: ${kpiWarmResult.error}`
         )
