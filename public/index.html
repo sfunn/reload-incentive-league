@@ -4867,7 +4867,12 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             ? React.createElement(React.Fragment, null,
                 React.createElement("div", null, `Checked ${stageCoverageResult.range} — ${stageCoverageResult.eventsSeen} event(s) seen across ${stageCoverageResult.pagesFetched} page(s).${stageCoverageResult.truncated ? " ⚠️ More events exist than this one check could fetch — run it again for a fuller picture." : ""} ${stageCoverageResult.note}`),
                 stageCoverageResult.unmappedStageNames.length > 0 && React.createElement("div", { style: { marginTop: 6, display: "flex", flexDirection: "column", gap: 2 } },
-                  stageCoverageResult.unmappedStageNames.map((s, i) => React.createElement("div", { key: i }, `"${s.stageName}" — ${s.count} event(s), not counted toward anything`))
+                  stageCoverageResult.unmappedStageNames.map((s, i) => React.createElement("div", { key: i },
+                    `"${s.stageName}" — ${s.count} event(s), not counted toward anything`,
+                    s.pipelines && s.pipelines.length > 0 && React.createElement("div", { style: { marginLeft: 14, color: INDIGO_MUTED, fontSize: 11.5 } },
+                      `seen in: ${s.pipelines.map((p) => p.jobRole ? `${p.jobRole}${p.companyName ? ` (${p.companyName})` : ""}` : (p.projectId || "unknown pipeline")).join(", ")}`
+                    )
+                  ))
                 )
               )
             : `Stage name check failed: ${stageCoverageResult.error}`
