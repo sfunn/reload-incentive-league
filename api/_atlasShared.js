@@ -8,7 +8,16 @@
 // counts as what, which defeats the reconciliation job's entire purpose
 // (catching what the webhook missed, not re-litigating what counts).
 
-const CVS_OUT_STAGE = "CV Sent";
+// "CV Sent" is not the only name Reload's pipelines use for this same
+// step — confirmed directly: at least one live pipeline (Citadel US
+// Java Pipeline) labels its equivalent presentation stage "CV Submitted"
+// instead, and any candidate moved through THAT stage name was silently
+// invisible to this whole metric, in every pipeline using it, for as
+// long as this only matched one exact string. Kept as an array, same
+// shape as the other three metrics below, specifically so a newly
+// discovered variant name is a one-line addition here rather than a
+// structural change.
+const CVS_OUT_STAGES = ["CV Sent", "CV Submitted"];
 const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
 const ONSITE_STAGES = ["Onsite"];
 const OFFER_STAGES = ["Offer"];
@@ -72,7 +81,7 @@ function isoWeekKey(dateStr) {
 // from the candidate-stage-events API), returns which KPI metric it counts
 // toward, or null if it's not a tracked stage at all.
 function metricForStageName(stageName) {
-  if (stageName === CVS_OUT_STAGE) return "cvsOut";
+  if (CVS_OUT_STAGES.includes(stageName)) return "cvsOut";
   if (INTERVIEW_STAGES.includes(stageName)) return "interviews";
   if (ONSITE_STAGES.includes(stageName)) return "onsite";
   if (OFFER_STAGES.includes(stageName)) return "offers";
@@ -572,7 +581,7 @@ async function writeTally(kv, consultantId, metric, movedAt) {
 }
 
 module.exports = {
-  CVS_OUT_STAGE,
+  CVS_OUT_STAGES,
   INTERVIEW_STAGES,
   ONSITE_STAGES,
   OFFER_STAGES,
