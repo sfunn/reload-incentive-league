@@ -1121,6 +1121,25 @@ function App() {
       setKpiWarmLoading(false);
     }
   }
+  const [stageCoverageLoading, setStageCoverageLoading] = useState(false);
+  const [stageCoverageResult, setStageCoverageResult] = useState(null);
+  async function runStageNameCoverageCheck() {
+    setStageCoverageLoading(true);
+    setStageCoverageResult(null);
+    try {
+      const monthKey = `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`;
+      const res = await fetch(`/api/league?action=debug-stage-name-coverage&month=${monthKey}`, {
+        headers: { Authorization: `Bearer ${authUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Coverage check failed");
+      setStageCoverageResult({ ok: true, ...data });
+    } catch (e) {
+      setStageCoverageResult({ ok: false, error: e.message });
+    } finally {
+      setStageCoverageLoading(false);
+    }
+  }
   const [kpiOverrideError, setKpiOverrideError] = useState("");
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
@@ -4826,6 +4845,11 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           disabled: kpiWarmLoading,
           style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: kpiWarmLoading ? "default" : "pointer" }
         }, kpiWarmLoading ? "Warming…" : "Warm this month's KPI cache now"),
+        React.createElement("button", {
+          onClick: runStageNameCoverageCheck,
+          disabled: stageCoverageLoading,
+          style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: stageCoverageLoading ? "default" : "pointer", marginLeft: 8 }
+        }, stageCoverageLoading ? "Checking…" : "Check stage names for this month"),
         syncCheckResult && React.createElement("div", { style: { fontSize: 12.5, color: syncCheckResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           syncCheckResult.ok
             ? `Sync check ran — looked at ${syncCheckResult.eventsSeen} Atlas event(s) since ${new Date(syncCheckResult.createdAfter).toLocaleString()}, found ${syncCheckResult.eventsCounted} genuinely missing and added them to the Weekly Incentive tally (used by "Pull from Atlas" in Matchday Setup — this page's own numbers above are already always live from Atlas directly, and aren't affected by this). ${syncCheckResult.eventsCounted === 0 ? "Zero missing means the webhook already caught everything in this window — that's a good sign, not a sign this isn't working." : ""}`
@@ -4837,6 +4861,16 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 ? `Warmed ${kpiWarmResult.monthKey} directly — ${kpiWarmResult.month.eventsSeen} event(s) seen, ${kpiWarmResult.month.eventsCounted} counted, ${kpiWarmResult.month.pairsResolved} unique candidate/project pair(s) resolved.${kpiWarmResult.month.hitPageCap ? " ⚠️ This month has MORE events than one run could fetch." : ""}${kpiWarmResult.month.resolutionIncomplete ? " ⚠️ Not every candidate/project pair could be resolved in time — the numbers above are a genuine partial result, not the full month yet." : ""}${(kpiWarmResult.month.hitPageCap || kpiWarmResult.month.resolutionIncomplete) ? " Run this again to keep making progress — what's already resolved stays cached, so each run gets further." : " ✅ This month is now fully up to date — no need to run this again unless real time has passed and you want to pick up brand-new activity since now, since clicking it again immediately would just restart the whole fetch from scratch for little real benefit."}`
                 : `Warming the month's own cache failed: ${(kpiWarmResult.month && kpiWarmResult.month.error) || "unknown error"} (the week's cache may still have warmed separately — check Weekly Incentive)`)
             : `Warming failed: ${kpiWarmResult.error}`
+        ),
+        stageCoverageResult && React.createElement("div", { style: { fontSize: 12.5, color: stageCoverageResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
+          stageCoverageResult.ok
+            ? React.createElement(React.Fragment, null,
+                React.createElement("div", null, `Checked ${stageCoverageResult.range} — ${stageCoverageResult.eventsSeen} event(s) seen across ${stageCoverageResult.pagesFetched} page(s).${stageCoverageResult.truncated ? " ⚠️ More events exist than this one check could fetch — run it again for a fuller picture." : ""} ${stageCoverageResult.note}`),
+                stageCoverageResult.unmappedStageNames.length > 0 && React.createElement("div", { style: { marginTop: 6, display: "flex", flexDirection: "column", gap: 2 } },
+                  stageCoverageResult.unmappedStageNames.map((s, i) => React.createElement("div", { key: i }, `"${s.stageName}" — ${s.count} event(s), not counted toward anything`))
+                )
+              )
+            : `Stage name check failed: ${stageCoverageResult.error}`
         )
       ),
 
