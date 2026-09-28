@@ -27,13 +27,14 @@ const OFFER_COUNTED_KEY = "atlas-offer-counted";
 // project, no matter how many times that stage gets touched.
 const CVS_OUT_COUNTED_KEY = "atlas-cvsout-counted";
 
-const PROJECT_NAMES_CACHE_KEY = "atlas-project-names-cache-v2";
-// "-v2" because this cache key is SHARED with atlas-fee-webhook.js's own
-// copy of this same lookup (see its own comment for the full story) —
-// both were extracting the wrong field (a flat "name" that doesn't
-// exist; the real field is company.name) and both wrote into this same
-// cache, so every project id looked up by either one got permanently
-// stuck with a null name. Both files' cache key must stay in sync.
+const PROJECT_NAME_CACHE_PREFIX = "atlas-project-name:";
+// One key per project (a shared object under one KV key was the old
+// design — every touch read and rewrote the WHOLE thing, and concurrent
+// lookups, which this runs up to 15 at a time, could silently overwrite
+// each other's additions, losing entries that then had to be re-fetched
+// from Atlas and re-cached again later, repeatedly — a real, ongoing
+// driver of wasted KV commands). SHARED with atlas-fee-webhook.js's own
+// copy of this same lookup, which must use the identical prefix.
 const EXCLUDED_PROJECT_NAME = "citsec options";
 
 const EMAIL_TO_CONSULTANT = {
@@ -117,8 +118,9 @@ async function fetchAtlasWithRetry(url, options) {
 
 async function lookupProjectName(kv, projectId) {
   if (!projectId) return null;
-  const cache = (await kv.get(PROJECT_NAMES_CACHE_KEY)) || {};
-  if (projectId in cache) return cache[projectId];
+  const cacheKey = `${PROJECT_NAME_CACHE_PREFIX}${projectId}`;
+  const cached = await kv.get(cacheKey);
+  if (cached !== null && cached !== undefined) return cached;
   let name = null;
   try {
     const res = await fetchAtlasWithRetry(
@@ -127,24 +129,25 @@ async function lookupProjectName(kv, projectId) {
     );
     if (res.ok) {
       const json = await res.json();
-      // A project has no flat "name" field at all — confirmed directly
-      // from Atlas's own raw response (it returns jobRole and a nested
-      // company.name instead). This is genuinely the client's own name,
-      // e.g. "PDT Partners" — the same field atlas-fee-webhook.js's own
-      // lookupProjectClientName() already uses (json.data.company.name),
-      // proven correct there since it's what's driven this exact CitSec
-      // Options exclusion in production commission/KPI data all along.
-      // Deliberately matching that proven field rather than guessing
-      // again, since a guess is exactly what got this wrong twice
-      // already this session for the candidate-name lookup.
+      // "CitSec Options" (the value EXCLUDED_PROJECT_NAME checks
+      // against) is the PROJECT's own title, e.g. "Aaron Rosen: PDT -
+      // SWE Pipeline" — confirmed directly, not the client company name
+      // (that's company.name, a genuinely different field, e.g. "PDT
+      // Partners", used elsewhere for projectClientName). This function
+      // guessed company.name for a while, on the assumption "CitSec
+      // Options" was itself a company — it isn't, so that guess meant
+      // the exclusion this feeds was still checking the wrong field even
+      // after that "fix". jobRole sits flat on this project-detail
+      // response (json.data.jobRole), no nested lookup needed.
       const data = json.data || {};
-      name = (data.company && data.company.name) || null;
+      name = data.jobRole || null;
     }
   } catch (e) {
     console.error("[atlas-shared] project name lookup failed:", e.message);
   }
-  cache[projectId] = name;
-  await kv.set(PROJECT_NAMES_CACHE_KEY, cache);
+  // A genuinely missing name is deliberately NOT cached — a transient
+  // miss shouldn't calcify into a permanent one.
+  if (name !== null) await kv.set(cacheKey, name);
   return name;
 }
 
@@ -207,7 +210,7 @@ async function lookupCandidateDetails(projectId, candidateId) {
   return { email: owner ? owner.email : null, name, jobRole };
 }
 
-const CANDIDATE_OWNER_CACHE_KEY = "atlas-candidate-owner-cache"; // { [candidateId]: email | null }
+const CANDIDATE_OWNER_CACHE_PREFIX = "atlas-candidate-owner:"; // one key per candidate — email | null
 // A cached wrapper around the lookup above — used by any live, on-the-fly
 // computation (e.g. the KPI page's own live query) that may need to look
 // the same candidate up repeatedly across page loads. A candidate's owner
@@ -216,10 +219,16 @@ const CANDIDATE_OWNER_CACHE_KEY = "atlas-candidate-owner-cache"; // { [candidate
 // deliberately looks up fresh every time — a webhook event is rare enough
 // (one per stage move) that a stale cached owner would be a worse trade
 // there than it is here, where the same candidate can appear many times
-// across a single computation.
+// across a single computation. One key per candidate, not one shared
+// object holding every candidate ever seen — a shared object means every
+// touch reads and rewrites the whole thing, and concurrent lookups (this
+// runs many at once) writing back to that same key can silently
+// overwrite each other's additions, losing entries that then have to be
+// re-fetched and re-cached again later.
 async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
-  const cache = (await kv.get(CANDIDATE_OWNER_CACHE_KEY)) || {};
-  if (candidateId in cache) return cache[candidateId];
+  const cacheKey = `${CANDIDATE_OWNER_CACHE_PREFIX}${candidateId}`;
+  const cached = await kv.get(cacheKey);
+  if (cached !== null && cached !== undefined) return cached;
   let email = null;
   try {
     email = await lookupCandidateOwnerEmail(projectId, candidateId);
@@ -227,40 +236,23 @@ async function lookupCandidateOwnerEmailCached(kv, projectId, candidateId) {
     console.error("[atlas-shared] cached candidate owner lookup failed:", e.message);
     return null; // deliberately NOT cached — a transient failure shouldn't poison the cache
   }
-  cache[candidateId] = email;
-  await kv.set(CANDIDATE_OWNER_CACHE_KEY, cache);
+  if (email !== null) await kv.set(cacheKey, email);
   return email;
 }
 
-const CANDIDATE_DETAILS_CACHE_KEY = "atlas-candidate-details-cache-v3"; // { [candidateId]: { email, name, jobRole } | null }
+const CANDIDATE_DETAILS_CACHE_PREFIX = "atlas-candidate-detail:"; // one key per candidate — { email, name, jobRole } | null
 // Same caching principle as lookupCandidateOwnerEmailCached above, its
-// own separate cache key and shape ({email, name} objects, not bare
-// email strings) so it can't collide with or be corrupted by the
-// existing owner-only cache, or vice versa.
-//
-// The "-v2" suffix is deliberate, not decorative: the first version of
-// this lookup guessed the wrong field for a candidate's name (tried a
-// flat "name" field; Atlas actually nests it under person.firstName /
-// person.lastName), and every candidate looked up under that first,
-// wrong version got PERMANENTLY cached with name: null — this cache has
-// no expiry at all, so once poisoned, a candidate would show "Unknown
-// candidate" forever, even after the underlying lookup logic was fixed,
-// since the cache check short-circuits before the corrected logic ever
-// runs again for that same candidate. Renaming the key means every
-// candidate gets looked up fresh, under the corrected logic, exactly
-// once, rather than needing every poisoned entry found and cleared by
-// hand. A null name is also deliberately NOT cached below, for the same
-// reason: a transient miss shouldn't calcify into a permanent one.
-//
-// "-v3" now, for the exact same reason: jobRole was added to this same
-// lookup afterward, and every candidate already cached under "-v2" (a
-// plain {email, name} object, no jobRole key at all) would keep
-// returning without it forever otherwise — bumping the composite
-// week/month cache alone wasn't enough, since that recompute still
-// calls straight back into this same, still-poisoned cache underneath.
+// own separate cache key prefix and shape ({email, name, jobRole}
+// objects, not bare email strings) so it can't collide with or be
+// corrupted by the existing owner-only cache, or vice versa. One key per
+// candidate rather than one shared object — same reasoning as above:
+// every touch on a shared object means reading and rewriting the whole,
+// ever-growing thing, and concurrent lookups (up to 15 at once) writing
+// back to that one key can silently overwrite each other's additions.
 async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
-  const cache = (await kv.get(CANDIDATE_DETAILS_CACHE_KEY)) || {};
-  if (candidateId in cache) return cache[candidateId];
+  const cacheKey = `${CANDIDATE_DETAILS_CACHE_PREFIX}${candidateId}`;
+  const cached = await kv.get(cacheKey);
+  if (cached !== null && cached !== undefined) return cached;
   let details = null;
   try {
     details = await lookupCandidateDetails(projectId, candidateId);
@@ -269,12 +261,11 @@ async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
     return null; // deliberately NOT cached — a transient failure shouldn't poison the cache
   }
   // A genuine failure to find a name at all is also deliberately NOT
-  // cached — see the comment above the cache key: caching a null name
-  // forever is exactly the bug this fix is undoing, so this must not
+  // cached — caching a null name forever was exactly the bug this
+  // lookup already had to be fixed for once, so this must not
   // reintroduce the same failure mode for any future edge case.
   if (details && details.name) {
-    cache[candidateId] = details;
-    await kv.set(CANDIDATE_DETAILS_CACHE_KEY, cache);
+    await kv.set(cacheKey, details);
   }
   return details;
 }
@@ -472,7 +463,7 @@ module.exports = {
   INTERVIEW_COUNTED_KEY,
   ONSITE_COUNTED_KEY,
   OFFER_COUNTED_KEY,
-  PROJECT_NAMES_CACHE_KEY,
+  PROJECT_NAME_CACHE_PREFIX,
   EXCLUDED_PROJECT_NAME,
   EMAIL_TO_CONSULTANT,
   DEDUPE_KEY_BY_METRIC,
