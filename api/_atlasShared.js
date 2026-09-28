@@ -18,8 +18,24 @@
 // discovered variant name is a one-line addition here rather than a
 // structural change.
 const CVS_OUT_STAGES = ["CV Sent", "CV Submitted"];
-const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call"];
-const ONSITE_STAGES = ["Onsite"];
+// "Screen 1" confirmed by Scott as a genuine first-round
+// interview-equivalent stage — matching the same "only first-round
+// interviews count" policy already applied to "1st Stage Interview".
+// Its counterpart "Screen 2" is deliberately NOT included here: per
+// that same policy, only first-round stages count, and "Screen 2" is
+// a second round by name, same as the various "2nd Stage" spellings
+// this session also confirmed should stay uncounted.
+const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call", "Screen 1"];
+// Two entries for what's genuinely the one same stage, differing only by
+// a missing space after a "+" — confirmed as a real onsite-equivalent
+// stage by its own name ("Onsite (Design+Implementation+ Behavioural)"
+// vs "...+Behavioural)" with no space). Kept as two separate array
+// entries rather than trying to normalise the typo away, since a safe,
+// general "fuzzy" stage-name match risks silently absorbing some
+// genuinely different stage down the line — an explicit list stays
+// exact and auditable, at the small cost of needing a new entry
+// whenever a new typo variant of an existing name turns up.
+const ONSITE_STAGES = ["Onsite", "Onsite (Design+Implementation+ Behavioural)", "Onsite (Design+Implementation+Behavioural)"];
 const OFFER_STAGES = ["Offer"];
 
 const INTERVIEW_COUNTED_KEY = "atlas-interview-counted";
