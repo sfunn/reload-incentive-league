@@ -545,19 +545,36 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       const sorted = events.slice().sort((a, b) => new Date(a.movedAt || 0) - new Date(b.movedAt || 0));
       const finalMetric = sorted[sorted.length - 1].metric;
       const finalRank = METRIC_RANK[finalMetric];
-      // Confirmed by Scott directly: reaching a stage implies every
-      // earlier one in the funnel genuinely happened too, whether or not
-      // Atlas has its own separate, discrete event recorded for each one
-      // individually (a candidate can be dropped straight into a later
-      // stage without a recruiter ever explicitly logging "CV Sent" as
-      // its own step) — so every metric AT OR BELOW the final rank
-      // counts, not only the ones with their own recorded event. The
-      // final rank itself is still what a genuine backward move lowers:
-      // Onsite followed by a move straight back to 1st Stage Interview
-      // means the final rank is Interview's, so Onsite sits above it and
-      // is correctly excluded — this combines both real, confirmed rules
-      // rather than picking one over the other.
-      const metricsToCount = Object.keys(METRIC_RANK).filter((m) => METRIC_RANK[m] <= finalRank);
+      // Confirmed by Scott: reaching a stage implies every earlier one in
+      // the funnel genuinely happened too, even without its own separate,
+      // discrete event recorded — BUT that inference was tried
+      // unconditionally at first, and it caused a real, visible
+      // over-count: this function only ever sees events within ONE
+      // month (or week) at a time, so a candidate whose CV was genuinely
+      // sent back in August, who simply continues an ongoing pipeline
+      // into a September interview, would have September's own fetch
+      // see only the interview event — and inferring downward without
+      // limit manufactured a SEPTEMBER cvsOut credit for them regardless,
+      // duplicating a CV-sent count that August's own numbers had almost
+      // certainly already counted correctly.
+      //
+      // The fix: only fill the gap BETWEEN whatever's genuinely evidenced
+      // within THIS SAME window — never invent anything BELOW the lowest
+      // rank actually seen here. A candidate whose only event in this
+      // window is Onsite, with no CV Sent or Interview event of their own
+      // in this same range, gets ONLY Onsite (their CV Sent almost
+      // certainly happened in an earlier period, already counted there).
+      // But a candidate with BOTH a CV Sent event AND an Onsite event in
+      // this same window has their Interview correctly inferred in
+      // between, even with no separate event of its own — that gap is
+      // safely bounded by two real, same-window touchpoints, not reaching
+      // outside this window to invent one. The final rank still lowers
+      // the ceiling for a genuine backward move, same as before.
+      const actualRanks = events.map((e) => METRIC_RANK[e.metric]);
+      const minRankEvidenced = Math.min(...actualRanks);
+      const metricsToCount = Object.entries(METRIC_RANK)
+        .filter(([, rank]) => rank >= minRankEvidenced && rank <= finalRank)
+        .map(([m]) => m);
       // projectName here is deliberately the CLIENT COMPANY (e.g. "PDT
       // Partners"), not the project's own title — jobRole is already
       // shown as its own, separate field below, so showing it twice
