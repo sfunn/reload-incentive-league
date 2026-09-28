@@ -299,9 +299,16 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   let eventsSeen = 0, eventsCounted = 0;
   let cursorDate = null, cursorId = null;
   let pagesFetched = 0;
-  const MAX_PAGES = 20; // 20 * 100 = 2000 events, comfortably beyond one month's realistic volume
+  // A busy month (several consultants with 100+ CVs each) genuinely
+  // exceeds the old cap of 20 pages / 2000 events, and that cap was
+  // being hit SILENTLY — no error, no warning, just an undercount, which
+  // is exactly what was throwing the comparison against Atlas's own
+  // numbers off. Raised generously; still bounded so a genuinely
+  // pathological range can't run away entirely.
+  const MAX_PAGES = 100; // 100 * 100 = 10,000 events
   const LOOKUP_CONCURRENCY = 15; // stays well inside Atlas's own 1200 requests/60s limit
   const startTime = Date.now();
+  let hitPageCap = false;
 
   while (pagesFetched < MAX_PAGES) {
     if (Date.now() - startTime > timeBudgetMs) {
@@ -351,6 +358,13 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
     if (!cursorDate || !cursorId) break;
   }
+  // The loop above can only exit two ways: an explicit break (genuinely
+  // ran out of data), or the while condition itself going false (hit
+  // MAX_PAGES with more still available) — this distinguishes the two,
+  // since silently hitting the cap and returning an incomplete count as
+  // if it were complete is exactly the bug that caused a real undercount
+  // against Atlas's own numbers.
+  if (pagesFetched >= MAX_PAGES) hitPageCap = true;
 
   const pairs = Array.from(pairsToResolve.values());
   for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
@@ -380,7 +394,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     }
   }
 
-  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched };
+  return { people, peopleDetails, eventsSeen, eventsCounted, pairsResolved: pairsToResolve.size, pagesFetched, hitPageCap };
 }
 
 // Byte-identical copy of league.js's own isoWeekToDates — same principle
