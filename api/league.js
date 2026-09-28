@@ -6,6 +6,7 @@ const {
   computeWeeklyKpiLive,
   fetchAtlasWithRetry,
   metricForStageName,
+  lookupProjectDetails,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
@@ -365,7 +366,7 @@ module.exports = async (req, res) => {
       rangeLabel = monthParam;
     }
 
-    const tally = {}; // { [stageName]: { count, mappedMetric } }
+    const tally = {}; // { [stageName]: { count, mappedMetric, projectIds: Set } }
     let cursorDate = null, cursorId = null;
     let pagesFetched = 0;
     let eventsSeen = 0;
@@ -390,8 +391,15 @@ module.exports = async (req, res) => {
         eventsSeen++;
         if (event.isReverted) continue;
         const stageName = (event.stageTo && event.stageTo.name) || "(no stage name)";
-        if (!tally[stageName]) tally[stageName] = { count: 0, mappedMetric: metricForStageName(stageName) };
+        if (!tally[stageName]) tally[stageName] = { count: 0, mappedMetric: metricForStageName(stageName), projectIds: new Set() };
         tally[stageName].count++;
+        const projectId = event.project && event.project.id;
+        // Capped per stage name — a stage like "Sourcing" could span
+        // hundreds of distinct pipelines, and resolving every single one
+        // just to answer "which pipelines use this name" would be a lot
+        // of Atlas calls for no extra clarity beyond a representative
+        // handful.
+        if (projectId && tally[stageName].projectIds.size < 10) tally[stageName].projectIds.add(projectId);
       }
       const pagination = json.pagination || {};
       if (!pagination.hasMore) break;
@@ -402,9 +410,26 @@ module.exports = async (req, res) => {
     if (pagesFetched >= MAX_PAGES) truncated = true;
 
     const stageNames = Object.entries(tally)
-      .map(([stageName, v]) => ({ stageName, count: v.count, mappedMetric: v.mappedMetric }))
+      .map(([stageName, v]) => ({ stageName, count: v.count, mappedMetric: v.mappedMetric, projectIds: v.projectIds }))
       .sort((a, b) => b.count - a.count);
     const unmapped = stageNames.filter((s) => !s.mappedMetric);
+
+    // Only for the unmapped ones — resolving every distinct project for
+    // every stage name (mapped or not) would be a lot of extra Atlas
+    // calls (though cached, so cheap on repeat) for names that already
+    // aren't in question. This is specifically to answer "which
+    // pipelines actually use this name", so a real decision can be made
+    // about whether it deserves mapping, rather than guessing from the
+    // name alone.
+    for (const s of unmapped) {
+      const pipelines = await Promise.all(Array.from(s.projectIds).map(async (projectId) => {
+        const details = await lookupProjectDetails(kv, projectId);
+        return { projectId, jobRole: (details && details.jobRole) || null, companyName: (details && details.companyName) || null };
+      }));
+      s.pipelines = pipelines;
+      delete s.projectIds;
+    }
+    for (const s of stageNames) delete s.projectIds; // mapped ones never needed resolving, just drop the raw ids from the response
 
     return res.status(200).json({
       range: rangeLabel, eventsSeen, pagesFetched, truncated,
