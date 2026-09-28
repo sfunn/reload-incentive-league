@@ -272,6 +272,7 @@ async function warmKpiCache(req, res) {
       eventsCounted: live.eventsCounted,
       pairsResolved: live.pairsResolved,
       hitPageCap: live.hitPageCap,
+      resolutionIncomplete: live.resolutionIncomplete,
     };
   } catch (e) {
     console.error("[warm-kpi-cache] month warm failed:", e.message);
@@ -289,6 +290,7 @@ async function warmKpiCache(req, res) {
       eventsCounted: liveWeek.eventsCounted,
       pairsResolved: liveWeek.pairsResolved,
       hitPageCap: liveWeek.hitPageCap,
+      resolutionIncomplete: liveWeek.resolutionIncomplete,
     };
   } catch (e) {
     console.error("[warm-kpi-cache] week warm failed:", e.message);
