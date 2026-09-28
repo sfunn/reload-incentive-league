@@ -16,16 +16,39 @@
 // long as this only matched one exact string. Kept as an array, same
 // shape as the other three metrics below, specifically so a newly
 // discovered variant name is a one-line addition here rather than a
-// structural change.
-const CVS_OUT_STAGES = ["CV Sent", "CV Submitted"];
-// "Screen 1" confirmed by Scott as a genuine first-round
-// interview-equivalent stage — matching the same "only first-round
+// structural change. "Presented" confirmed the same way — genuinely the
+// same underlying step under a third name, seen across several DRW,
+// Optiver and Citadel Securities pipelines specifically. This is a
+// standing rule, not a one-off fix for those particular pipelines: any
+// future pipeline that also happens to use "Presented" for this same
+// step is covered automatically, without needing to be spotted and
+// reported individually each time.
+const CVS_OUT_STAGES = ["CV Sent", "CV Submitted", "Presented"];
+// "Screen 1" and "Screen 2" both confirmed by Scott as genuine
+// interview-equivalent stages — matching the same "only first-round
 // interviews count" policy already applied to "1st Stage Interview".
-// Its counterpart "Screen 2" is deliberately NOT included here: per
-// that same policy, only first-round stages count, and "Screen 2" is
-// a second round by name, same as the various "2nd Stage" spellings
-// this session also confirmed should stay uncounted.
-const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call", "Screen 1"];
+// "1st Round Face to Face (3 hour over Zoomm)" confirmed the same way —
+// a genuine first-round interview under a third, pipeline-specific name
+// (seen on Aaron Rosen: PDT - SWE Pipeline). "Screen 2"'s own exact
+// string includes a specific interviewer's name ("Screen 2 - System
+// Design w/Cian Lane") — matched here exactly as it actually appears,
+// same as every other entry in this list, rather than guessing at a
+// broader prefix rule for it; a different pipeline using "Screen 2"
+// under a different exact suffix would need its own confirmed entry
+// added the same way, the way "Presented" needed calling out explicitly
+// as a standing rule before it was treated as one.
+//
+// The various "2nd Stage" spellings (2nd Stage Interview, 2nd stage,
+// Second Stage, 2nd Stage) were first confirmed as NOT counting — only
+// first-round interviews were meant to count at all. That was reversed
+// on review of the real, live data: 2nd Stage Interview should count
+// toward the same Interviews KPI as a first interview after all. Every
+// spelling variant of the same underlying second-round stage is
+// included here together, for the same reason "CV Sent"/"CV
+// Submitted"/"Presented" are grouped above — these are one concept
+// spelled inconsistently across different, independently-set-up
+// pipelines, not several different concepts.
+const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call", "Screen 1", "Screen 2 - System Design w/Cian Lane", "1st Round Face to Face (3 hour over Zoomm)", "2nd Stage Interview", "2nd stage", "Second Stage", "2nd Stage"];
 // Two entries for what's genuinely the one same stage, differing only by
 // a missing space after a "+" — confirmed as a real onsite-equivalent
 // stage by its own name ("Onsite (Design+Implementation+ Behavioural)"
