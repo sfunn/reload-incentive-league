@@ -27,14 +27,20 @@ const OFFER_COUNTED_KEY = "atlas-offer-counted";
 // project, no matter how many times that stage gets touched.
 const CVS_OUT_COUNTED_KEY = "atlas-cvsout-counted";
 
-const PROJECT_NAME_CACHE_PREFIX = "atlas-project-name:";
+const PROJECT_NAME_CACHE_PREFIX = "atlas-project-details:";
 // One key per project (a shared object under one KV key was the old
 // design — every touch read and rewrote the WHOLE thing, and concurrent
 // lookups, which this runs up to 15 at a time, could silently overwrite
 // each other's additions, losing entries that then had to be re-fetched
 // from Atlas and re-cached again later, repeatedly — a real, ongoing
-// driver of wasted KV commands). SHARED with atlas-fee-webhook.js's own
-// copy of this same lookup, which must use the identical prefix.
+// driver of wasted KV commands). Renamed from "atlas-project-name:" to
+// "atlas-project-details:" because the cached SHAPE changed too, not
+// just its correctness: this used to cache a single string (jobRole),
+// and now caches {jobRole, companyName} as an object — an old,
+// string-shaped entry under the previous key would silently break both
+// consumers of this cache, since neither `.jobRole` nor `.companyName`
+// exist on a plain string. SHARED with atlas-fee-webhook.js's own copy
+// of this same lookup, which must use the identical prefix.
 const EXCLUDED_PROJECT_NAME = "citsec options";
 
 const EMAIL_TO_CONSULTANT = {
@@ -116,12 +122,12 @@ async function fetchAtlasWithRetry(url, options) {
   }
 }
 
-async function lookupProjectName(kv, projectId) {
+async function lookupProjectDetails(kv, projectId) {
   if (!projectId) return null;
   const cacheKey = `${PROJECT_NAME_CACHE_PREFIX}${projectId}`;
   const cached = await kv.get(cacheKey);
   if (cached !== null && cached !== undefined) return cached;
-  let name = null;
+  let jobRole = null, companyName = null;
   try {
     const res = await fetchAtlasWithRetry(
       `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
@@ -129,26 +135,30 @@ async function lookupProjectName(kv, projectId) {
     );
     if (res.ok) {
       const json = await res.json();
-      // "CitSec Options" (the value EXCLUDED_PROJECT_NAME checks
-      // against) is the PROJECT's own title, e.g. "Aaron Rosen: PDT -
-      // SWE Pipeline" — confirmed directly, not the client company name
-      // (that's company.name, a genuinely different field, e.g. "PDT
-      // Partners", used elsewhere for projectClientName). This function
-      // guessed company.name for a while, on the assumption "CitSec
-      // Options" was itself a company — it isn't, so that guess meant
-      // the exclusion this feeds was still checking the wrong field even
-      // after that "fix". jobRole sits flat on this project-detail
-      // response (json.data.jobRole), no nested lookup needed.
+      // Two genuinely different fields, both on this same response, and
+      // both needed for two genuinely different purposes — conflating
+      // them into one was a real bug this session: "CitSec Options" (the
+      // value EXCLUDED_PROJECT_NAME checks against) is the PROJECT's own
+      // title (jobRole, e.g. "Aaron Rosen: PDT - SWE Pipeline"), while
+      // the candidate breakdown shown to users needs the actual client
+      // company (company.name, e.g. "PDT Partners") — a genuinely
+      // different value. Fixing the exclusion check to use jobRole
+      // (confirmed correct) then had this same function ALSO feed the
+      // breakdown's displayed "project" field, which duplicated the job
+      // role text instead of showing the company — visible directly in
+      // a real breakdown, where every entry showed the same text twice.
       const data = json.data || {};
-      name = data.jobRole || null;
+      jobRole = data.jobRole || null;
+      companyName = (data.company && data.company.name) || null;
     }
   } catch (e) {
-    console.error("[atlas-shared] project name lookup failed:", e.message);
+    console.error("[atlas-shared] project details lookup failed:", e.message);
   }
+  const result = { jobRole, companyName };
   // A genuinely missing name is deliberately NOT cached — a transient
   // miss shouldn't calcify into a permanent one.
-  if (name !== null) await kv.set(cacheKey, name);
-  return name;
+  if (jobRole !== null || companyName !== null) await kv.set(cacheKey, result);
+  return result;
 }
 
 async function lookupCandidateOwnerEmail(projectId, candidateId) {
@@ -202,10 +212,10 @@ async function lookupCandidateDetails(projectId, candidateId) {
     null;
   // The specific job/pipeline title (e.g. "Aaron Rosen: PDT - SWE
   // Pipeline") — genuinely distinct from the client/company name
-  // (lookupProjectName, e.g. "PDT Partners"), and confirmed sitting
-  // right here in this SAME candidate-detail response already being
-  // fetched (data.project.jobRole), so no separate lookup or extra
-  // Atlas call is needed to get it.
+  // (lookupProjectDetails().companyName, e.g. "PDT Partners"), and
+  // confirmed sitting right here in this SAME candidate-detail response
+  // already being fetched (data.project.jobRole), so no separate lookup
+  // or extra Atlas call is needed to get it.
   const jobRole = (data.project && data.project.jobRole) || null;
   return { email: owner ? owner.email : null, name, jobRole };
 }
@@ -435,13 +445,25 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     }
     const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
     const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, metrics }) => {
-      const projectName = await lookupProjectName(kv, projectId);
-      if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
+      const projectDetails = await lookupProjectDetails(kv, projectId);
+      const projectJobRole = projectDetails ? projectDetails.jobRole : null;
+      // The exclusion check compares against the PROJECT's own title
+      // (jobRole, e.g. "CitSec Options") — confirmed directly, not the
+      // client company name, which is a genuinely different field used
+      // below for what's actually shown to a person reading the
+      // breakdown.
+      if (projectJobRole && projectJobRole.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
       const details = await lookupCandidateDetailsCached(kv, projectId, candidateId);
       const email = details ? details.email : null;
       const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
       if (!consultantId) return null;
-      return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: projectName || null, jobRole: (details && details.jobRole) || null };
+      // projectName here is deliberately the CLIENT COMPANY (e.g. "PDT
+      // Partners"), not the project's own title — jobRole is already
+      // shown as its own, separate field below, so showing it twice
+      // under two different labels was a real, visible bug: every
+      // candidate in a breakdown showed the identical text twice
+      // instead of the job title alongside the actual client.
+      return { consultantId, metrics, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
     }));
 
     for (let bi = 0; bi < batch.length; bi++) {
@@ -565,7 +587,7 @@ module.exports = {
   isoWeekKey,
   metricForStageName,
   fetchAtlasWithRetry,
-  lookupProjectName,
+  lookupProjectDetails,
   lookupCandidateOwnerEmail,
   lookupCandidateOwnerEmailCached,
   lookupCandidateDetails,
