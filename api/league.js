@@ -512,14 +512,19 @@ module.exports = async (req, res) => {
     const CACHE_TTL_MS = isRecent ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
     let computed, computedDetails;
+    // Set when Atlas is unreachable and a genuinely usable, if merely
+    // stale-by-TTL, cached result gets served instead of failing outright
+    // — the outage this guards against is exactly the kind where
+    // "slightly out of date" beats "completely unavailable". Included on
+    // the final response below so the frontend can show a clear "this
+    // may be outdated" note rather than presenting it as fully current.
+    let isStale = false;
+    let staleReason = null;
     // A cache entry written before this candidate-breakdown feature
     // existed has no peopleDetails field at all -- treated here as
     // stale regardless of age, forcing a fresh recompute, rather than
     // silently serving a technically-fresh-by-timestamp result that's
-    // missing information it's now supposed to carry. Without this, the
-    // very first deploy of this feature would show no candidate
-    // breakdowns for anyone until every cache entry happened to expire
-    // naturally, up to 6 hours away for the current week.
+    // missing information it's now supposed to carry.
     if (cached && cached.cachedAt && cached.peopleDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       computed = cached.people;
       computedDetails = cached.peopleDetails;
@@ -531,7 +536,15 @@ module.exports = async (req, res) => {
         await kv.set(CACHE_KEY, { people: computed, peopleDetails: computedDetails, cachedAt: Date.now() });
       } catch (e) {
         console.error("[week-live] live Atlas query failed:", e.message);
-        return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
+        if (cached && cached.peopleDetails) {
+          console.warn(`[week-live] serving stale cache for ${weekKey} — Atlas is unreachable, age: ${cached.cachedAt ? Math.round((Date.now() - cached.cachedAt) / 60000) + "min" : "unknown"}`);
+          computed = cached.people;
+          computedDetails = cached.peopleDetails;
+          isStale = true;
+          staleReason = `Couldn't reach Atlas for a fresh number — showing the last successfully loaded data instead${cached.cachedAt ? ` (from ${Math.round((Date.now() - cached.cachedAt) / 60000)} minutes ago)` : ""}.`;
+        } else {
+          return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
+        }
       }
     }
 
@@ -593,6 +606,7 @@ module.exports = async (req, res) => {
       metric: weekConfig.metric, threshold: weekConfig.threshold,
       isCurrentWeek,
       consultants, teamLeads,
+      stale: isStale, staleReason,
     });
   }
 
@@ -684,10 +698,27 @@ module.exports = async (req, res) => {
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
     let live;
+    let isStale = false;
+    let staleReason = null;
     try {
       live = await computeMonthlyKpiLive(kv, year, month);
     } catch (e) {
       console.error("[kpi-live-monthly] live Atlas query failed:", e.message);
+      // Atlas being unreachable shouldn't mean showing nothing at all
+      // when a genuinely usable, if merely stale-by-TTL, cached result
+      // already exists right here — the outage this guards against is
+      // exactly the kind where "slightly out of date" beats "completely
+      // unavailable". Only reached when the cache above didn't already
+      // satisfy the TTL check, so this is deliberately a second look at
+      // the SAME cached value with that requirement relaxed, not a
+      // separate, looser cache.
+      if (cached && cached.monthlyDetails) {
+        console.warn(`[kpi-live-monthly] serving stale cache for ${requestedMonthKey} — Atlas is unreachable, age: ${cached.cachedAt ? Math.round((Date.now() - cached.cachedAt) / 60000) + "min" : "unknown"}`);
+        return res.status(200).json({
+          year, month, monthly: { [requestedMonthKey]: cached.monthly }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails },
+          stale: true, staleReason: `Couldn't reach Atlas for a fresh number — showing the last successfully loaded data instead${cached.cachedAt ? ` (from ${Math.round((Date.now() - cached.cachedAt) / 60000)} minutes ago)` : ""}.`,
+        });
+      }
       return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
     }
 
@@ -699,7 +730,7 @@ module.exports = async (req, res) => {
 
     await kv.set(CACHE_KEY, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
 
-    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: live.people }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails } });
+    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: live.people }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails }, stale: isStale, staleReason });
   }
 
   if (req.method === "GET" && action === "placement-counts") {
