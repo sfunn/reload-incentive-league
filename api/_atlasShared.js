@@ -726,15 +726,21 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         // period, but whose CV Sent was never claimed by anyone,
         // correctly gets ONLY CV Sent inferred here, not a redundant
         // interview alongside it.
-        for (let rank = 1; rank < minRankEvidenced; rank++) {
-          const metric = Object.keys(METRIC_RANK).find((m) => METRIC_RANK[m] === rank);
-          // Re-warming the SAME period must still re-include its own,
-          // previously-inferred claim here too — checking only
-          // "never claimed by anyone" would incorrectly exclude it on a
-          // second run, since by then this exact period is the one that
-          // claimed it the first time around.
-          if (!firstReached[metric] || firstReached[metric] === periodKey) metricsToCount.push(metric);
-        }
+        // REVERTED AGAIN (third time) — Scott reported a fresh, genuine
+        // inflation in September's own numbers immediately after a
+        // clean "Warm" run, even after a proper, ordered backfill had
+        // completed successfully. The exact cause of THIS specific
+        // recurrence hasn't been confirmed yet (eventsCounted rose
+        // while pairsResolved dropped sharply in the same run, which
+        // doesn't yet have a fully verified explanation) — reverting
+        // immediately rather than guessing at a third live fix without
+        // being certain first. See the two comments above this one for
+        // the full history of what's already been tried and why each
+        // attempt didn't hold up. Any future attempt at this needs
+        // concrete, specific candidate examples of the inflation
+        // reproduced and understood BEFORE changing this code again,
+        // not iterated live against real production numbers a third
+        // time.
         // A metric stays countable in THIS period if: nothing's recorded
         // yet, this IS the period already recorded (so re-warming the
         // same period doesn't lose its own count), or this period is
