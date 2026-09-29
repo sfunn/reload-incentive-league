@@ -198,15 +198,39 @@ const MAX_RETRY_WAIT_MS = 2000;
 // way.
 const MAX_SERVER_ERROR_RETRIES = 1;
 const SERVER_ERROR_RETRY_WAIT_MS = 1000;
+// A genuine network-level failure (the connection itself never
+// completing — a DNS/routing/connectivity blip between here and Atlas,
+// tried across several IP addresses and still timing out) is a
+// different failure again from either of the two above: fetch() throws
+// outright here, rather than resolving with a response object at all,
+// so this needs its own try/catch around the call itself, which
+// neither of the two checks above provide. Same reasoning on the retry
+// budget as the 500 case — a single short retry smooths over a
+// genuinely transient blip without masking a sustained, real outage,
+// which will just fail the same way again and correctly surface as an
+// error.
+const MAX_NETWORK_ERROR_RETRIES = 1;
+const NETWORK_ERROR_RETRY_WAIT_MS = 1000;
 async function fetchAtlasWithRetry(url, options) {
-  // Two independent counters rather than one shared loop index — a 429
-  // and a 500 are different failure modes with different retry budgets,
-  // and folding both into a single shared attempt counter would mean a
-  // retry of one kind could silently eat into the other's own budget.
+  // Three independent counters rather than one shared loop index — a
+  // 429, a 500, and a network-level failure are three different failure
+  // modes with different retry budgets, and folding them into a single
+  // shared attempt counter would mean a retry of one kind could
+  // silently eat into another's own budget.
   let rateLimitAttempts = 0;
   let serverErrorAttempts = 0;
+  let networkErrorAttempts = 0;
   while (true) {
-    const res = await fetch(url, options);
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (e) {
+      if (networkErrorAttempts >= MAX_NETWORK_ERROR_RETRIES) throw e; // out of retries — let the caller see the real, final failure
+      networkErrorAttempts++;
+      console.warn(`[atlas-shared] network-level failure reaching Atlas (${e.message}), waiting ${NETWORK_ERROR_RETRY_WAIT_MS}ms before retry ${networkErrorAttempts}/${MAX_NETWORK_ERROR_RETRIES}`);
+      await new Promise((resolve) => setTimeout(resolve, NETWORK_ERROR_RETRY_WAIT_MS));
+      continue;
+    }
     if (res.status >= 500 && res.status < 600) {
       if (serverErrorAttempts >= MAX_SERVER_ERROR_RETRIES) return res; // out of retries — let the caller see the final error
       serverErrorAttempts++;
