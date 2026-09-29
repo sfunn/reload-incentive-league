@@ -890,6 +890,20 @@ module.exports = async (req, res) => {
     return res.status(200).json({ overrides });
   }
 
+  if (req.method === "GET" && action === "cv-history-backfill-status") {
+    // Lets the KPI page's own backfill tools check what's already
+    // genuinely, fully done (written by atlas-reconcile-cron.js
+    // whenever a month or week completes without needing another pass)
+    // BEFORE walking through any periods at all — so a refresh mid-run,
+    // or simply clicking the button again later, correctly skips
+    // straight to whatever's left, rather than re-doing already-settled
+    // history from the very start every single time.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    const progress = (await kv.get("atlas-cv-history-backfill-done")) || { month: {}, week: {} };
+    return res.status(200).json(progress);
+  }
+
   if (req.method === "POST" && action === "set-kpi-override") {
     const user = await getUserFromRequest(req);
     if (!user || !user.isAdmin) {
