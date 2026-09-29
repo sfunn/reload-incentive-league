@@ -330,6 +330,85 @@ module.exports = async (req, res) => {
     return res.status(200).json({ weekKey, eventCount: events.length, pagesFetched, truncated: pagesFetched >= MAX_PAGES, candidates });
   }
 
+  if (req.method === "GET" && action === "debug-atlas-endpoints") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+
+    // Built specifically to answer one question a persistent 500 on
+    // candidate-stage-events leaves open: is this ONE endpoint broken
+    // for us, or is Atlas's whole API unreachable right now? Those point
+    // at very different things (a bug tied to this specific query vs.
+    // something wrong with the API key or account overall), and this is
+    // the most direct way to tell them apart — testing several genuinely
+    // different endpoints in one pass, each reported on its own, rather
+    // than inferring anything from just the one that's already known to
+    // fail.
+    const results = {};
+
+    // A deliberately tiny, single-day window — if volume or date-range
+    // size were somehow the trigger, this rules that out by asking for
+    // as little as possible.
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const res1 = await fetchAtlasWithRetry(
+        `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?createdAfter=${today}T00:00:00.000Z&createdBefore=${today}T23:59:59.999Z&pageSize=5`,
+        { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+      );
+      const body = await res1.text().catch(() => "");
+      results.candidateStageEvents = { status: res1.status, ok: res1.ok, body: body.slice(0, 300) };
+    } catch (e) {
+      results.candidateStageEvents = { error: e.message };
+    }
+
+    // Only run if a real project id is supplied — Scott can copy one
+    // straight from Atlas's own URL bar while viewing any pipeline. Not
+    // guessed at or scanned for, since a wrong id would just be its own,
+    // unrelated 404 muddying the actual answer.
+    const projectId = req.query.projectId;
+    if (projectId) {
+      try {
+        const res2 = await fetchAtlasWithRetry(
+          `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+        const body = await res2.text().catch(() => "");
+        results.projectDetail = { status: res2.status, ok: res2.ok, body: body.slice(0, 300) };
+      } catch (e) {
+        results.projectDetail = { error: e.message };
+      }
+    } else {
+      results.projectDetail = { skipped: "no ?projectId= supplied" };
+    }
+
+    const candidateId = req.query.candidateId;
+    if (projectId && candidateId) {
+      try {
+        const res3 = await fetchAtlasWithRetry(
+          `https://api.recruitwithatlas.com/api/v1/projects/${projectId}/candidates/${candidateId}`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+        const body = await res3.text().catch(() => "");
+        results.candidateDetail = { status: res3.status, ok: res3.ok, body: body.slice(0, 300) };
+      } catch (e) {
+        results.candidateDetail = { error: e.message };
+      }
+    } else {
+      results.candidateDetail = { skipped: "needs both ?projectId= and ?candidateId=" };
+    }
+
+    const allOk = Object.values(results).every((r) => r.ok || r.skipped);
+    const allFailed = Object.entries(results).filter(([, r]) => !r.skipped).every(([, r]) => !r.ok);
+
+    return res.status(200).json({
+      results,
+      note: allOk
+        ? "Every endpoint tested came back fine — whatever's happening with the live pages isn't showing up here."
+        : allFailed
+          ? "Every endpoint tested is failing, not just candidate-stage-events — this looks like the whole API is unreachable for this key right now, not one specific query."
+          : "Mixed results — some endpoints work and others don't, which narrows this down to something specific about the failing one(s), not the API key or account as a whole.",
+    });
+  }
+
   if (req.method === "GET" && action === "debug-stage-name-coverage") {
     const caller = await getUserFromRequest(req);
     if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
