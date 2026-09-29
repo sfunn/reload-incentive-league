@@ -1126,6 +1126,72 @@ function App() {
       setKpiWarmLoading(false);
     }
   }
+  // One-time, ordered backfill: re-warms every month from the league's
+  // actual start (June 2026) through the current month, oldest first,
+  // so each one gets a genuine chance to claim its own real history
+  // before a later month ever checks against it — the precondition the
+  // cross-period "infer missing earlier stages" rule in _atlasShared.js
+  // depends on to be safe. Runs entirely automatically: each month is
+  // retried on its own (up to a few attempts) if it comes back needing
+  // another pass, before moving on to the next — Scott shouldn't need
+  // to push anything again unless something genuinely, persistently
+  // fails partway through.
+  const BACKFILL_START = { year: 2026, month: 6 };
+  const MAX_ATTEMPTS_PER_MONTH = 5;
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [backfillMonths, setBackfillMonths] = useState([]); // [{ year, month, monthKey, status: "pending"|"running"|"done"|"failed", detail }]
+  const [backfillOutcome, setBackfillOutcome] = useState(null); // "complete" | "failed" | null
+  async function runCvSentHistoryBackfill() {
+    const now = new Date();
+    const months = [];
+    let y = BACKFILL_START.year, m = BACKFILL_START.month;
+    while (y < now.getUTCFullYear() || (y === now.getUTCFullYear() && m <= now.getUTCMonth() + 1)) {
+      months.push({ year: y, month: m, monthKey: `${y}-${String(m).padStart(2, "0")}`, status: "pending", detail: null });
+      m++;
+      if (m > 12) { m = 1; y++; }
+    }
+    setBackfillMonths(months);
+    setBackfillOutcome(null);
+    setBackfillRunning(true);
+    for (let i = 0; i < months.length; i++) {
+      setBackfillMonths((prev) => prev.map((x, idx) => idx === i ? { ...x, status: "running" } : x));
+      let done = false;
+      let lastDetail = null;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MONTH && !done; attempt++) {
+        try {
+          const res = await fetch(`/api/atlas-reconcile-cron?task=warm-kpi-cache&year=${months[i].year}&month=${months[i].month}`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${authUser.token}` },
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Warming failed");
+          lastDetail = data.month;
+          if (data.month && data.month.ok && !data.month.hitPageCap && !data.month.resolutionIncomplete) {
+            done = true;
+          }
+        } catch (e) {
+          lastDetail = { ok: false, error: e.message };
+          break; // a genuine error (not just "needs another pass") stops retrying this month immediately
+        }
+      }
+      setBackfillMonths((prev) => prev.map((x, idx) => idx === i ? { ...x, status: done ? "done" : "failed", detail: lastDetail } : x));
+      if (!done) {
+        setBackfillOutcome("failed");
+        setBackfillRunning(false);
+        return; // stop the whole sequence here -- a later month must not run before this one has genuinely, fully finished
+      }
+    }
+    setBackfillOutcome("complete");
+    setBackfillRunning(false);
+    // Refresh whichever month is currently being viewed, so a corrected
+    // result shows up immediately rather than waiting for the next
+    // natural page load.
+    const viewedYear = pipelineYear, viewedMonth = pipelineMonth;
+    fetch(`/api/league?action=kpi-live-monthly&year=${viewedYear}&month=${viewedMonth}`)
+      .then(r => r.json())
+      .then(d => { if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly })); if (d && d.monthlyDetails) setKpiLiveMonthlyDetails(prev => ({ ...prev, ...d.monthlyDetails })); })
+      .catch(() => {});
+  }
   const [stageCoverageLoading, setStageCoverageLoading] = useState(false);
   const [stageCoverageResult, setStageCoverageResult] = useState(null);
   async function runStageNameCoverageCheck() {
@@ -4896,6 +4962,27 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           disabled: kpiWarmLoading,
           style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: kpiWarmLoading ? "default" : "pointer" }
         }, kpiWarmLoading ? "Warming…" : "Warm this month's KPI cache now"),
+        React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 6 } },
+            "One-time setup so a candidate dropped straight into an interview stage, with no separate CV Sent event anywhere, correctly counts as a CV Sent too — safely, without double-counting anyone whose CV really was sent in an earlier month. Runs through every month from June 2026 to now, oldest first, automatically."
+          ),
+          React.createElement("button", {
+            onClick: runCvSentHistoryBackfill,
+            disabled: backfillRunning,
+            style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: backfillRunning ? "default" : "pointer" }
+          }, backfillRunning ? "Running…" : "Set up CV Sent history (one-time)"),
+          backfillMonths.length > 0 && React.createElement("div", { style: { marginTop: 8, fontSize: 12.5 } },
+            backfillMonths.map((m, i) => React.createElement("div", { key: i, style: { color: m.status === "failed" ? "#B5744F" : m.status === "done" ? INDIGO_MUTED : INDIGO_MUTED, opacity: m.status === "pending" ? 0.5 : 1 } },
+              `${m.status === "done" ? "✅" : m.status === "failed" ? "⚠️" : m.status === "running" ? "…" : "·"} ${m.monthKey}${m.status === "failed" && m.detail ? ` — ${m.detail.error || "didn't finish after several attempts"}` : ""}`
+            )),
+            backfillOutcome === "complete" && React.createElement("div", { style: { marginTop: 6, color: INDIGO_MUTED, fontWeight: 600 } },
+              "✅ All done — every month from June to now has now genuinely, fully established its own history. No need to run this again unless a brand-new month needs the same setup later on."
+            ),
+            backfillOutcome === "failed" && React.createElement("div", { style: { marginTop: 6, color: "#B5744F", fontWeight: 600 } },
+              "This didn't finish — the month above marked ⚠️ never came back fully complete, so nothing after it was safe to run yet. Whatever's already marked ✅ is genuinely done and won't be redone. Click the button again once you're ready to retry from here."
+            )
+          )
+        ),
         React.createElement("button", {
           onClick: runStageNameCoverageCheck,
           disabled: stageCoverageLoading,
