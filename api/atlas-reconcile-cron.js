@@ -253,10 +253,22 @@ async function warmKpiCache(req, res) {
   }
 
   const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth() + 1;
+  // Accepts an optional, explicit past month to warm instead of always
+  // defaulting to right now — needed specifically for re-establishing
+  // real, Atlas-derived numbers for old months that had been manually
+  // overridden, since clearing an override alone does nothing if that
+  // month's own live cache was never actually (re-)computed to replace
+  // it. When a specific month is requested this way, only that month is
+  // warmed — the week-warm below is skipped, since a requested past
+  // month has no "current week" of its own that would make sense to
+  // refresh alongside it.
+  const explicitYear = req.query && req.query.year ? Number(req.query.year) : null;
+  const explicitMonth = req.query && req.query.month ? Number(req.query.month) : null;
+  const year = explicitYear || now.getUTCFullYear();
+  const month = explicitMonth || (now.getUTCMonth() + 1);
   const monthKey = `${year}-${String(month).padStart(2, "0")}`;
   const weekKey = isoWeekKey(now.toISOString());
+  const warmingSpecificPastMonth = !!(explicitYear && explicitMonth);
 
   const result = { ok: true, triggeredBy, monthKey, weekKey };
 
@@ -284,30 +296,39 @@ async function warmKpiCache(req, res) {
     result.month = { ok: false, error: e.message };
   }
 
-  try {
-    const liveWeek = await computeWeeklyKpiLive(kv, weekKey);
-    // Same reasoning as the month cache just above.
-    await kv.set(`atlas-week-cache-v4:${weekKey}`, { people: liveWeek.people, peopleDetails: liveWeek.peopleDetails, cachedAt: Date.now() });
-    result.week = {
-      ok: true,
-      pagesFetched: liveWeek.pagesFetched,
-      eventsSeen: liveWeek.eventsSeen,
-      eventsCounted: liveWeek.eventsCounted,
-      pairsResolved: liveWeek.pairsResolved,
-      hitPageCap: liveWeek.hitPageCap,
-      resolutionIncomplete: liveWeek.resolutionIncomplete,
-    };
-  } catch (e) {
-    console.error("[warm-kpi-cache] week warm failed:", e.message);
-    result.week = { ok: false, error: e.message };
+  if (warmingSpecificPastMonth) {
+    // A specific past month was explicitly requested — its own week has
+    // no natural relationship to "this week" (the current one), so
+    // there's nothing meaningful to warm here; skipped and reported
+    // clearly rather than silently warming an unrelated week instead.
+    result.week = { skipped: "a specific past month was requested — the current week isn't relevant to it" };
+  } else {
+    try {
+      const liveWeek = await computeWeeklyKpiLive(kv, weekKey);
+      // Same reasoning as the month cache just above.
+      await kv.set(`atlas-week-cache-v4:${weekKey}`, { people: liveWeek.people, peopleDetails: liveWeek.peopleDetails, cachedAt: Date.now() });
+      result.week = {
+        ok: true,
+        pagesFetched: liveWeek.pagesFetched,
+        eventsSeen: liveWeek.eventsSeen,
+        eventsCounted: liveWeek.eventsCounted,
+        pairsResolved: liveWeek.pairsResolved,
+        hitPageCap: liveWeek.hitPageCap,
+        resolutionIncomplete: liveWeek.resolutionIncomplete,
+      };
+    } catch (e) {
+      console.error("[warm-kpi-cache] week warm failed:", e.message);
+      result.week = { ok: false, error: e.message };
+    }
   }
 
   // Only a genuine, total failure (both the month and the week failed)
   // is reported as an overall error status — a partial success (one
   // warmed, one didn't) still returns 200 with each result clearly
   // broken out, since that's genuinely useful, actionable information,
-  // not a reason to hide the half that DID work.
-  const overallOk = result.month.ok || result.week.ok;
+  // not a reason to hide the half that DID work. A skipped week (see
+  // above) isn't a failure, so it doesn't drag this down either.
+  const overallOk = result.month.ok || result.week.ok || result.week.skipped;
   return res.status(overallOk ? 200 : 502).json(result);
 }
 
