@@ -5,7 +5,7 @@ const {
   EMAIL_TO_CONSULTANT,
   DEDUPE_KEY_BY_METRIC,
   metricForStageName,
-  lookupProjectName,
+  lookupProjectDetails,
   lookupCandidateOwnerEmail,
   isoWeekKey,
   computeMonthlyKpiLive,
@@ -138,8 +138,13 @@ module.exports = async function handler(req, res) {
         if (!projectId || !candidateId) { eventsSkippedNotTracked++; continue; }
 
         try {
-          const projectName = await lookupProjectName(kv, projectId);
-          if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
+          // The exclusion check compares against the PROJECT's own title
+          // (jobRole, e.g. "CitSec Options") — confirmed directly, not the
+          // client company name, which lookupProjectDetails also returns
+          // but which isn't what's being checked against here.
+          const projectDetails = await lookupProjectDetails(kv, projectId);
+          const projectJobRole = projectDetails ? projectDetails.jobRole : null;
+          if (projectJobRole && projectJobRole.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
             eventsSkippedExcludedProject++;
             continue;
           }
