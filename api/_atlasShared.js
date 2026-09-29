@@ -556,7 +556,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   // because nothing was actually processed.
   const totalPairsThisCall = pairs.length;
   // Resolving a pair's owner/project ALREADY caches it as it goes
-  // (lookupCandidateDetailsCached / lookupProjectName each write their
+  // (lookupCandidateDetailsCached / lookupProjectDetails each write their
   // own KV entry the moment they succeed) — so throwing away the whole
   // run on a timeout here was discarding a complete, aggregated result
   // for the sake of the pairs that DIDN'T finish in time, when most of
