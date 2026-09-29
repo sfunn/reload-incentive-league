@@ -396,16 +396,19 @@ module.exports = async (req, res) => {
       results.candidateDetail = { skipped: "needs both ?projectId= and ?candidateId=" };
     }
 
+    const testedCount = Object.values(results).filter((r) => !r.skipped).length;
     const allOk = Object.values(results).every((r) => r.ok || r.skipped);
     const allFailed = Object.entries(results).filter(([, r]) => !r.skipped).every(([, r]) => !r.ok);
 
     return res.status(200).json({
       results,
-      note: allOk
-        ? "Every endpoint tested came back fine — whatever's happening with the live pages isn't showing up here."
-        : allFailed
-          ? "Every endpoint tested is failing, not just candidate-stage-events — this looks like the whole API is unreachable for this key right now, not one specific query."
-          : "Mixed results — some endpoints work and others don't, which narrows this down to something specific about the failing one(s), not the API key or account as a whole.",
+      note: testedCount < 2
+        ? "Only one endpoint was actually tested here (candidate-stage-events) — a projectId (and ideally a candidateId too) is needed to test the other two and tell whether this is specific to that one query or the whole API. Nothing meaningful can be concluded from a single endpoint's result alone, whichever way it goes."
+        : allOk
+          ? "Every endpoint tested came back fine — whatever's happening with the live pages isn't showing up here."
+          : allFailed
+            ? "Every endpoint tested is failing, not just candidate-stage-events — this looks like the whole API is unreachable for this key right now, not one specific query."
+            : "Mixed results — some endpoints work and others don't, which narrows this down to something specific about the failing one(s), not the API key or account as a whole.",
     });
   }
 
