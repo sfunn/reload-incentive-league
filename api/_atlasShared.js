@@ -369,9 +369,38 @@ async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
 // finished — genuine forward progress across runs, not several
 // independent, overlapping attempts at the same early slice.
 async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs = 45000, progressKey = null) {
-  const PROGRESS_CACHE_PREFIX = "atlas-kpi-progress:";
+  const PROGRESS_CACHE_PREFIX = "atlas-kpi-progress-v2:";
+  // "-v2" because this cache's own stored SHAPE changed mid-session —
+  // {metrics: Set} became {projectId, candidateId, events: [{metric,
+  // movedAt}]} once the counting logic needed each pair's actual
+  // chronological history, not just which metrics it had ever touched.
+  // Missing this exact lesson (already learned once earlier this same
+  // session for the candidate-details and project-name caches) is
+  // precisely what took the whole site down: a progress entry saved
+  // under the OLD shape has no `.events` array at all, so the newest
+  // code's `events.map(...)` throws outright the moment it tries to
+  // resume from it — not a graceful error, a genuine crash, surfacing to
+  // every page as a 502 since week-live and kpi-live-monthly both run
+  // through this same function on every load. Renaming the key clears
+  // every stale entry out in one move, the same fix already proven for
+  // this exact failure mode elsewhere in this file.
   const progressCacheKey = progressKey ? `${PROGRESS_CACHE_PREFIX}${progressKey}` : null;
-  const saved = progressCacheKey ? await kv.get(progressCacheKey) : null;
+  let saved = progressCacheKey ? await kv.get(progressCacheKey) : null;
+  // Defends against exactly the failure that took the whole site down
+  // once already: a saved entry in a shape this version of the code
+  // doesn't recognise (an old deployment's leftover state, or any other
+  // future shape change someone forgets to version the key for) must
+  // never crash the request outright — it should just be treated as "no
+  // usable progress", the same as if nothing had been saved at all, and
+  // let the fetch start fresh. A bare "does it have unresolvedPairs" is
+  // not enough on its own — it's specifically checking each entry has
+  // the CURRENT shape (an events array, not the old metrics Set) that
+  // matters, since a stale entry can have the right top-level keys and
+  // still crash the moment something inside it is read.
+  if (saved && Array.isArray(saved.unresolvedPairs) && !saved.unresolvedPairs.every(([, v]) => v && Array.isArray(v.events))) {
+    console.error(`[atlas-shared] discarding incompatible saved progress for ${progressKey} — not the current shape`);
+    saved = null;
+  }
 
   const people = saved ? saved.people : {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
   // Same counts as `people` above, but broken down to the actual
