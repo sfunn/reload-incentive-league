@@ -1012,6 +1012,7 @@ function App() {
   const [kpiLiveMonthlyDetails, setKpiLiveMonthlyDetails] = useState({});
   const [kpiFetchErrors, setKpiFetchErrors] = useState({}); // { [monthKey]: errorMessage } — a month that failed to load, distinct from a month that genuinely has zero activity
   const [kpiFetchLoading, setKpiFetchLoading] = useState({}); // { [monthKey]: true } — a month genuinely still being fetched, distinct from real zeros and from a real failure; a busy month can take 5-10s, this is what makes that visible instead of looking broken or empty
+  const [kpiStaleWarnings, setKpiStaleWarnings] = useState({}); // { [monthKey]: reason } — Atlas was unreachable and this is the last successfully loaded data, not a fresh number; distinct from both a real error and a genuinely current result
   const fetchKpiMonth = useCallback(async (year, month) => {
     const mk = `${year}-${String(month).padStart(2, "0")}`;
     if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
@@ -1023,6 +1024,10 @@ function App() {
         setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
         if (d.monthlyDetails) setKpiLiveMonthlyDetails(prev => ({ ...prev, ...d.monthlyDetails }));
         setKpiFetchErrors(prev => { if (!prev[mk]) return prev; const next = { ...prev }; delete next[mk]; return next; });
+        setKpiStaleWarnings(prev => {
+          if (!d.stale) { if (!prev[mk]) return prev; const next = { ...prev }; delete next[mk]; return next; }
+          return { ...prev, [mk]: d.staleReason || "Showing the last successfully loaded data — Atlas couldn't be reached for a fresh number." };
+        });
       } else {
         setKpiFetchErrors(prev => ({ ...prev, [mk]: (d && d.error) || `Request failed (${res.status})` }));
       }
@@ -2885,6 +2890,11 @@ function App() {
       const activeLoading = viewingPast ? pastWeekLoading : liveWeekLoading;
 
       return React.createElement(React.Fragment, null,
+        activeWeek && activeWeek.stale && React.createElement("div", { style: { marginBottom: 12, padding: "8px 12px", borderRadius: 6, background: "rgba(255,176,140,0.12)", border: "1px solid rgba(255,176,140,0.4)" } },
+          React.createElement("div", { style: { fontSize: 12.5, color: "#B5744F" } },
+            `⚠️ Showing older data — ${activeWeek.staleReason || "Atlas couldn't be reached for a fresh number."}`
+          )
+        ),
         React.createElement(Panel, null,
           React.createElement(SectionTitle, { eyebrow: viewingPast ? "Reviewing a past week" : "This week's setup", title: "Metric & threshold" }),
           React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 } },
@@ -4832,6 +4842,24 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             }),
             style: { marginTop: 6, padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(181,116,79,0.4)", background: WHITE, color: "#B5744F", fontSize: 12, cursor: "pointer" }
           }, "Retry")
+        );
+      })(),
+      // A month showing stale, last-known-good data (Atlas was
+      // unreachable, but a genuinely usable cached result already
+      // existed) — distinct from the failure banner above, and from the
+      // number simply looking current when it may not be. Same
+      // relevant-months scoping as that banner, since both are
+      // reporting on the same underlying fetch.
+      (() => {
+        const relevantMonthKeys = focusedPerson
+          ? Array.from({ length: 12 }, (_, i) => `${pipelineYear}-${String(i + 1).padStart(2, "0")}`)
+          : [`${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`];
+        const staleMonthKeys = relevantMonthKeys.filter(mk => kpiStaleWarnings[mk]);
+        if (staleMonthKeys.length === 0) return null;
+        return React.createElement("div", { style: { marginBottom: 12, padding: "8px 12px", borderRadius: 6, background: "rgba(255,176,140,0.12)", border: "1px solid rgba(255,176,140,0.4)" } },
+          React.createElement("div", { style: { fontSize: 12.5, color: "#B5744F" } },
+            `⚠️ ${staleMonthKeys.length === 1 ? staleMonthKeys[0] : staleMonthKeys.length + " month(s)"} showing older data — ${kpiStaleWarnings[staleMonthKeys[0]]}`
+          )
         );
       })(),
       isSuperAdmin && React.createElement("div", { style: { marginBottom: 12 } },
