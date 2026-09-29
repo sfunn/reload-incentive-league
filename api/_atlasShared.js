@@ -48,7 +48,17 @@ const CVS_OUT_STAGES = ["CV Sent", "CV Submitted", "Presented"];
 // Submitted"/"Presented" are grouped above — these are one concept
 // spelled inconsistently across different, independently-set-up
 // pipelines, not several different concepts.
-const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call", "Screen 1", "Screen 2 - System Design w/Cian Lane", "1st Round Face to Face (3 hour over Zoomm)", "2nd Stage Interview", "2nd stage", "Second Stage", "2nd Stage"];
+// three confirmed August variants: "1st Stage" (a shorter label for the
+// same "1st Stage Interview"), "1st Stage Interview (2xTechnicals)" (a
+// pipeline running two technical rounds back to back, still a genuine
+// first-round interview), and "HR Call" (capital C — the identical
+// stage as the already-mapped "HR call", just typed differently in one
+// specific pipeline; matching this exact case is deliberate rather than
+// making the whole check case-insensitive, same reasoning as "Screen 2"
+// above — a different capitalisation elsewhere would need its own
+// confirmed entry, not a blanket rule that could silently absorb
+// something genuinely different).
+const INTERVIEW_STAGES = ["1st Stage Interview", "HRX", "HR call", "HR Call", "Screen 1", "Screen 2 - System Design w/Cian Lane", "1st Round Face to Face (3 hour over Zoomm)", "2nd Stage Interview", "2nd stage", "Second Stage", "2nd Stage", "1st Stage", "1st Stage Interview (2xTechnicals)"];
 // Two entries for what's genuinely the one same stage, differing only by
 // a missing space after a "+" — confirmed as a real onsite-equivalent
 // stage by its own name ("Onsite (Design+Implementation+ Behavioural)"
