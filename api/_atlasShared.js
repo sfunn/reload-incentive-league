@@ -99,6 +99,21 @@ const EXCLUDED_PROJECT_NAME = "citsec options";
 // where they genuinely, currently stand, not by the highest point ever
 // briefly touched along the way.
 const METRIC_RANK = { cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
+// Confirmed by Scott directly: each candidate/project pair should only
+// ever count toward a given metric ONCE across its whole history — not
+// once per month. Without this, a candidate whose first interview
+// happened in August, then genuinely moved to a later-round interview
+// stage in September, would count as a fresh September interview too,
+// since each month's own computation only ever looks at events within
+// its own window and has no memory of what any other month already
+// counted. This is the permanent, cross-period record that fixes that:
+// one key per (granularity, candidate, project) — month and week
+// tracked entirely separately, since they're different views a person
+// might reasonably want counted on their own terms — holding, per
+// metric, the period it was FIRST ever counted in. A later period sees
+// that record and skips re-counting anything already claimed by an
+// earlier one.
+const FIRST_REACHED_CACHE_PREFIX = "atlas-first-reached:";
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -642,9 +657,41 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       // the ceiling for a genuine backward move, same as before.
       const actualRanks = events.map((e) => METRIC_RANK[e.metric]);
       const minRankEvidenced = Math.min(...actualRanks);
-      const metricsToCount = Object.entries(METRIC_RANK)
+      let metricsToCount = Object.entries(METRIC_RANK)
         .filter(([, rank]) => rank >= minRankEvidenced && rank <= finalRank)
         .map(([m]) => m);
+      // Cross-period dedup — confirmed by Scott: a candidate should only
+      // ever count toward a given metric once, ever, not once per period.
+      // Only applied when there's an actual period identity to dedup
+      // against (progressKey); every real caller (computeMonthlyKpiLive,
+      // computeWeeklyKpiLive) always provides one, but this stays
+      // optional so a caller with no well-defined "period" concept isn't
+      // forced into it. Deliberately one combined key per pair, holding
+      // all four metrics together, rather than one key per metric — a
+      // pair with several metrics to check costs exactly one read and at
+      // most one write here either way, not one of each per metric.
+      if (progressKey && metricsToCount.length > 0) {
+        const [granularity, periodKey] = [progressKey.slice(0, progressKey.indexOf(":")), progressKey.slice(progressKey.indexOf(":") + 1)];
+        const firstReachedKey = `${FIRST_REACHED_CACHE_PREFIX}${granularity}:${candidateId}:${projectId}`;
+        const firstReached = (await kv.get(firstReachedKey)) || {};
+        // A metric stays countable in THIS period if: nothing's recorded
+        // yet, this IS the period already recorded (so re-warming the
+        // same period doesn't lose its own count), or this period is
+        // chronologically EARLIER than whatever's recorded — periods
+        // aren't always computed in order (an older month can genuinely
+        // be re-warmed after a newer one already ran), and the true
+        // first occurrence must always win, not whichever one happened
+        // to be computed first. Both keys are zero-padded (2026-09,
+        // 2026-W38), so plain string comparison sorts chronologically.
+        const stillNew = metricsToCount.filter((m) => !firstReached[m] || firstReached[m] === periodKey || periodKey < firstReached[m]);
+        const updated = { ...firstReached };
+        let changed = false;
+        for (const m of stillNew) {
+          if (!updated[m] || periodKey < updated[m]) { updated[m] = periodKey; changed = true; }
+        }
+        if (changed) await kv.set(firstReachedKey, updated);
+        metricsToCount = stillNew;
+      }
       // projectName here is deliberately the CLIENT COMPANY (e.g. "PDT
       // Partners"), not the project's own title — jobRole is already
       // shown as its own, separate field below, so showing it twice
