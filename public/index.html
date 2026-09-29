@@ -1150,10 +1150,22 @@ function App() {
       m++;
       if (m > 12) { m = 1; y++; }
     }
+    // Pick up exactly where an earlier run (possibly interrupted by a
+    // refresh) left off — any month already recorded as genuinely,
+    // fully done is marked done immediately, with no request made for
+    // it at all, rather than being re-walked from scratch.
+    try {
+      const statusRes = await fetch("/api/league?action=cv-history-backfill-status", { headers: { Authorization: `Bearer ${authUser.token}` } });
+      const status = await statusRes.json();
+      if (status && status.month) {
+        for (const mo of months) if (status.month[mo.monthKey]) mo.status = "done";
+      }
+    } catch (e) { /* if this check fails, fall through and just walk every month as normal */ }
     setBackfillMonths(months);
     setBackfillOutcome(null);
     setBackfillRunning(true);
     for (let i = 0; i < months.length; i++) {
+      if (months[i].status === "done") continue; // already established in an earlier run -- nothing to do here
       setBackfillMonths((prev) => prev.map((x, idx) => idx === i ? { ...x, status: "running" } : x));
       let done = false;
       let lastDetail = null;
@@ -1191,6 +1203,84 @@ function App() {
       .then(r => r.json())
       .then(d => { if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly })); if (d && d.monthlyDetails) setKpiLiveMonthlyDetails(prev => ({ ...prev, ...d.monthlyDetails })); })
       .catch(() => {});
+  }
+  // Same faithful backend algorithm (see isoWeekKey in api/_atlasShared.js)
+  // reproduced here — week numbering is genuinely subtle (a year can
+  // have 52 or 53 of them), so this walks real calendar dates one week
+  // at a time rather than trying to guess at week-count arithmetic, to
+  // guarantee it always agrees with the backend on exactly which weeks
+  // exist.
+  function isoWeekKeyFrontend(dateStr) {
+    const d = new Date(dateStr);
+    const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const dayNum = (target.getUTCDay() + 6) % 7;
+    target.setUTCDate(target.getUTCDate() - dayNum + 3);
+    const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+    const week = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+    return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+  }
+  // Same one-time, ordered backfill idea as the monthly version above,
+  // for the Weekly Incentive page's own, completely separate history —
+  // month and week each track "first reached" independently by design,
+  // so weekly needs this run on its own too, not covered by the monthly
+  // pass at all.
+  const BACKFILL_START_WEEK = "2026-06-29"; // the Monday of 2026-W27, the league's actual first tracked week
+  const MAX_ATTEMPTS_PER_WEEK = 5;
+  const [weeklyBackfillRunning, setWeeklyBackfillRunning] = useState(false);
+  const [backfillWeeks, setBackfillWeeks] = useState([]); // [{ weekKey, status, detail }]
+  const [weeklyBackfillOutcome, setWeeklyBackfillOutcome] = useState(null);
+  async function runWeeklyCvSentHistoryBackfill() {
+    const weeks = [];
+    const seen = new Set();
+    let cursor = new Date(BACKFILL_START_WEEK + "T00:00:00.000Z");
+    const now = new Date();
+    while (cursor <= now) {
+      const wk = isoWeekKeyFrontend(cursor.toISOString());
+      if (!seen.has(wk)) { seen.add(wk); weeks.push({ weekKey: wk, status: "pending", detail: null }); }
+      cursor = new Date(cursor.getTime() + 7 * 24 * 60 * 60 * 1000);
+    }
+    // Same resume-from-where-it-left-off check as the monthly version.
+    try {
+      const statusRes = await fetch("/api/league?action=cv-history-backfill-status", { headers: { Authorization: `Bearer ${authUser.token}` } });
+      const status = await statusRes.json();
+      if (status && status.week) {
+        for (const wk of weeks) if (status.week[wk.weekKey]) wk.status = "done";
+      }
+    } catch (e) { /* if this check fails, fall through and just walk every week as normal */ }
+    setBackfillWeeks(weeks);
+    setWeeklyBackfillOutcome(null);
+    setWeeklyBackfillRunning(true);
+    for (let i = 0; i < weeks.length; i++) {
+      if (weeks[i].status === "done") continue; // already established in an earlier run -- nothing to do here
+      setBackfillWeeks((prev) => prev.map((x, idx) => idx === i ? { ...x, status: "running" } : x));
+      let done = false;
+      let lastDetail = null;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_WEEK && !done; attempt++) {
+        try {
+          const res = await fetch(`/api/atlas-reconcile-cron?task=warm-kpi-cache&week=${encodeURIComponent(weeks[i].weekKey)}`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${authUser.token}` },
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Warming failed");
+          lastDetail = data.week;
+          if (data.week && data.week.ok && !data.week.hitPageCap && !data.week.resolutionIncomplete) {
+            done = true;
+          }
+        } catch (e) {
+          lastDetail = { ok: false, error: e.message };
+          break;
+        }
+      }
+      setBackfillWeeks((prev) => prev.map((x, idx) => idx === i ? { ...x, status: done ? "done" : "failed", detail: lastDetail } : x));
+      if (!done) {
+        setWeeklyBackfillOutcome("failed");
+        setWeeklyBackfillRunning(false);
+        return;
+      }
+    }
+    setWeeklyBackfillOutcome("complete");
+    setWeeklyBackfillRunning(false);
   }
   const [stageCoverageLoading, setStageCoverageLoading] = useState(false);
   const [stageCoverageResult, setStageCoverageResult] = useState(null);
@@ -4980,6 +5070,27 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             ),
             backfillOutcome === "failed" && React.createElement("div", { style: { marginTop: 6, color: "#B5744F", fontWeight: 600 } },
               "This didn't finish — the month above marked ⚠️ never came back fully complete, so nothing after it was safe to run yet. Whatever's already marked ✅ is genuinely done and won't be redone. Click the button again once you're ready to retry from here."
+            )
+          )
+        ),
+        React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 6 } },
+            "Same one-time setup as above, for the Weekly Incentive page specifically — month and week track this history completely separately, so this needs its own run. Goes through every week from 2026-W27 to now, oldest first, automatically."
+          ),
+          React.createElement("button", {
+            onClick: runWeeklyCvSentHistoryBackfill,
+            disabled: weeklyBackfillRunning,
+            style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: weeklyBackfillRunning ? "default" : "pointer" }
+          }, weeklyBackfillRunning ? "Running…" : "Set up CV Sent history for weeks (one-time)"),
+          backfillWeeks.length > 0 && React.createElement("div", { style: { marginTop: 8, fontSize: 12.5, maxHeight: 200, overflowY: "auto" } },
+            backfillWeeks.map((w, i) => React.createElement("div", { key: i, style: { color: w.status === "failed" ? "#B5744F" : INDIGO_MUTED, opacity: w.status === "pending" ? 0.5 : 1 } },
+              `${w.status === "done" ? "✅" : w.status === "failed" ? "⚠️" : w.status === "running" ? "…" : "·"} ${w.weekKey}${w.status === "failed" && w.detail ? ` — ${w.detail.error || "didn't finish after several attempts"}` : ""}`
+            )),
+            weeklyBackfillOutcome === "complete" && React.createElement("div", { style: { marginTop: 6, color: INDIGO_MUTED, fontWeight: 600 } },
+              "✅ All done — every week from 2026-W27 to now has now genuinely, fully established its own history. No need to run this again unless a brand-new week needs the same setup later on."
+            ),
+            weeklyBackfillOutcome === "failed" && React.createElement("div", { style: { marginTop: 6, color: "#B5744F", fontWeight: 600 } },
+              "This didn't finish — the week above marked ⚠️ never came back fully complete, so nothing after it was safe to run yet. Whatever's already marked ✅ is genuinely done and won't be redone. Click the button again once you're ready to retry from here."
             )
           )
         ),
