@@ -163,18 +163,42 @@ const DEDUPE_KEY_BY_METRIC = {
 // reset) than gambled on silently within one request.
 const MAX_RATE_LIMIT_RETRIES = 1;
 const MAX_RETRY_WAIT_MS = 2000;
+// A 500 from Atlas's own side is a different failure than a 429 — there's
+// no retryAfterSec to honor, since it's not telling us to back off a
+// budget, just that something briefly went wrong on its end. A single
+// short, fixed retry is enough to smooth over the transient blips this
+// kind of error usually is, without masking a genuinely broken request
+// by retrying it forever — a request that's actually malformed will
+// just fail the same way twice and correctly surface as an error either
+// way.
+const MAX_SERVER_ERROR_RETRIES = 1;
+const SERVER_ERROR_RETRY_WAIT_MS = 1000;
 async function fetchAtlasWithRetry(url, options) {
-  for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+  // Two independent counters rather than one shared loop index — a 429
+  // and a 500 are different failure modes with different retry budgets,
+  // and folding both into a single shared attempt counter would mean a
+  // retry of one kind could silently eat into the other's own budget.
+  let rateLimitAttempts = 0;
+  let serverErrorAttempts = 0;
+  while (true) {
     const res = await fetch(url, options);
+    if (res.status >= 500 && res.status < 600) {
+      if (serverErrorAttempts >= MAX_SERVER_ERROR_RETRIES) return res; // out of retries — let the caller see the final error
+      serverErrorAttempts++;
+      console.warn(`[atlas-shared] ${res.status} from Atlas, waiting ${SERVER_ERROR_RETRY_WAIT_MS}ms before retry ${serverErrorAttempts}/${MAX_SERVER_ERROR_RETRIES}`);
+      await new Promise((resolve) => setTimeout(resolve, SERVER_ERROR_RETRY_WAIT_MS));
+      continue;
+    }
     if (res.status !== 429) return res;
-    if (attempt === MAX_RATE_LIMIT_RETRIES) return res; // out of retries — let the caller see the final 429
+    if (rateLimitAttempts >= MAX_RATE_LIMIT_RETRIES) return res; // out of retries — let the caller see the final 429
+    rateLimitAttempts++;
     let retryAfterSec = 2;
     try {
       const body = await res.clone().json();
       if (typeof body.retryAfterSec === "number") retryAfterSec = body.retryAfterSec;
     } catch (e) { /* fall back to the default above */ }
     const waitMs = Math.min(retryAfterSec * 1000, MAX_RETRY_WAIT_MS);
-    console.warn(`[atlas-shared] 429 rate limited, waiting ${waitMs}ms before retry ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}`);
+    console.warn(`[atlas-shared] 429 rate limited, waiting ${waitMs}ms before retry ${rateLimitAttempts}/${MAX_RATE_LIMIT_RETRIES}`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 }
