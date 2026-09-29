@@ -396,6 +396,31 @@ module.exports = async (req, res) => {
       results.candidateDetail = { skipped: "needs both ?projectId= and ?candidateId=" };
     }
 
+    // Added specifically to sidestep a real, recurring problem: Atlas's
+    // own UI shows several different kinds of id (a "profile" id in one
+    // URL, a project-scoped candidate id in another), and copying the
+    // wrong one into candidateId above just produces its own unrelated
+    // 404, no closer to the real question. Given a project id that's
+    // already confirmed to work, this instead pulls every stage-event
+    // for that one project across all of September directly from
+    // Atlas's own data — the real candidate id for anyone in it is
+    // sitting right there in the response, unambiguous, nothing to
+    // extract from a URL at all.
+    if (projectId && req.query.monthEvents) {
+      try {
+        const res4 = await fetchAtlasWithRetry(
+          `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?projectId=${projectId}&createdAfter=2026-09-01T00:00:00.000Z&createdBefore=2026-09-30T23:59:59.999Z&pageSize=100`,
+          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+        );
+        const body = await res4.text().catch(() => "");
+        results.projectMonthEvents = { status: res4.status, ok: res4.ok, body: body.slice(0, 4000) };
+      } catch (e) {
+        results.projectMonthEvents = { error: e.message };
+      }
+    } else {
+      results.projectMonthEvents = { skipped: "needs ?projectId= and ?monthEvents=1" };
+    }
+
     const testedCount = Object.values(results).filter((r) => !r.skipped).length;
     const allOk = Object.values(results).every((r) => r.ok || r.skipped);
     const allFailed = Object.entries(results).filter(([, r]) => !r.skipped).every(([, r]) => !r.ok);
