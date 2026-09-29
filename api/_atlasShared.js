@@ -717,7 +717,16 @@ async function computeMonthlyKpiLive(kv, year, month, timeBudgetMs = 45000) {
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const createdAfter = `${year}-${monthStr}-01T00:00:00.000Z`;
   const createdBefore = `${year}-${monthStr}-${String(daysInMonth).padStart(2, "0")}T23:59:59.999Z`;
-  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs, `month:${year}-${monthStr}`);
+  // progressKey deliberately omitted (was `month:${year}-${monthStr}`) —
+  // temporarily disabled while investigating a persistent Atlas 500 that
+  // started after this resumable-progress mechanism was introduced. This
+  // is the one thing that now sends Atlas a cursor carried over from a
+  // genuinely separate, earlier HTTP request, rather than every call
+  // starting completely fresh the way it always did before — a safe,
+  // easily-reversible way to rule this specific mechanism in or out
+  // while the site is down, rather than layering another guess on top
+  // of several already-unsuccessful ones.
+  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs);
 }
 
 // Thin wrapper over the generic range computation, for a single ISO week
@@ -730,7 +739,9 @@ async function computeWeeklyKpiLive(kv, weekKey, timeBudgetMs = 45000) {
   const { monday, sunday } = isoWeekToDates(weekKey);
   const createdAfter = `${monday}T00:00:00.000Z`;
   const createdBefore = `${sunday}T23:59:59.999Z`;
-  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs, `week:${weekKey}`);
+  // progressKey deliberately omitted (was `week:${weekKey}`) — same
+  // reasoning as computeMonthlyKpiLive's own copy of this comment above.
+  return computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudgetMs);
 }
 
 async function writeTally(kv, consultantId, metric, movedAt) {
