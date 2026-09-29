@@ -425,6 +425,23 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
     console.error(`[atlas-shared] discarding incompatible saved progress for ${progressKey} — not the current shape`);
     saved = null;
   }
+  // A persistent 500 from Atlas — surviving even the retry above, on a
+  // request Atlas's own UI shows nothing wrong with — pointed at the one
+  // other thing this specific request carries that a fresh one wouldn't:
+  // a resumed cursor, saved from an earlier, separate run, potentially
+  // hours old across a session with many "Warm" attempts. If Atlas's own
+  // cursor tokens have some validity window, an old one going stale
+  // would plausibly surface exactly this way — a genuine request Atlas
+  // simply can't make sense of, errored out as a 500 rather than a
+  // clean "expired" response. A saved entry with no timestamp at all
+  // (from before this safeguard existed) is treated the same as an
+  // expired one — there's no way to know its real age, so the safe
+  // assumption is that it's too old to trust.
+  const PROGRESS_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+  if (saved && (!saved.savedAt || Date.now() - saved.savedAt > PROGRESS_MAX_AGE_MS)) {
+    console.warn(`[atlas-shared] discarding saved progress for ${progressKey} — too old to trust its cursor (age: ${saved.savedAt ? Math.round((Date.now() - saved.savedAt) / 60000) + "min" : "unknown"})`);
+    saved = null;
+  }
 
   const people = saved ? saved.people : {}; // { [consultantId]: { cvsOut, interviews, onsite, offers } }
   // Same counts as `people` above, but broken down to the actual
@@ -664,6 +681,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         seenDedupeKeys: Array.from(seenDedupeKeys),
         unresolvedPairs: Array.from(pairsToResolve.entries()),
         eventsSeen, eventsCounted,
+        savedAt: Date.now(),
       });
     }
   }
