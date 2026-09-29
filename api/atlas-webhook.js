@@ -7,7 +7,7 @@ const {
   EMAIL_TO_CONSULTANT,
   DEDUPE_KEY_BY_METRIC,
   metricForStageName,
-  lookupProjectName,
+  lookupProjectDetails,
   lookupCandidateOwnerEmail,
   writeTally,
 } = atlasShared;
@@ -60,8 +60,13 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
   }
 
-  const projectName = await lookupProjectName(kv, projectId);
-  if (projectName && projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
+  // The exclusion check compares against the PROJECT's own title (jobRole,
+  // e.g. "CitSec Options") — confirmed directly, not the client company
+  // name, which lookupProjectDetails also returns but which isn't what's
+  // being checked against here.
+  const projectDetails = await lookupProjectDetails(kv, projectId);
+  const projectJobRole = projectDetails ? projectDetails.jobRole : null;
+  if (projectJobRole && projectJobRole.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
     console.log("[atlas-webhook] skipped: CitSec Options project is excluded from all KPI numbers");
     return res.status(200).json({ ok: true, skipped: true, reason: "excluded project (CitSec Options)" });
   }
