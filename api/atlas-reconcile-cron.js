@@ -253,25 +253,39 @@ async function warmKpiCache(req, res) {
   }
 
   const now = new Date();
-  // Accepts an optional, explicit past month to warm instead of always
-  // defaulting to right now — needed specifically for re-establishing
-  // real, Atlas-derived numbers for old months that had been manually
-  // overridden, since clearing an override alone does nothing if that
-  // month's own live cache was never actually (re-)computed to replace
-  // it. When a specific month is requested this way, only that month is
-  // warmed — the week-warm below is skipped, since a requested past
-  // month has no "current week" of its own that would make sense to
-  // refresh alongside it.
+  // Accepts an optional, explicit past month OR week to warm instead of
+  // always defaulting to right now — needed specifically for
+  // re-establishing real, Atlas-derived numbers for old periods that
+  // had been manually overridden, or for the ordered backfill that
+  // establishes cross-period history (see the KPI page's own backfill
+  // tools). When a specific month is requested, only that month is
+  // warmed — the week-warm is skipped, since a requested past month has
+  // no "current week" of its own that would make sense to refresh
+  // alongside it. Symmetrically, an explicit week skips the month-warm.
+  // The two are mutually exclusive by design — mixing them (a specific
+  // month AND a specific week in the same call) would leave it
+  // ambiguous which one the caller actually meant, so only one is ever
+  // honored per call, week taking precedence if somehow both are sent.
   const explicitYear = req.query && req.query.year ? Number(req.query.year) : null;
   const explicitMonth = req.query && req.query.month ? Number(req.query.month) : null;
+  const explicitWeek = req.query && req.query.week ? req.query.week : null;
   const year = explicitYear || now.getUTCFullYear();
   const month = explicitMonth || (now.getUTCMonth() + 1);
   const monthKey = `${year}-${String(month).padStart(2, "0")}`;
-  const weekKey = isoWeekKey(now.toISOString());
-  const warmingSpecificPastMonth = !!(explicitYear && explicitMonth);
+  const weekKey = explicitWeek || isoWeekKey(now.toISOString());
+  const warmingSpecificPastWeek = !!explicitWeek;
+  const warmingSpecificPastMonth = !!(explicitYear && explicitMonth) && !warmingSpecificPastWeek;
 
   const result = { ok: true, triggeredBy, monthKey, weekKey };
 
+  if (warmingSpecificPastWeek) {
+    // A specific past week was explicitly requested — its own month has
+    // no natural relationship to "this month" (the current one), so
+    // there's nothing meaningful to warm here either; skipped and
+    // reported clearly, symmetric to how a specific month skips the
+    // week-warm below.
+    result.month = { skipped: "a specific past week was requested — the current month isn't relevant to it" };
+  } else {
   try {
     const live = await computeMonthlyKpiLive(kv, year, month);
     // Same "-v2" key as league.js's own read path, and now genuinely
@@ -294,6 +308,7 @@ async function warmKpiCache(req, res) {
   } catch (e) {
     console.error("[warm-kpi-cache] month warm failed:", e.message);
     result.month = { ok: false, error: e.message };
+  }
   }
 
   if (warmingSpecificPastMonth) {
@@ -322,13 +337,30 @@ async function warmKpiCache(req, res) {
     }
   }
 
+  // Records which periods have genuinely, fully completed — one
+  // combined key, read/written as a whole object, same pattern as
+  // kpi-overrides — so the KPI page's own backfill tools can pick up
+  // exactly where they left off after a refresh, rather than needing to
+  // re-walk every period from the start again. Recorded for ANY
+  // successful, fully-complete warm (not just an explicit backfill
+  // request), since a period genuinely IS done whenever this happens,
+  // regardless of why the warm was triggered.
+  const monthGenuinelyComplete = result.month.ok && !result.month.hitPageCap && !result.month.resolutionIncomplete;
+  const weekGenuinelyComplete = result.week.ok && !result.week.hitPageCap && !result.week.resolutionIncomplete;
+  if (monthGenuinelyComplete || weekGenuinelyComplete) {
+    const progress = (await kv.get("atlas-cv-history-backfill-done")) || { month: {}, week: {} };
+    if (monthGenuinelyComplete) progress.month[monthKey] = true;
+    if (weekGenuinelyComplete) progress.week[weekKey] = true;
+    await kv.set("atlas-cv-history-backfill-done", progress);
+  }
+
   // Only a genuine, total failure (both the month and the week failed)
   // is reported as an overall error status — a partial success (one
   // warmed, one didn't) still returns 200 with each result clearly
   // broken out, since that's genuinely useful, actionable information,
   // not a reason to hide the half that DID work. A skipped week (see
   // above) isn't a failure, so it doesn't drag this down either.
-  const overallOk = result.month.ok || result.week.ok || result.week.skipped;
+  const overallOk = result.month.ok || result.week.ok || result.week.skipped || result.month.skipped;
   return res.status(overallOk ? 200 : 502).json(result);
 }
 
