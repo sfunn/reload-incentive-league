@@ -918,6 +918,63 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, overrides });
   }
 
+  if (req.method === "POST" && action === "clear-all-kpi-overrides") {
+    // Deliberately Super Admin, not just Admin like the single-field
+    // version above — this wipes many manual corrections across many
+    // people and months at once, which is a genuinely different, much
+    // larger-blast-radius action than correcting one field for one
+    // person for one month.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required." });
+    }
+    const year = req.query.year;
+    if (!year || !/^\d{4}$/.test(year)) {
+      return res.status(400).json({ error: "year is required, e.g. ?year=2026 — this clears one specific year at a time, never every year at once." });
+    }
+    // An optional, further narrowing to one specific month within that
+    // year — added specifically so a single month can be tried first
+    // (see how it goes) before committing to the whole year at once.
+    const month = req.query.month;
+    if (month && !/^([1-9]|1[0-2])$/.test(month)) {
+      return res.status(400).json({ error: "month, if supplied, must be 1-12." });
+    }
+    const targetMonthKey = month ? `${year}-${String(month).padStart(2, "0")}` : null;
+    // Only the fields this session's own live-computation work actually
+    // produces a real replacement for (cvs, interviews, onsite, offers)
+    // — calls and phoneHours come from Ringover, and placements
+    // (Deals Agreed) from fee records, both entirely separate systems
+    // this "Warm" mechanism never touches, so clearing THOSE overrides
+    // would leave nothing real behind to replace them with.
+    const CLEARABLE_FIELDS = ["cvs", "interviews", "onsite", "offers"];
+    const overrides = (await kv.get(KPI_OVERRIDES_KEY)) || {};
+    let clearedCount = 0;
+    for (const personId of Object.keys(overrides)) {
+      for (const monthKey of Object.keys(overrides[personId])) {
+        if (!monthKey.startsWith(`${year}-`)) continue; // a different year entirely — left untouched
+        if (targetMonthKey && monthKey !== targetMonthKey) continue; // a specific month was requested — every other month in this same year is left untouched too
+        for (const field of CLEARABLE_FIELDS) {
+          if (field in overrides[personId][monthKey]) {
+            delete overrides[personId][monthKey][field];
+            clearedCount++;
+          }
+        }
+        if (Object.keys(overrides[personId][monthKey]).length === 0) delete overrides[personId][monthKey];
+      }
+      if (Object.keys(overrides[personId]).length === 0) delete overrides[personId];
+    }
+    await kv.set(KPI_OVERRIDES_KEY, overrides);
+    // Clearing the overrides alone does nothing to what's actually
+    // DISPLAYED unless each affected month's own live cache genuinely
+    // has real, Atlas-derived numbers to fall back to — a month that
+    // was always manually entered from day one may never have had a
+    // live computation run for it at all. Clearing here, then warming
+    // each affected month (via ?action=... with an explicit year/month)
+    // is the full, two-step path to genuinely replacing old manual
+    // numbers with real ones, not just this one step alone.
+    return res.status(200).json({ ok: true, year, month: month || null, monthKey: targetMonthKey, clearedCount, fieldsCleared: CLEARABLE_FIELDS });
+  }
+
   if (req.method === "POST" && action === "set-week-override") {
     // The Weekly Incentive's own manual correction, same "always wins"
     // pattern as set-kpi-override just above — Admin, not Super Admin,
