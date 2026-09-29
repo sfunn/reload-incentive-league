@@ -708,25 +708,24 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         const [granularity, periodKey] = [progressKey.slice(0, progressKey.indexOf(":")), progressKey.slice(progressKey.indexOf(":") + 1)];
         const firstReachedKey = `${FIRST_REACHED_CACHE_PREFIX}${granularity}:${candidateId}:${projectId}`;
         const firstReached = (await kv.get(firstReachedKey)) || {};
-        // Confirmed by Scott directly: a candidate dropped straight into
-        // an interview stage (HR call, HRX, etc.), with no separate CV
-        // Sent event EVER recorded for them, anywhere, should still
-        // count as a genuine CV Sent — reaching an interview implies a
-        // CV was sent, the same "implies every earlier stage happened"
-        // rule already applied within one window, just extended across
-        // periods too now that there's a reliable way to tell the two
-        // real scenarios apart: a rank genuinely never claimed by ANY
-        // period ever (this candidate truly never had that stage as its
-        // own event — safe to infer now, since this is the only chance
-        // to ever capture it) versus a rank some EARLIER period already
-        // claimed (their CV really was sent as its own event back then,
-        // and inferring it again here would double it — exactly the
-        // cross-month over-count this whole cross-period record exists
-        // to prevent). Checked per rank, individually, not as an
-        // all-or-nothing block: a candidate whose interview was
-        // genuinely claimed by an earlier period, but whose CV Sent was
-        // never claimed by anyone, correctly gets ONLY CV Sent inferred
-        // here, not a redundant interview alongside it.
+        // Restored, now that its actual precondition is met: a genuine,
+        // ordered backfill (June through the current month, oldest
+        // first — see the KPI page's own backfill tool) establishes a
+        // complete, trustworthy "first reached" history before this
+        // extension is relied on for anything. That backfill is what
+        // makes "nothing has claimed this" a genuinely reliable signal
+        // rather than "nobody's checked yet" — confirmed by Scott
+        // directly: a candidate dropped straight into an interview
+        // stage (HR call, HRX, etc.), with no separate CV Sent event
+        // ever recorded for them, anywhere, should still count as a
+        // genuine CV Sent, the same "implies every earlier stage
+        // happened" rule already applied within one window, extended
+        // across periods now that the backfill makes it safe. Checked
+        // per rank, individually, not as an all-or-nothing block: a
+        // candidate whose interview was genuinely claimed by an earlier
+        // period, but whose CV Sent was never claimed by anyone,
+        // correctly gets ONLY CV Sent inferred here, not a redundant
+        // interview alongside it.
         for (let rank = 1; rank < minRankEvidenced; rank++) {
           const metric = Object.keys(METRIC_RANK).find((m) => METRIC_RANK[m] === rank);
           // Re-warming the SAME period must still re-include its own,
