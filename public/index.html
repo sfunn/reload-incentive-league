@@ -1194,6 +1194,7 @@ function App() {
       setRingoverMigrationLoading(false);
     }
   }
+  const [kpiOverrideError, setKpiOverrideError] = useState("");
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
     try {
