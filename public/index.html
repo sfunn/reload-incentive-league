@@ -492,6 +492,33 @@ function pipelineAverageOf(entries) {
     pctOfferPlacement: pipelineMean(entries.map(e => e.pctOfferPlacement !== undefined ? e.pctOfferPlacement : pipelinePctOrNull(e.placements, e.offers))),
   };
 }
+// Sorts the list view's rows (Everyone/Team James/Team Josh -- never
+// used for the individual drill-down's own chronological months) by
+// whichever column was last clicked. "name" sorts alphabetically;
+// every other column sorts numerically, with a missing/null value (an
+// undefined percentage, say) always sorting to the end regardless of
+// direction, rather than being treated as zero. Each percentage column
+// is computed fresh here rather than read off the row, since rows don't
+// carry their own pre-computed percentages (the same pipelinePctOrNull
+// used everywhere else in this file).
+function sortPipelineRows(rows, sortColumn, sortDirection) {
+  const dir = sortDirection === "asc" ? 1 : -1;
+  const valueFor = (r) => {
+    if (sortColumn === "pctCvInterview") return pipelinePctOrNull(r.interviews, r.cvs);
+    if (sortColumn === "pctInterviewOnsite") return pipelinePctOrNull(r.onsite, r.interviews);
+    if (sortColumn === "pctOnsiteOffer") return pipelinePctOrNull(r.offers, r.onsite);
+    if (sortColumn === "pctOfferPlacement") return pipelinePctOrNull(r.placements, r.offers);
+    return r[sortColumn];
+  };
+  return [...rows].sort((a, b) => {
+    if (sortColumn === "name") return dir * a.name.localeCompare(b.name);
+    const av = valueFor(a);
+    const bv = valueFor(b);
+    if (av === null || av === undefined) return (bv === null || bv === undefined) ? 0 : 1;
+    if (bv === null || bv === undefined) return -1;
+    return dir * (av - bv);
+  });
+}
 // Which of a set of calendar months (1-12) have actually started yet --
 // all of them for a past year, none for a future one, only up to and
 // including the current month for the current year. Matches the same
@@ -534,25 +561,29 @@ function computeQuarterPipelineForPerson(kpiLiveMonthly, person, placementCounts
 
 // "Everyone" here (or whichever scoped list of people is passed in --
 // this same function now also serves a single team's own average, when
-// the page is filtered to one team) means all applicable people shown on
-// this page, including team leads' own personal figures where relevant
-// -- per Scott's explicit decision (reversing the earlier company-wide-
-// average rule used elsewhere in this app, which is deliberately
-// UNCHANGED: this average is local to the Consultant KPIs page only).
-// Each person keeps their own real isTeamLead flag so a team lead's
-// figures are correctly read as their own, not silently zeroed.
-//
+// the page is filtered to one team) means every REAL CONSULTANT in
+// scope -- team leads' own personal figures are deliberately excluded
+// from this average (Scott's later, explicit reversal of the earlier
+// "include them" decision): their own row can still be shown wherever
+// rows are displayed, but a team lead's activity looking different in
+// kind from a full-time consultant's shouldn't pull the average itself
+// up or down. This average is local to the Consultant KPIs page only,
+// and deliberately unrelated to the company-wide-average rule used
+// elsewhere in this app.
+function excludeTeamLeads(people) {
+  return people.filter(p => !p.isTeamLead);
+}
 // Generalized across month/quarter/year: this is always the mean of each
 // person's OWN average for the period (never a pooled sum, and never
 // "the mean of everyone's yearly total" the way this used to work for
 // Year specifically) -- so it's always in the same units as the rows
 // above it, whichever period is selected.
 function computeScopeAverage(kpiLiveMonthly, scopedPeople, placementCountsByConsultant, periodMode, year, monthOrQuarter, kpiOverrides, ringoverByMonth) {
-  const rows = computePeriodPipelineRows(kpiLiveMonthly, scopedPeople, placementCountsByConsultant, periodMode, year, monthOrQuarter, kpiOverrides, ringoverByMonth);
+  const rows = computePeriodPipelineRows(kpiLiveMonthly, excludeTeamLeads(scopedPeople), placementCountsByConsultant, periodMode, year, monthOrQuarter, kpiOverrides, ringoverByMonth);
   return pipelineAverageOf(rows);
 }
 function computeEveryoneMonthAverage(kpiLiveMonthly, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth) {
-  const rows = computeMonthPipelineRows(kpiLiveMonthly, everyonePeople, placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth);
+  const rows = computeMonthPipelineRows(kpiLiveMonthly, excludeTeamLeads(everyonePeople), placementCountsByConsultant, monthKey, kpiOverrides, ringoverByMonth);
   return pipelineAverageOf(rows);
 }
 function teamMissingLabel(missing) {
@@ -981,6 +1012,8 @@ function App() {
   const [pipelinePeriodMode, setPipelinePeriodMode] = useState("month"); // "month" | "quarter" | "year"
   const [pipelineQuarter, setPipelineQuarter] = useState(Math.floor(new Date().getUTCMonth() / 3) + 1); // 1-4, defaults to the current quarter
   const [pipelineFocusId, setPipelineFocusId] = useState(null); // admin-only: null = everyone in scope, "team-james"/"team-josh" = one team's own people, or a specific person's id to focus on one person, all months + their own average
+  const [pipelineSortColumn, setPipelineSortColumn] = useState("name"); // which column the list view (Everyone/Team) is currently sorted by
+  const [pipelineSortDirection, setPipelineSortDirection] = useState("asc"); // "asc" | "desc"
   const [placementCounts, setPlacementCounts] = useState({});
   // Candidate-level breakdown behind Deals Agreed, same principle as
   // kpiLiveMonthlyDetails above — its own parallel state, since most of
@@ -1197,30 +1230,6 @@ function App() {
       setAtlasEndpointsResult({ ok: false, error: e.message });
     } finally {
       setAtlasEndpointsLoading(false);
-    }
-  }
-  // One-time migration for Calls/Phone Hrs history from before the
-  // month-boundary fix — see MONTHLY_TALLY_KEY's own comment in
-  // api/ringover-webhook.js for the full reasoning. Safe to click more
-  // than once (nothing double-counts), and clearly reports any week it
-  // couldn't safely migrate rather than guessing.
-  const [ringoverMigrationLoading, setRingoverMigrationLoading] = useState(false);
-  const [ringoverMigrationResult, setRingoverMigrationResult] = useState(null);
-  async function runRingoverMonthlyMigration() {
-    setRingoverMigrationLoading(true);
-    setRingoverMigrationResult(null);
-    try {
-      const res = await fetch("/api/ringover-webhook?action=migrate-monthly-tally", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${authUser.token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Migration failed");
-      setRingoverMigrationResult({ ok: true, ...data });
-    } catch (e) {
-      setRingoverMigrationResult({ ok: false, error: e.message });
-    } finally {
-      setRingoverMigrationLoading(false);
     }
   }
   const [kpiOverrideError, setKpiOverrideError] = useState("");
@@ -4850,18 +4859,18 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         : [`${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`];
 
     const tableCols = [
-      { label: focusedPerson ? "Month" : "Consultant", flex: true },
-      { label: "Calls", width: 66 },
-      { label: "Phone Hrs", width: 78 },
-      { label: "CVs Out", width: 78 },
-      { label: "Interviews", width: 86 },
-      { label: "Onsite", width: 66 },
-      { label: "Offers", width: 66 },
-      { label: "Deals Agreed", width: 96 },
-      { label: "CV : Interview", width: 96 },
-      { label: "Interview : Onsite", width: 104 },
-      { label: "Onsite : Offer", width: 96 },
-      { label: "Offer : Agreed", width: 104 },
+      { label: focusedPerson ? "Month" : "Consultant", flex: true, sortKey: focusedPerson ? null : "name" },
+      { label: "Calls", width: 66, sortKey: focusedPerson ? null : "calls" },
+      { label: "Phone Hrs", width: 78, sortKey: focusedPerson ? null : "phoneHours" },
+      { label: "CVs Out", width: 78, sortKey: focusedPerson ? null : "cvs" },
+      { label: "Interviews", width: 86, sortKey: focusedPerson ? null : "interviews" },
+      { label: "Onsite", width: 66, sortKey: focusedPerson ? null : "onsite" },
+      { label: "Offers", width: 66, sortKey: focusedPerson ? null : "offers" },
+      { label: "Deals Agreed", width: 96, sortKey: focusedPerson ? null : "placements" },
+      { label: "CV : Interview", width: 96, sortKey: focusedPerson ? null : "pctCvInterview" },
+      { label: "Interview : Onsite", width: 104, sortKey: focusedPerson ? null : "pctInterviewOnsite" },
+      { label: "Onsite : Offer", width: 96, sortKey: focusedPerson ? null : "pctOnsiteOffer" },
+      { label: "Offer : Agreed", width: 104, sortKey: focusedPerson ? null : "pctOfferPlacement" },
     ];
 
     // Renders one cell showing the person's own value, with a small muted
@@ -4996,26 +5005,6 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 React.createElement("div", { style: { marginTop: 4, wordBreak: "break-all", maxHeight: 300, overflowY: "auto" } }, `candidate name search: ${JSON.stringify(atlasEndpointsResult.results.candidateNameSearch)}`)
               )
             : React.createElement("div", { style: { color: "#B5744F" } }, `Check failed: ${atlasEndpointsResult.error}`)
-        ),
-        React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
-          React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 6 } },
-            "One-time fix for Calls / Phone Hrs history recorded before today: a week straddling a month boundary (like this current week) used to fold its whole total into the wrong month. Safe to click more than once."
-          ),
-          React.createElement("button", {
-            onClick: runRingoverMonthlyMigration,
-            disabled: ringoverMigrationLoading,
-            style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: ringoverMigrationLoading ? "default" : "pointer" }
-          }, ringoverMigrationLoading ? "Migrating…" : "Fix past Calls/Phone Hrs month attribution"),
-          ringoverMigrationResult && React.createElement("div", { style: { fontSize: 12.5, marginTop: 6 } },
-            ringoverMigrationResult.ok
-              ? React.createElement(React.Fragment, null,
-                  React.createElement("div", { style: { color: INDIGO_MUTED } }, `✅ ${ringoverMigrationResult.migratedWeeks.length} week(s) migrated, ${ringoverMigrationResult.alreadyMigratedWeeks.length} already done from an earlier run.`),
-                  ringoverMigrationResult.skippedStraddlingWeeks.length > 0 && React.createElement("div", { style: { color: "#B5744F", marginTop: 4 } },
-                    `${ringoverMigrationResult.skippedStraddlingWeeks.length} week(s) couldn't be migrated, since they straddle a month boundary and their own days were never recorded separately: ${ringoverMigrationResult.skippedStraddlingWeeks.map(w => w.weekKey).join(", ")}.`
-                  )
-                )
-              : React.createElement("div", { style: { color: "#B5744F" } }, `Failed: ${ringoverMigrationResult.error}`)
-          )
         ),
         syncCheckResult && React.createElement("div", { style: { fontSize: 12.5, color: syncCheckResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           syncCheckResult.ok
@@ -5154,9 +5143,22 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         );
       })() : (() => {
         const monthOrQuarter = pipelinePeriodMode === "quarter" ? pipelineQuarter : pipelinePeriodMode === "month" ? pipelineMonth : null;
-        const rows = computePeriodPipelineRows(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
+        const unsortedRows = computePeriodPipelineRows(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
+        const rows = sortPipelineRows(unsortedRows, pipelineSortColumn, pipelineSortDirection);
         const scopeAvg = computeScopeAverage(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
         const fmtAvgCount = (v) => v === null || v === undefined ? "—" : Math.round(v * 10) / 10;
+        // Clicking a column already sorted by toggles its direction;
+        // clicking a different column switches to it, defaulting to
+        // highest-first for a metric (that's almost always the more
+        // useful first look) or A-Z for the name column.
+        function handleSort(column) {
+          if (pipelineSortColumn === column) {
+            setPipelineSortDirection(d => d === "asc" ? "desc" : "asc");
+          } else {
+            setPipelineSortColumn(column);
+            setPipelineSortDirection(column === "name" ? "asc" : "desc");
+          }
+        }
         // Only Month view can carry an editable override, a candidate
         // list, or an "isOverridden" flag on a specific cell — those are
         // all tied to one specific calendar month, which Quarter/Year
@@ -5168,7 +5170,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         const monthKey = isMonthView ? `${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}` : null;
         return React.createElement(React.Fragment, null,
           isAdmin && isMonthView && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
-          React.createElement(TableHeader, { cols: tableCols }),
+          React.createElement(TableHeader, { cols: tableCols, sortColumn: pipelineSortColumn, sortDirection: pipelineSortDirection, onSort: handleSort }),
           rows.map(r => React.createElement(RowLine, { key: r.id },
             React.createElement(Cell, { flex: true },
               r.name,
@@ -5201,18 +5203,18 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, fmtPipelinePct(pipelinePctOrNull(r.placements, r.offers)))
           )),
           React.createElement(RowLine, { key: "average", highlighted: true },
-            React.createElement(Cell, { flex: true, bold: true }, "Average"),
-            React.createElement(Cell, { width: 66, bold: true }, fmtAvgCount(scopeAvg.calls)),
-            React.createElement(Cell, { width: 78, bold: true }, fmtAvgCount(scopeAvg.phoneHours)),
-            React.createElement(Cell, { width: 78, bold: true }, fmtAvgCount(scopeAvg.cvs)),
-            React.createElement(Cell, { width: 86, bold: true }, fmtAvgCount(scopeAvg.interviews)),
-            React.createElement(Cell, { width: 66, bold: true }, fmtAvgCount(scopeAvg.onsite)),
-            React.createElement(Cell, { width: 66, bold: true }, fmtAvgCount(scopeAvg.offers)),
-            React.createElement(Cell, { width: 96, bold: true }, fmtAvgCount(scopeAvg.placements)),
-            React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, fmtPipelinePct(scopeAvg.pctCvInterview)),
-            React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, fmtPipelinePct(scopeAvg.pctInterviewOnsite)),
-            React.createElement(Cell, { width: 96, color: INDIGO_MUTED }, fmtPipelinePct(scopeAvg.pctOnsiteOffer)),
-            React.createElement(Cell, { width: 104, color: INDIGO_MUTED }, fmtPipelinePct(scopeAvg.pctOfferPlacement))
+            React.createElement(Cell, { flex: true, bold: true, fontSize: 16 }, isTeamScope ? "Team Average" : "Company Average"),
+            React.createElement(Cell, { width: 66, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.calls)),
+            React.createElement(Cell, { width: 78, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.phoneHours)),
+            React.createElement(Cell, { width: 78, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.cvs)),
+            React.createElement(Cell, { width: 86, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.interviews)),
+            React.createElement(Cell, { width: 66, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.onsite)),
+            React.createElement(Cell, { width: 66, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.offers)),
+            React.createElement(Cell, { width: 96, bold: true, fontSize: 16 }, fmtAvgCount(scopeAvg.placements)),
+            React.createElement(Cell, { width: 96, color: INDIGO_MUTED, fontSize: 16 }, fmtPipelinePct(scopeAvg.pctCvInterview)),
+            React.createElement(Cell, { width: 104, color: INDIGO_MUTED, fontSize: 16 }, fmtPipelinePct(scopeAvg.pctInterviewOnsite)),
+            React.createElement(Cell, { width: 96, color: INDIGO_MUTED, fontSize: 16 }, fmtPipelinePct(scopeAvg.pctOnsiteOffer)),
+            React.createElement(Cell, { width: 104, color: INDIGO_MUTED, fontSize: 16 }, fmtPipelinePct(scopeAvg.pctOfferPlacement))
           )
         );
       })()
@@ -5236,7 +5238,10 @@ function EmptyState({
   }, text));
 }
 function TableHeader({
-  cols
+  cols,
+  sortColumn,
+  sortDirection,
+  onSort
 }) {
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -5259,15 +5264,26 @@ function TableHeader({
     const label = isObj ? c.label : c;
     const width = isObj ? c.width : (i === 1 ? undefined : 70);
     const flex = isObj ? c.flex : (i === 1 ? 1 : undefined);
+    // Sorting is entirely optional and backward-compatible: only columns
+    // that were explicitly given a sortKey become clickable, and only
+    // when the caller also passed onSort -- every other TableHeader
+    // usage in this app renders exactly as it always has.
+    const sortKey = isObj ? c.sortKey : null;
+    const isSortable = sortKey && onSort;
+    const isActive = isSortable && sortColumn === sortKey;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
+      onClick: isSortable ? () => onSort(sortKey) : undefined,
       style: {
         width: flex ? undefined : width,
         minWidth: flex ? undefined : width,
         flexShrink: flex ? undefined : 0,
-        flex: flex ? 1 : undefined
+        flex: flex ? 1 : undefined,
+        cursor: isSortable ? "pointer" : undefined,
+        color: isActive ? INDIGO : undefined,
+        userSelect: isSortable ? "none" : undefined
       }
-    }, label);
+    }, label, isActive && (sortDirection === "asc" ? " ▲" : " ▼"));
   }));
 }
 function RowLine({
@@ -5476,7 +5492,7 @@ function EditableKpiCell({ value, isOverridden, onSave, width, avgValue, candida
 // than just always rendering EditableKpiCell for everyone.
 function ReadOnlyKpiCell({ value, width, candidates, onViewCandidates }) {
   return React.createElement("div", { style: { width, flexShrink: 0, paddingTop: 4 } },
-    React.createElement("span", { style: { fontWeight: 700 } }, value),
+    React.createElement("span", { style: { fontWeight: 700, fontSize: 16 } }, value),
     candidates && React.createElement("button", {
       onClick: () => onViewCandidates(candidates),
       title: "See which candidates make up this number",
