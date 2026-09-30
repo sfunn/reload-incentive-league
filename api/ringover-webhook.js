@@ -225,6 +225,62 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, migratedWeeks, alreadyMigratedWeeks, skippedStraddlingWeeks });
   }
 
+  if (req.method === "POST" && req.query.action === "force-assign-straddling-week") {
+    // A deliberate, manual override for exactly the weeks the automatic
+    // migration above correctly refuses to guess at — this is Scott's
+    // own judgment call about where a specific straddling week's history
+    // genuinely, mostly belongs, not an automatic rule. Two real cases
+    // this was actually built for: a week that's overwhelmingly one
+    // month with only a sliver in the other (e.g. Mon Aug 31 - Sun Sep 6
+    // — one day in August, six in September — putting the whole week in
+    // September loses far less accuracy than leaving it out entirely),
+    // and the CURRENT week, where "today" is still within it and hasn't
+    // reached its own later month yet, so the whole week's pre-fix
+    // history genuinely, entirely belongs to the earlier month for now.
+    // Requires an explicit weekKey AND targetMonth every time — nothing
+    // here is inferred or defaulted, precisely because this is a
+    // judgment call, not a safe, generic rule the way the automatic
+    // migration's clean-week case is. Uses the exact same
+    // MIGRATED_WEEKS_KEY tracking as that migration, so a week handled
+    // this way is correctly recognized as already settled if the
+    // regular migration is ever run again, and this itself can't be
+    // run twice on the same week by accident.
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required." });
+    }
+    const { weekKey, targetMonth } = req.body || {};
+    if (!weekKey || !targetMonth) {
+      return res.status(400).json({ error: 'weekKey and targetMonth are both required in the request body, e.g. { "weekKey": "2026-W36", "targetMonth": "2026-09" }' });
+    }
+    const migratedWeekKeys = new Set((await kv.get(MIGRATED_WEEKS_KEY)) || []);
+    if (migratedWeekKeys.has(weekKey)) {
+      return res.status(400).json({ error: `${weekKey} has already been migrated or force-assigned once — nothing done, to avoid counting it twice.` });
+    }
+    const allTally = (await kv.get(TALLY_KEY)) || {};
+    const weekTally = allTally[weekKey];
+    if (!weekTally) {
+      return res.status(400).json({ error: `No history at all exists for ${weekKey} in the old weekly tally — nothing to assign.` });
+    }
+    const monthlyTally = (await kv.get(MONTHLY_TALLY_KEY)) || {};
+    if (!monthlyTally[targetMonth]) monthlyTally[targetMonth] = {};
+    for (const [consultantId, stats] of Object.entries(weekTally)) {
+      if (!monthlyTally[targetMonth][consultantId]) {
+        monthlyTally[targetMonth][consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
+      }
+      monthlyTally[targetMonth][consultantId].calls += stats.calls || 0;
+      monthlyTally[targetMonth][consultantId].seconds += stats.seconds || 0;
+      monthlyTally[targetMonth][consultantId].inboundCalls += stats.inboundCalls || 0;
+      monthlyTally[targetMonth][consultantId].inboundSeconds += stats.inboundSeconds || 0;
+      monthlyTally[targetMonth][consultantId].outboundCalls += stats.outboundCalls || 0;
+      monthlyTally[targetMonth][consultantId].outboundSeconds += stats.outboundSeconds || 0;
+    }
+    migratedWeekKeys.add(weekKey);
+    await kv.set(MONTHLY_TALLY_KEY, monthlyTally);
+    await kv.set(MIGRATED_WEEKS_KEY, Array.from(migratedWeekKeys));
+    return res.status(200).json({ ok: true, weekKey, targetMonth });
+  }
+
   if (req.method === "POST" && req.query.action === "clear-tally") {
     // Deletes one week's worth of tallied data from the single blob.
     // Super Admin only -- this is a destructive action (unlike
