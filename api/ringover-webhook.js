@@ -47,6 +47,19 @@ const RINGOVER_WEBHOOK_KEY = process.env.RINGOVER_WEBHOOK_KEY;
 const RECENT_LOGS_KEY = "ringover-webhook-recent-logs";
 const MAX_LOGS = 20;
 const TALLY_KEY = "ringover-tally"; // { [ISO week]: { [consultantId]: {calls, seconds, inboundCalls, inboundSeconds, outboundCalls, outboundSeconds} } }
+// A genuinely separate store from TALLY_KEY, updated from each call's own
+// real timestamp at the moment it's ingested, not derived from a week
+// after the fact. That distinction matters specifically because an ISO
+// week can straddle two calendar months (e.g. 2026-W40 runs Mon Sep 28
+// through Sun Oct 4) — deriving a whole week's month from its Sunday,
+// as the old monthly-tally read used to, silently moved every call from
+// the Sep 28-30 portion of that week into October, while September lost
+// them entirely. Confirmed directly against the real, current week
+// straddling exactly this boundary. Storing each call's own true month
+// as it arrives is the only way to get every call in the right month,
+// including the days on either side of a boundary within the same week.
+const MONTHLY_TALLY_KEY = "ringover-monthly-tally"; // { [YYYY-MM] : { [consultantId]: {calls, seconds, inboundCalls, inboundSeconds, outboundCalls, outboundSeconds} } }
+const MIGRATED_WEEKS_KEY = "ringover-monthly-tally-migrated-weeks"; // string[] of weekKeys already folded into MONTHLY_TALLY_KEY by the one-time migration below -- makes re-running it safe, never double-counting a week already migrated once
 
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
@@ -75,14 +88,14 @@ function isoWeekKey(dateStr) {
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-// Matches league.js's own isoWeekToDates exactly -- the SUNDAY (end of
-// week) that a given ISO week key covers. league.js stores each week
-// record's own .date field as that Sunday (not the Monday), and buckets
-// months off it that way (w.date === sunday) -- this mirrors that exact
-// convention so a week's totals land in the same calendar month here as
-// they do for CVs/Interviews/etc elsewhere in this app, not a different
-// one just because a week happens to straddle a month boundary.
-function isoWeekSunday(weekKey) {
+// Given an ISO week key, returns both the Monday and Sunday it covers —
+// needed specifically by the one-time monthly-tally migration below, to
+// tell a straddling week (Monday and Sunday in different calendar
+// months) apart from a clean one, since only a clean week's total can
+// be safely carried over into the new, correctly-attributed monthly
+// store; a straddling week's own days were never recorded separately,
+// so there's no way to split it accurately after the fact.
+function isoWeekToDates(weekKey) {
   const [yearStr, wStr] = weekKey.split("-W");
   const year = Number(yearStr);
   const weekNum = Number(wStr);
@@ -94,7 +107,7 @@ function isoWeekSunday(weekKey) {
   monday.setUTCDate(week1Monday.getUTCDate() + (weekNum - 1) * 7);
   const sunday = new Date(monday);
   sunday.setUTCDate(monday.getUTCDate() + 6);
-  return sunday;
+  return { monday, sunday };
 }
 
 function monthOf(date) {
@@ -135,23 +148,81 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "GET" && req.query.action === "monthly-tally") {
-    // What the Consultant KPIs page actually consumes: every week folded
-    // into calendar months (same monthOf convention as CVs/Interviews/etc
-    // elsewhere in this app), one KV read regardless of how many weeks of
-    // history exist. Shape: { [monthKey]: { [consultantId]: { calls,
-    // seconds } } }.
-    const allTally = (await kv.get(TALLY_KEY)) || {};
-    const byMonth = {};
-    for (const [weekKey, weekTally] of Object.entries(allTally)) {
-      const monthKey = monthOf(isoWeekSunday(weekKey));
-      if (!byMonth[monthKey]) byMonth[monthKey] = {};
-      for (const [consultantId, stats] of Object.entries(weekTally)) {
-        if (!byMonth[monthKey][consultantId]) byMonth[monthKey][consultantId] = { calls: 0, seconds: 0 };
-        byMonth[monthKey][consultantId].calls += stats.calls || 0;
-        byMonth[monthKey][consultantId].seconds += stats.seconds || 0;
-      }
-    }
+    // What the Consultant KPIs page actually consumes: every call folded
+    // directly into the calendar month it genuinely happened in, read
+    // straight from MONTHLY_TALLY_KEY (see that constant's own comment
+    // for why this is no longer derived from the weekly tally at read
+    // time — that derivation was the actual bug, silently moving a
+    // straddling week's early days into the wrong month). One KV read
+    // regardless of how many months of history exist. Shape:
+    // { [monthKey]: { [consultantId]: { calls, seconds } } }.
+    const byMonth = (await kv.get(MONTHLY_TALLY_KEY)) || {};
     return res.status(200).json({ byMonth });
+  }
+
+  if (req.method === "POST" && req.query.action === "migrate-monthly-tally") {
+    // One-time migration: MONTHLY_TALLY_KEY starts genuinely empty, since
+    // it's a brand-new store fed only from calls arriving from here on —
+    // this carries forward whatever history already exists in the old,
+    // per-week TALLY_KEY, but ONLY for weeks that don't straddle a month
+    // boundary. A clean week (Monday and Sunday in the same calendar
+    // month) is unambiguous, its whole total belongs to that one month,
+    // exactly like the old derivation already had it. A straddling week
+    // is different in kind, not just degree: its own days were never
+    // recorded separately, so there is no way to know how many of its
+    // calls happened before the boundary versus after — carrying its
+    // total into either month would just move the same inaccuracy
+    // somewhere else, not fix it. Straddling weeks are named explicitly
+    // in the result rather than silently skipped, so it's clear exactly
+    // which history couldn't be recovered this way and would need a
+    // real answer from Scott if it matters (there's no correct number to
+    // manufacture from what's actually stored for those specific weeks).
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required." });
+    }
+    const allTally = (await kv.get(TALLY_KEY)) || {};
+    const monthlyTally = (await kv.get(MONTHLY_TALLY_KEY)) || {};
+    // Tracks exactly which weeks have already contributed to
+    // monthlyTally via this migration — running it again (say, after
+    // deploying with more history since the last run) must only add
+    // whatever's genuinely new, never re-add a week already folded in
+    // once, which would silently double it.
+    const migratedWeekKeys = new Set((await kv.get(MIGRATED_WEEKS_KEY)) || []);
+    const migratedWeeks = [];
+    const skippedStraddlingWeeks = [];
+    const alreadyMigratedWeeks = [];
+    for (const [weekKey, weekTally] of Object.entries(allTally)) {
+      const { monday, sunday } = isoWeekToDates(weekKey);
+      const mondayMonth = monthOf(monday);
+      const sundayMonth = monthOf(sunday);
+      if (mondayMonth !== sundayMonth) {
+        skippedStraddlingWeeks.push({ weekKey, mondayMonth, sundayMonth });
+        continue;
+      }
+      if (migratedWeekKeys.has(weekKey)) {
+        alreadyMigratedWeeks.push(weekKey);
+        continue;
+      }
+      const monthKey = mondayMonth;
+      if (!monthlyTally[monthKey]) monthlyTally[monthKey] = {};
+      for (const [consultantId, stats] of Object.entries(weekTally)) {
+        if (!monthlyTally[monthKey][consultantId]) {
+          monthlyTally[monthKey][consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
+        }
+        monthlyTally[monthKey][consultantId].calls += stats.calls || 0;
+        monthlyTally[monthKey][consultantId].seconds += stats.seconds || 0;
+        monthlyTally[monthKey][consultantId].inboundCalls += stats.inboundCalls || 0;
+        monthlyTally[monthKey][consultantId].inboundSeconds += stats.inboundSeconds || 0;
+        monthlyTally[monthKey][consultantId].outboundCalls += stats.outboundCalls || 0;
+        monthlyTally[monthKey][consultantId].outboundSeconds += stats.outboundSeconds || 0;
+      }
+      migratedWeekKeys.add(weekKey);
+      migratedWeeks.push(weekKey);
+    }
+    await kv.set(MONTHLY_TALLY_KEY, monthlyTally);
+    await kv.set(MIGRATED_WEEKS_KEY, Array.from(migratedWeekKeys));
+    return res.status(200).json({ ok: true, migratedWeeks, alreadyMigratedWeeks, skippedStraddlingWeeks });
   }
 
   if (req.method === "POST" && req.query.action === "clear-tally") {
@@ -181,7 +252,7 @@ export default async function handler(req, res) {
   // Everything below builds up ONE result object -- verification status,
   // AND the tally outcome (tallied yes/no, why, which consultant, which
   // week) -- so a single log entry tells the whole story.
-  const result = { verified: !!verifiedPayload, tallied: false, reason: null, consultantId: null, weekKey: null };
+  const result = { verified: !!verifiedPayload, tallied: false, reason: null, consultantId: null, weekKey: null, monthKey: null };
 
   if (!verifiedPayload) {
     result.reason = "signature did not verify (wrong/missing key, or malformed token)";
@@ -203,7 +274,9 @@ export default async function handler(req, res) {
       } else {
         const durationSeconds = Number(data.duration_in_seconds) || 0;
         const direction = data.direction === "outbound" ? "outbound" : "inbound";
-        const weekKey = isoWeekKey(new Date(startTime * 1000).toISOString());
+        const callDate = new Date(startTime * 1000);
+        const weekKey = isoWeekKey(callDate.toISOString());
+        const monthKey = monthOf(callDate); // the call's own, true month -- never derived from its week, see MONTHLY_TALLY_KEY's own comment for why
 
         const allTally = (await kv.get(TALLY_KEY)) || {};
         if (!allTally[weekKey]) allTally[weekKey] = {};
@@ -216,9 +289,21 @@ export default async function handler(req, res) {
         allTally[weekKey][consultantId][`${direction}Seconds`] += durationSeconds;
         await kv.set(TALLY_KEY, allTally);
 
+        const allMonthlyTally = (await kv.get(MONTHLY_TALLY_KEY)) || {};
+        if (!allMonthlyTally[monthKey]) allMonthlyTally[monthKey] = {};
+        if (!allMonthlyTally[monthKey][consultantId]) {
+          allMonthlyTally[monthKey][consultantId] = { calls: 0, seconds: 0, inboundCalls: 0, inboundSeconds: 0, outboundCalls: 0, outboundSeconds: 0 };
+        }
+        allMonthlyTally[monthKey][consultantId].calls += 1;
+        allMonthlyTally[monthKey][consultantId].seconds += durationSeconds;
+        allMonthlyTally[monthKey][consultantId][`${direction}Calls`] += 1;
+        allMonthlyTally[monthKey][consultantId][`${direction}Seconds`] += durationSeconds;
+        await kv.set(MONTHLY_TALLY_KEY, allMonthlyTally);
+
         result.tallied = true;
         result.consultantId = consultantId;
         result.weekKey = weekKey;
+        result.monthKey = monthKey;
       }
     }
   }
