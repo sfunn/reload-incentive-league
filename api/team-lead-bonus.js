@@ -280,14 +280,35 @@ module.exports = async (req, res) => {
     // on this team during each specific month, deduped per month so
     // someone appearing across several of that month's weeks is only
     // ever counted once below, not once per week.
+    //
+    // week.date is that week's SUNDAY (its end), not its Monday -- so a
+    // week straddling a month boundary (like 2026-W40, Mon Sep 28 - Sun
+    // Oct 4) has a Sunday landing in the LATER month, and naively taking
+    // month-from-date here would attribute the WHOLE week's membership
+    // to October alone, even though six of its seven days, and whoever
+    // was genuinely on this team then, belong to September. This is the
+    // exact same class of bug found and fixed today in ringover-webhook.js
+    // (deriving a month from a week's Sunday) -- caught here by
+    // specifically checking for that same pattern elsewhere in this
+    // codebase after that fix, not found independently. The fix: a
+    // straddling week counts as membership for BOTH months it touches,
+    // not just one, since the consultant genuinely was on this team
+    // during each.
     for (const week of weeks) {
       if (!inRange(week.date, start, end)) continue;
-      const mk = week.date.slice(0, 7);
-      if (!perMonth[mk]) continue;
+      const sundayDate = new Date(week.date);
+      const mondayDate = new Date(sundayDate);
+      mondayDate.setUTCDate(sundayDate.getUTCDate() - 6);
+      const mondayMonth = `${mondayDate.getUTCFullYear()}-${String(mondayDate.getUTCMonth() + 1).padStart(2, "0")}`;
+      const sundayMonth = `${sundayDate.getUTCFullYear()}-${String(sundayDate.getUTCMonth() + 1).padStart(2, "0")}`;
+      const monthsThisWeekTouches = mondayMonth === sundayMonth ? [mondayMonth] : [mondayMonth, sundayMonth];
       for (const [consultantId, row] of Object.entries(week.rows || {})) {
         const rowTeam = row.team || (await getTeamForConsultant(consultantId, teamOverrides));
         if (rowTeam !== team) continue;
-        perMonth[mk].activeConsultants.add(consultantId);
+        for (const mk of monthsThisWeekTouches) {
+          if (!perMonth[mk]) continue;
+          perMonth[mk].activeConsultants.add(consultantId);
+        }
       }
     }
 
