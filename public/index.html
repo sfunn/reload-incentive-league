@@ -1194,6 +1194,34 @@ function App() {
       setRingoverMigrationLoading(false);
     }
   }
+  // Deliberate, one-time override for exactly the two weeks the
+  // automatic migration correctly couldn't guess at (2026-W36, the
+  // Aug/Sep boundary, and 2026-W40, the current week straddling Sep/Oct)
+  // — pre-filled to these two specific weeks/months rather than free
+  // text, since Scott's own explicit judgment call is the whole point
+  // here, and a typo in a week or month key late at night is a real risk
+  // a generic input invites. Each button disables itself once its own
+  // week has been force-assigned, since the endpoint itself refuses to
+  // apply the same week twice.
+  const [forceAssignLoading, setForceAssignLoading] = useState(null); // which weekKey is currently in flight, or null
+  const [forceAssignResults, setForceAssignResults] = useState({}); // { [weekKey]: { ok, error? } }
+  async function runForceAssignStraddlingWeek(weekKey, targetMonth) {
+    setForceAssignLoading(weekKey);
+    try {
+      const res = await fetch("/api/ringover-webhook?action=force-assign-straddling-week", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ weekKey, targetMonth }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Assignment failed");
+      setForceAssignResults((prev) => ({ ...prev, [weekKey]: { ok: true } }));
+    } catch (e) {
+      setForceAssignResults((prev) => ({ ...prev, [weekKey]: { ok: false, error: e.message } }));
+    } finally {
+      setForceAssignLoading(null);
+    }
+  }
   const [kpiOverrideError, setKpiOverrideError] = useState("");
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
@@ -4981,6 +5009,24 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 )
               : React.createElement("div", { style: { color: "#B5744F" } }, `Failed: ${ringoverMigrationResult.error}`)
           )
+        ),
+        React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 6 } },
+            "For the two specific straddling weeks the tool above can't safely guess at — a deliberate, one-time call on where each genuinely, mostly belongs. Each button is disabled once used."
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            React.createElement("button", {
+              onClick: () => runForceAssignStraddlingWeek("2026-W36", "2026-09"),
+              disabled: forceAssignLoading === "2026-W36" || (forceAssignResults["2026-W36"] && forceAssignResults["2026-W36"].ok),
+              style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: "pointer" }
+            }, forceAssignLoading === "2026-W36" ? "Assigning…" : (forceAssignResults["2026-W36"] && forceAssignResults["2026-W36"].ok) ? "✅ 2026-W36 → September, done" : "Put 2026-W36 (Aug 31 - Sep 6) into September"),
+            React.createElement("button", {
+              onClick: () => runForceAssignStraddlingWeek("2026-W40", "2026-09"),
+              disabled: forceAssignLoading === "2026-W40" || (forceAssignResults["2026-W40"] && forceAssignResults["2026-W40"].ok),
+              style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: "pointer" }
+            }, forceAssignLoading === "2026-W40" ? "Assigning…" : (forceAssignResults["2026-W40"] && forceAssignResults["2026-W40"].ok) ? "✅ 2026-W40 → September, done" : "Put 2026-W40's pre-fix history (Sep 28-30) into September")
+          ),
+          Object.entries(forceAssignResults).map(([wk, r]) => !r.ok && React.createElement("div", { key: wk, style: { fontSize: 12.5, marginTop: 6, color: "#B5744F" } }, `${wk} failed: ${r.error}`))
         ),
         syncCheckResult && React.createElement("div", { style: { fontSize: 12.5, color: syncCheckResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           syncCheckResult.ok
