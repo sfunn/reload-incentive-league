@@ -400,25 +400,47 @@ module.exports = async (req, res) => {
     // own UI shows several different kinds of id (a "profile" id in one
     // URL, a project-scoped candidate id in another), and copying the
     // wrong one into candidateId above just produces its own unrelated
-    // 404, no closer to the real question. Given a project id that's
-    // already confirmed to work, this instead pulls every stage-event
-    // for that one project across all of September directly from
-    // Atlas's own data — the real candidate id for anyone in it is
-    // sitting right there in the response, unambiguous, nothing to
-    // extract from a URL at all.
-    if (projectId && req.query.monthEvents) {
+    // 404, no closer to the real question. Originally tried filtering by
+    // project id, but a real check just proved Atlas's own API silently
+    // ignores that filter and returns every project's events regardless
+    // — so this instead paginates through the WHOLE month directly from
+    // Atlas and returns only the events for a specific candidate name,
+    // wherever in the month they actually fall. The real candidate id
+    // for that person is sitting right there in a matching event,
+    // unambiguous, nothing to extract from a URL at all.
+    const candidateName = req.query.candidateName;
+    if (candidateName) {
       try {
-        const res4 = await fetchAtlasWithRetry(
-          `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?projectId=${projectId}&createdAfter=2026-09-01T00:00:00.000Z&createdBefore=2026-09-30T23:59:59.999Z&pageSize=100`,
-          { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-        );
-        const body = await res4.text().catch(() => "");
-        results.projectMonthEvents = { status: res4.status, ok: res4.ok, body: body.slice(0, 4000) };
+        const needle = candidateName.trim().toLowerCase();
+        const matches = [];
+        let cursorDate = null, cursorId = null, pagesFetched = 0;
+        const MAX_SEARCH_PAGES = 30; // comfortably covers a full month (~2000-3000 events at 100/page) within one request
+        while (pagesFetched < MAX_SEARCH_PAGES) {
+          const params = new URLSearchParams({ createdAfter: "2026-09-01T00:00:00.000Z", createdBefore: "2026-09-30T23:59:59.999Z", pageSize: "100" });
+          if (cursorDate && cursorId) { params.set("cursorDate", cursorDate); params.set("cursorId", cursorId); }
+          const res4 = await fetchAtlasWithRetry(
+            `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
+            { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
+          );
+          if (!res4.ok) { results.candidateNameSearch = { status: res4.status, ok: false, body: (await res4.text().catch(() => "")).slice(0, 300) }; break; }
+          const json4 = await res4.json();
+          pagesFetched++;
+          for (const ev of json4.data || []) {
+            const full = `${(ev.candidate && ev.candidate.person && ev.candidate.person.firstName) || ""} ${(ev.candidate && ev.candidate.person && ev.candidate.person.lastName) || ""}`.trim().toLowerCase();
+            if (full.includes(needle)) matches.push(ev);
+          }
+          const pagination = json4.pagination || {};
+          if (!pagination.hasMore) { results.candidateNameSearch = { ok: true, pagesSearched: pagesFetched, matchCount: matches.length, matches }; break; }
+          cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
+          cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
+          if (!cursorDate || !cursorId) { results.candidateNameSearch = { ok: true, pagesSearched: pagesFetched, matchCount: matches.length, matches, note: "stopped — pagination cursor missing" }; break; }
+        }
+        if (!results.candidateNameSearch) results.candidateNameSearch = { ok: true, pagesSearched: pagesFetched, matchCount: matches.length, matches, note: `stopped at the ${MAX_SEARCH_PAGES}-page search cap` };
       } catch (e) {
-        results.projectMonthEvents = { error: e.message };
+        results.candidateNameSearch = { error: e.message };
       }
     } else {
-      results.projectMonthEvents = { skipped: "needs ?projectId= and ?monthEvents=1" };
+      results.candidateNameSearch = { skipped: "needs ?candidateName= (a first and/or last name to search for across all of September)" };
     }
 
     const testedCount = Object.values(results).filter((r) => !r.skipped).length;
