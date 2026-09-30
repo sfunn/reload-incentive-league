@@ -1,5 +1,9 @@
 const { kv } = require("@vercel/kv");
 const { getUserFromRequest } = require("./_authHelpers");
+const { computeMonthlyKpiLive } = require("./_atlasShared");
+
+const KPI_CACHE_PREFIX = "atlas-kpi-cache-v4:"; // same cache the KPI page itself reads/writes -- see api/league.js's own ?action=kpi-live-monthly
+const KPI_OVERRIDES_KEY = "kpi-overrides"; // same store the KPI page's own editable override cells write to
 
 const WEEKS_KEY = "reload-league-weeks";
 const RECORDS_KEY = "atlas-fee-records";
@@ -91,6 +95,60 @@ function inRange(dateStr, start, end) {
 
 async function getTeamForConsultant(consultantId, teamOverrides) {
   return teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId] || null;
+}
+
+// The real fix this whole file needed: CVs Out / Interviews now come from
+// the same, corrected, live-computed KPI source the Consultant KPIs page
+// itself reads from (api/_atlasShared.js's computeMonthlyKpiLive), not
+// the old, webhook-fed reload-league-weeks rows — which were measured
+// elsewhere in this app to genuinely miss a real share of events. Team
+// membership HISTORY (who was on which team, during which specific past
+// month) still comes from those same old weekly rows below, completely
+// unrelated to this fix and just as accurate as it's always been — the
+// old rows' own team-stamping is the only place that history has ever
+// been recorded at all, there's no equivalent in the new KPI source.
+// Same cache-check-then-live-compute-if-needed pattern as the KPI page's
+// own ?action=kpi-live-monthly, and the same freshness window (6 hours
+// for the current month, 30 days for a past one) — so a team lead never
+// sees a different number here than what the actual KPI page shows for
+// the same person and month.
+// Takes the cache as a parameter (a fresh {} created per request, at the
+// call site inside the handler below) rather than module-level shared
+// state — a serverless function can stay warm across separate,
+// different requests, and module-level state would then leak between
+// them, serving one request's memoized month to a completely different
+// one that happens to land on the same warm instance later.
+async function getMonthlyKpiData(monthlyKpiCache, year, month) {
+  const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+  if (monthlyKpiCache[monthKey]) return monthlyKpiCache[monthKey];
+  const now = new Date();
+  const isCurrentMonth = monthKey === `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+  const cached = await kv.get(`${KPI_CACHE_PREFIX}${monthKey}`);
+  let monthly, monthlyDetails;
+  if (cached && cached.cachedAt && cached.monthlyDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+    monthly = cached.monthly;
+    monthlyDetails = cached.monthlyDetails;
+  } else {
+    const live = await computeMonthlyKpiLive(kv, year, month);
+    monthly = live.people;
+    monthlyDetails = live.peopleDetails;
+    await kv.set(`${KPI_CACHE_PREFIX}${monthKey}`, { monthly, monthlyDetails, cachedAt: Date.now() });
+  }
+  monthlyKpiCache[monthKey] = monthly;
+  return monthly;
+}
+
+// Same override-wins merge as the KPI page's own kpiOverrideValue in
+// public/index.html — a manual correction on that page always takes
+// precedence over the live-computed figure, exactly matched here so
+// this bonus can never disagree with what a team lead can see for
+// themselves on the KPI page.
+function kpiValueFor(kpiOverrides, monthlyData, consultantId, monthKey, overrideField, liveField) {
+  const override = kpiOverrides[consultantId] && kpiOverrides[consultantId][monthKey] && kpiOverrides[consultantId][monthKey][overrideField];
+  if (override !== undefined && override !== null) return Number(override) || 0;
+  const liveEntry = (monthlyData || {})[consultantId];
+  return (liveEntry && Number(liveEntry[liveField])) || 0;
 }
 
 function monthKeyFromDateStr(dateStr) {
@@ -188,13 +246,14 @@ module.exports = async (req, res) => {
     const team = TEAM_LEAD_TEAM[teamLeadId];
     const { start, end, year } = periodBounds(period);
 
-    const [weeks, records, placements, teamOverrides, allRates, bonusStore] = await Promise.all([
+    const [weeks, records, placements, teamOverrides, allRates, bonusStore, kpiOverrides] = await Promise.all([
       kv.get(WEEKS_KEY).then((v) => v || []),
       kv.get(RECORDS_KEY).then((v) => v || []),
       kv.get(PLACEMENTS_KEY).then((v) => v || {}),
       kv.get(TEAMS_KEY).then((v) => v || {}),
       kv.get(FX_KEY).then((v) => v || {}),
       kv.get(BONUS_KEY).then((v) => v || {}),
+      kv.get(KPI_OVERRIDES_KEY).then((v) => v || {}),
     ]);
 
     // --- Pillars 1, 2 & 3: assessed month by month, then averaged over
@@ -215,6 +274,12 @@ module.exports = async (req, res) => {
     const perMonth = {};
     for (const mk of monthKeys) perMonth[mk] = { cvs: 0, interviews: 0, activeConsultants: new Set() };
 
+    // Step 1 — team membership HISTORY only, still from the old weekly
+    // rows (see this file's own comment on getMonthlyKpiData above for
+    // why this one piece stays as-is): which consultants were genuinely
+    // on this team during each specific month, deduped per month so
+    // someone appearing across several of that month's weeks is only
+    // ever counted once below, not once per week.
     for (const week of weeks) {
       if (!inRange(week.date, start, end)) continue;
       const mk = week.date.slice(0, 7);
@@ -222,9 +287,22 @@ module.exports = async (req, res) => {
       for (const [consultantId, row] of Object.entries(week.rows || {})) {
         const rowTeam = row.team || (await getTeamForConsultant(consultantId, teamOverrides));
         if (rowTeam !== team) continue;
-        perMonth[mk].cvs += Number(row.cvs) || 0;
-        perMonth[mk].interviews += Number(row.interviews) || 0;
         perMonth[mk].activeConsultants.add(consultantId);
+      }
+    }
+
+    // Step 2 — the actual CVs Out / Interviews figures themselves, for
+    // each consultant Step 1 confirmed was on this team that month, now
+    // from the corrected, live-computed KPI source (with manual
+    // overrides applied, exactly matching what the KPI page itself
+    // would show for the same person and month).
+    const monthlyKpiCache = {}; // fresh per request -- see getMonthlyKpiData's own comment for why this must never be module-level state
+    for (const mk of monthKeys) {
+      const [y, m] = mk.split("-").map(Number);
+      const monthlyData = await getMonthlyKpiData(monthlyKpiCache, y, m);
+      for (const consultantId of perMonth[mk].activeConsultants) {
+        perMonth[mk].cvs += kpiValueFor(kpiOverrides, monthlyData, consultantId, mk, "cvs", "cvsOut");
+        perMonth[mk].interviews += kpiValueFor(kpiOverrides, monthlyData, consultantId, mk, "interviews", "interviews");
       }
     }
 
