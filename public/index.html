@@ -1170,7 +1170,30 @@ function App() {
       setAtlasEndpointsLoading(false);
     }
   }
-  const [kpiOverrideError, setKpiOverrideError] = useState("");
+  // One-time migration for Calls/Phone Hrs history from before the
+  // month-boundary fix — see MONTHLY_TALLY_KEY's own comment in
+  // api/ringover-webhook.js for the full reasoning. Safe to click more
+  // than once (nothing double-counts), and clearly reports any week it
+  // couldn't safely migrate rather than guessing.
+  const [ringoverMigrationLoading, setRingoverMigrationLoading] = useState(false);
+  const [ringoverMigrationResult, setRingoverMigrationResult] = useState(null);
+  async function runRingoverMonthlyMigration() {
+    setRingoverMigrationLoading(true);
+    setRingoverMigrationResult(null);
+    try {
+      const res = await fetch("/api/ringover-webhook?action=migrate-monthly-tally", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Migration failed");
+      setRingoverMigrationResult({ ok: true, ...data });
+    } catch (e) {
+      setRingoverMigrationResult({ ok: false, error: e.message });
+    } finally {
+      setRingoverMigrationLoading(false);
+    }
+  }
   const saveKpiOverride = useCallback(async (personId, monthKey, field, value) => {
     setKpiOverrideError("");
     try {
@@ -4937,6 +4960,26 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 React.createElement("div", { style: { marginTop: 4, wordBreak: "break-all", maxHeight: 300, overflowY: "auto" } }, `candidate name search: ${JSON.stringify(atlasEndpointsResult.results.candidateNameSearch)}`)
               )
             : React.createElement("div", { style: { color: "#B5744F" } }, `Check failed: ${atlasEndpointsResult.error}`)
+        ),
+        React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 6 } },
+            "One-time fix for Calls / Phone Hrs history recorded before today: a week straddling a month boundary (like this current week) used to fold its whole total into the wrong month. Safe to click more than once."
+          ),
+          React.createElement("button", {
+            onClick: runRingoverMonthlyMigration,
+            disabled: ringoverMigrationLoading,
+            style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: ringoverMigrationLoading ? "default" : "pointer" }
+          }, ringoverMigrationLoading ? "Migrating…" : "Fix past Calls/Phone Hrs month attribution"),
+          ringoverMigrationResult && React.createElement("div", { style: { fontSize: 12.5, marginTop: 6 } },
+            ringoverMigrationResult.ok
+              ? React.createElement(React.Fragment, null,
+                  React.createElement("div", { style: { color: INDIGO_MUTED } }, `✅ ${ringoverMigrationResult.migratedWeeks.length} week(s) migrated, ${ringoverMigrationResult.alreadyMigratedWeeks.length} already done from an earlier run.`),
+                  ringoverMigrationResult.skippedStraddlingWeeks.length > 0 && React.createElement("div", { style: { color: "#B5744F", marginTop: 4 } },
+                    `${ringoverMigrationResult.skippedStraddlingWeeks.length} week(s) couldn't be migrated, since they straddle a month boundary and their own days were never recorded separately: ${ringoverMigrationResult.skippedStraddlingWeeks.map(w => w.weekKey).join(", ")}.`
+                  )
+                )
+              : React.createElement("div", { style: { color: "#B5744F" } }, `Failed: ${ringoverMigrationResult.error}`)
+          )
         ),
         syncCheckResult && React.createElement("div", { style: { fontSize: 12.5, color: syncCheckResult.ok ? INDIGO_MUTED : "#B5744F", marginTop: 6 } },
           syncCheckResult.ok
