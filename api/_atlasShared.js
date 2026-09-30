@@ -632,6 +632,32 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   // useful, and the pairs already resolved here won't need re-fetching
   // from Atlas on the next run either.
   let resolutionIncomplete = false;
+  // Resolving is now gated entirely behind the fetch phase having
+  // genuinely finished (fetchComplete) — this is the actual fix for a
+  // real, confirmed bug: a pair resolved here with only a PARTIAL view
+  // of its events (because the fetch phase ran out of its own budget
+  // before reaching that pair's later activity) gets removed from
+  // pairsToResolve and its result pushed to peopleDetails — so when a
+  // LATER, resumed run's fetch phase reaches that pair's remaining,
+  // genuinely new events, it finds no existing entry to append to
+  // (since the earlier one was already resolved and removed), creates a
+  // fresh one containing only the new events, and resolves THAT too —
+  // producing a second, duplicate entry for a candidate who was already
+  // correctly counted once. Confirmed directly against four real,
+  // duplicated candidates in production (Conan Keaveney, Daria
+  // Gavrilova, Weide Zhang, Omar Mejia) — every single one had a
+  // genuinely new event land days after an earlier cluster that would
+  // already have been resolved, and every clean, non-duplicated pair
+  // for the same candidates had no such later activity. Deferring ALL
+  // resolution until the ENTIRE month's fetch is done, every time,
+  // means a pair is only ever resolved once it has EVERY event it's
+  // ever going to have for this run — there is no earlier, partial
+  // resolution left behind for a later event to duplicate against.
+  // Costs some responsiveness on a busy month (several "Warm" clicks
+  // may pass with pagesFetched increasing but pairsResolved staying at
+  // 0, until fetch itself finally completes), but a correct number a
+  // little later beats a wrong one immediately.
+  if (fetchComplete) {
   for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
     if (Date.now() - startTime > timeBudgetMs) {
       resolutionIncomplete = true;
@@ -782,6 +808,13 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         eventsCounted++;
       }
     }
+  }
+  } else {
+    // Fetch itself didn't finish this run — resolving nothing at all
+    // this time, on purpose (see the comment on the fetchComplete gate
+    // above). Every pair collected so far, with its full event history
+    // intact, stays in pairsToResolve to be saved below exactly as-is.
+    resolutionIncomplete = true;
   }
 
   const isFullyComplete = fetchComplete && !resolutionIncomplete;
