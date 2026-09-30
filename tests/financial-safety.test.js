@@ -91,6 +91,16 @@ async function testNatashaUpliftIsolation() {
   check("deals.js (Yearly Deal Table) shows true unmodified $208,333.33", dealRecord && Math.abs(dealRecord.usdAmount - DEAL_AMOUNT) < 0.01, `got ${dealRecord && dealRecord.usdAmount}`);
 
   // team-lead-bonus.js: Development Bonus should show ZERO milestone crossings.
+  // Team Lead Bonus's own Pillars 1/2 now source CVs/Interviews from the
+  // corrected, live-computed KPI data (see api/team-lead-bonus.js's own
+  // getMonthlyKpiData) rather than the old weekly rows — pre-populating
+  // an empty cache for every month in this period is enough for this
+  // specific check, which only cares about developmentBonus, not the
+  // actual CVs/Interviews figures.
+  for (const mk of ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]) {
+    global.__fakeStore[`atlas-kpi-cache-v4:${mk}`] = { monthly: {}, monthlyDetails: {}, cachedAt: Date.now() };
+  }
+
   const res3 = makeRes();
   await teamLeadBonus({ method: "GET", query: { action: "compute", teamLeadId: "josh-stark", period: "H1-2026" }, headers: { authorization: `Bearer ${scottToken}` } }, res3);
   const crossings = res3.body && res3.body.developmentBonus && res3.body.developmentBonus.milestoneCrossings;
@@ -144,6 +154,29 @@ async function testLeadRowsIsolation() {
   global.__fakeStore["consultant-teams"] = {};
   global.__fakeStore["atlas-fx-rates"] = {};
   global.__fakeStore["team-lead-bonus-records"] = {};
+  // The actual CVs/Interviews figures now come from this cache (the same
+  // one the KPI page itself reads/writes), not the old week.rows.cvs/
+  // .interviews fields above -- those are kept ONLY for their .team
+  // stamp, still the sole source of "who was on which team, which
+  // month" history. Deliberately includes james-lancer HIMSELF here too,
+  // with an equally huge, obvious number (matching his old leadRows
+  // figure) -- this is the real point: even though the new source
+  // genuinely contains his own personal activity, he must still never
+  // be added to the team total, since he never appears in week.rows,
+  // only in leadRows, so he's never in the set of consultants this
+  // computation ever looks up in the first place.
+  global.__fakeStore["atlas-kpi-cache-v4:2026-02"] = {
+    monthly: {
+      "alex-silverman": { cvsOut: 10, interviews: 3, onsite: 1, offers: 0 },
+      "ash-thiara": { cvsOut: 8, interviews: 2, onsite: 0, offers: 0 },
+      "james-lancer": { cvsOut: 999, interviews: 999, onsite: 999, offers: 999 },
+    },
+    monthlyDetails: {},
+    cachedAt: Date.now(),
+  };
+  for (const mk of ["2026-01", "2026-03", "2026-04", "2026-05", "2026-06"]) {
+    global.__fakeStore[`atlas-kpi-cache-v4:${mk}`] = { monthly: {}, monthlyDetails: {}, cachedAt: Date.now() };
+  }
 
   const token = jwt.sign({ email: "scott@reloadsearch.com" }, process.env.AUTH_JWT_SECRET);
   const res = makeRes();
