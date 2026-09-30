@@ -752,21 +752,32 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         // period, but whose CV Sent was never claimed by anyone,
         // correctly gets ONLY CV Sent inferred here, not a redundant
         // interview alongside it.
-        // REVERTED AGAIN (third time) — Scott reported a fresh, genuine
-        // inflation in September's own numbers immediately after a
-        // clean "Warm" run, even after a proper, ordered backfill had
-        // completed successfully. The exact cause of THIS specific
-        // recurrence hasn't been confirmed yet (eventsCounted rose
-        // while pairsResolved dropped sharply in the same run, which
-        // doesn't yet have a fully verified explanation) — reverting
-        // immediately rather than guessing at a third live fix without
-        // being certain first. See the two comments above this one for
-        // the full history of what's already been tried and why each
-        // attempt didn't hold up. Any future attempt at this needs
-        // concrete, specific candidate examples of the inflation
-        // reproduced and understood BEFORE changing this code again,
-        // not iterated live against real production numbers a third
-        // time.
+        // RESTORED (fourth attempt), now with the actual root cause
+        // genuinely found and fixed — this specific logic was never the
+        // real bug across any of the three prior attempts. The true
+        // cause: a pair could be resolved before the fetch phase for
+        // its whole period had genuinely finished, and if that same
+        // pair later got a new event once fetch resumed, it had no way
+        // of knowing it was already counted once, and got a second,
+        // duplicate entry. Confirmed directly against five real
+        // candidates (Conan Keaveney, Daria Gavrilova, Weide Zhang,
+        // Omar Mejia, Tarun Yellu), all previously duplicated, all
+        // clean once resolving was gated behind fetch genuinely
+        // completing (see the fetchComplete gate around the resolve
+        // loop above). With that root cause fixed, a pair is only ever
+        // resolved once it has its full, true history — so this
+        // extension's own "has any period already claimed this rank"
+        // check now always sees a complete, trustworthy picture, not a
+        // partial one from a still-in-progress fetch.
+        for (let rank = 1; rank < minRankEvidenced; rank++) {
+          const metric = Object.keys(METRIC_RANK).find((m) => METRIC_RANK[m] === rank);
+          // Re-warming the SAME period must still re-include its own,
+          // previously-inferred claim here too — checking only
+          // "never claimed by anyone" would incorrectly exclude it on a
+          // second run, since by then this exact period is the one that
+          // claimed it the first time around.
+          if (!firstReached[metric] || firstReached[metric] === periodKey) metricsToCount.push(metric);
+        }
         // A metric stays countable in THIS period if: nothing's recorded
         // yet, this IS the period already recorded (so re-warming the
         // same period doesn't lose its own count), or this period is
