@@ -125,6 +125,23 @@ const METRIC_RANK = { cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
 // earlier one.
 const FIRST_REACHED_CACHE_PREFIX = "atlas-first-reached:";
 
+// A genuinely different dedup from the one above, for the Offers metric
+// specifically: keyed by candidateId ALONE (never +projectId, unlike
+// every other dedup in this file), storing the date of the last offer
+// COUNTED for that candidate, anywhere, any project. Confirmed directly
+// by Scott: several separate offers to the same candidate across
+// different projects (a strong candidate drawing interest from Citadel,
+// Point72 and Jump Trading all at once, say) were inflating Offers and
+// distorting the Offer:Agreed rate, when in Reload's own terms that's one
+// real outcome worth counting once, not several. A 3-MONTH ROLLING
+// window, not "same calendar month" and not a permanent one-ever claim:
+// an offer genuinely more than 3 months after the last counted one is a
+// fresh, separate result. The breakdown list a person actually opens
+// always shows every individual offer event regardless — only the
+// headline COUNT folds nearby repeats together.
+const OFFER_DEDUP_PREFIX = "atlas-offer-dedup:";
+const OFFER_DEDUP_WINDOW_MONTHS = 3;
+
 const EMAIL_TO_CONSULTANT = {
   "alex@reloadsearch.com": "alex-silverman",
   "ash@reloadsearch.com": "ash-thiara",
@@ -658,6 +675,12 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   // 0, until fetch itself finally completes), but a correct number a
   // little later beats a wrong one immediately.
   if (fetchComplete) {
+  // Accumulates every offers-eligible pair across EVERY batch in this
+  // run (batches resolve sequentially, one after another, but pairs
+  // WITHIN a batch resolve concurrently — see the comment at this
+  // array's own synchronous processing pass, after this whole loop,
+  // for why the actual dedup can only safely happen there).
+  const pendingOfferCandidates = [];
   for (let i = 0; i < pairs.length; i += LOOKUP_CONCURRENCY) {
     if (Date.now() - startTime > timeBudgetMs) {
       resolutionIncomplete = true;
@@ -796,13 +819,28 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         if (changed) await kv.set(firstReachedKey, updated);
         metricsToCount = stillNew;
       }
+      // The offer-specific candidate-level dedup itself (see
+      // OFFER_DEDUP_PREFIX's own comment) happens later, as a single,
+      // synchronous pass after every pair in this whole run has
+      // resolved — deliberately NOT here. Pairs within one batch resolve
+      // CONCURRENTLY (see the Promise.all this return sits inside), so a
+      // read-then-write check placed here would race: the same
+      // candidate's several offers, across different projects, could
+      // all read "nothing counted yet" before any of them had written
+      // back, and all count as new. Only this pair's own offer date is
+      // computed here; candidateOfferDate is null when this pair didn't
+      // reach the offers stage at all.
+      const offerEvents = events.filter((e) => e.metric === "offers" && e.movedAt);
+      const candidateOfferDate = offerEvents.length > 0
+        ? new Date(Math.max(...offerEvents.map((e) => new Date(e.movedAt).getTime()))).toISOString()
+        : null;
       // projectName here is deliberately the CLIENT COMPANY (e.g. "PDT
       // Partners"), not the project's own title — jobRole is already
       // shown as its own, separate field below, so showing it twice
       // under two different labels was a real, visible bug: every
       // candidate in a breakdown showed the identical text twice
       // instead of the job title alongside the actual client.
-      return { consultantId, metrics: metricsToCount, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
+      return { consultantId, candidateId, metrics: metricsToCount, candidateOfferDate, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
     }));
 
     for (let bi = 0; bi < batch.length; bi++) {
@@ -814,9 +852,78 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       if (!people[r.consultantId]) people[r.consultantId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
       if (!peopleDetails[r.consultantId]) peopleDetails[r.consultantId] = { cvsOut: [], interviews: [], onsite: [], offers: [] };
       for (const metric of r.metrics) {
-        people[r.consultantId][metric] += 1;
+        // The breakdown list always gets every real event, unconditionally
+        // — opening "who?" must always show the true, complete history.
         peopleDetails[r.consultantId][metric].push({ candidateName: r.candidateName, projectName: r.projectName, jobRole: r.jobRole });
         eventsCounted++;
+        if (metric === "offers") {
+          // The headline COUNT for offers is deferred to a single,
+          // synchronous pass after every batch in this whole run has
+          // resolved (see pendingOfferCandidates below, and its own pass
+          // further down) — never incremented here, and deliberately
+          // not in the same concurrent resolution above, both for the
+          // same reason: this same candidate's other offers, across
+          // different projects, may still be resolving concurrently
+          // elsewhere in this very batch.
+          pendingOfferCandidates.push({ consultantId: r.consultantId, candidateId: r.candidateId, offerDate: r.candidateOfferDate });
+          continue;
+        }
+        people[r.consultantId][metric] += 1;
+      }
+    }
+  }
+  // The actual offers dedup, now that every pair in this whole run has
+  // resolved and nothing is running concurrently anymore — safe to read
+  // and write the persistent anchor per candidate exactly once each,
+  // with no race against this same candidate's other, still-resolving
+  // offers (see pendingOfferCandidates' own comment above for why this
+  // couldn't safely happen any earlier). Two layers, in order:
+  // 1) within THIS run's own pending offers, group by candidate and keep
+  //    only the earliest in each 3-month cluster (several of this run's
+  //    own offers for the same candidate, across different projects,
+  //    must dedup against EACH OTHER first, in memory, not just against
+  //    whatever's already stored from an earlier run);
+  // 2) whichever ones survive that get checked against the persistent,
+  //    cross-run anchor, exactly once per candidate.
+  const offersByCandidateId = {};
+  for (const o of pendingOfferCandidates) {
+    if (!offersByCandidateId[o.candidateId]) offersByCandidateId[o.candidateId] = [];
+    offersByCandidateId[o.candidateId].push(o);
+  }
+  for (const [candidateId, offersForCandidate] of Object.entries(offersByCandidateId)) {
+    // Sort earliest-first so an undated entry (offerDate somehow null --
+    // not expected in practice, but failing open rather than silently
+    // dropping a real offer) always counts, having nothing to compare
+    // its date against.
+    const sorted = offersForCandidate.slice().sort((a, b) => {
+      if (!a.offerDate) return -1;
+      if (!b.offerDate) return 1;
+      return new Date(a.offerDate) - new Date(b.offerDate);
+    });
+    let inRunAnchor = null; // the most recent offerDate THIS run has already decided counts
+    const offerDedupKey = `${OFFER_DEDUP_PREFIX}${candidateId}`;
+    const persistedIso = await kv.get(offerDedupKey);
+    let persistedAnchor = persistedIso ? new Date(persistedIso) : null;
+    for (const o of sorted) {
+      const thisDate = o.offerDate ? new Date(o.offerDate) : null;
+      let countsTowardOffers = true;
+      if (thisDate && inRunAnchor) {
+        const windowEnd = new Date(inRunAnchor);
+        windowEnd.setUTCMonth(windowEnd.getUTCMonth() + OFFER_DEDUP_WINDOW_MONTHS);
+        if (thisDate < windowEnd) countsTowardOffers = false;
+      }
+      if (countsTowardOffers && thisDate && persistedAnchor) {
+        const windowEnd = new Date(persistedAnchor);
+        windowEnd.setUTCMonth(windowEnd.getUTCMonth() + OFFER_DEDUP_WINDOW_MONTHS);
+        if (thisDate < windowEnd) countsTowardOffers = false;
+      }
+      if (countsTowardOffers) {
+        people[o.consultantId].offers += 1;
+        if (thisDate && (!inRunAnchor || thisDate > inRunAnchor)) inRunAnchor = thisDate;
+        if (thisDate && (!persistedAnchor || thisDate > persistedAnchor)) {
+          persistedAnchor = thisDate;
+          await kv.set(offerDedupKey, thisDate.toISOString());
+        }
       }
     }
   }
