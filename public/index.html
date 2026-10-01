@@ -484,28 +484,21 @@ function computeOneMonthForPerson(kpiLiveMonthly, person, placementCountsByConsu
 function pipelineSum(values) {
   return values.reduce((s, v) => s + (v || 0), 0);
 }
-function pipelineAverageOf(entries) {
+// sumFields: field names to SUM instead of average -- used only when
+// aggregating one person's own MONTHS into a single Quarter/Year row
+// (onsite, offers, placements there), never when aggregating PEOPLE into
+// the bottom Team/Company Average row, which stays a genuine average for
+// every field, these three included (Scott's own later correction: the
+// period-total principle applies to a person's own row, not to how the
+// team's figures get summarized underneath it).
+function pipelineAverageOf(entries, sumFields = []) {
+  const agg = (field) => sumFields.includes(field) ? pipelineSum(entries.map(e => e[field])) : pipelineMean(entries.map(e => e[field]));
   return {
-    cvs: pipelineMean(entries.map(e => e.cvs)),
-    interviews: pipelineMean(entries.map(e => e.interviews)),
-    // Onsite and Offers are deliberately a genuine SUM here, not an
-    // average — confirmed directly by Scott: an "average onsite per
-    // month" of a fraction like 0.3 wasn't a useful figure the way a
-    // concrete "3 onsites this quarter" is for numbers this small and
-    // infrequent. This one change correctly cascades through both
-    // places this function is used: a person's own Quarter/Year row
-    // becomes their own total across the period (not their average per
-    // month), and the bottom summary row, built from averaging those
-    // same person-rows again, becomes the sum of everyone's own totals
-    // — exactly "the bottom row sums those totals", across every tab,
-    // since this same function also drives the Month view's own bottom
-    // row (where a single month's figure needs no further aggregation
-    // either way, so nothing changes there in practice). CVs,
-    // Interviews, Calls, Phone Hrs and Deals Agreed are unaffected,
-    // still genuine averages throughout.
-    onsite: pipelineSum(entries.map(e => e.onsite)),
-    offers: pipelineSum(entries.map(e => e.offers)),
-    placements: pipelineMean(entries.map(e => e.placements)),
+    cvs: agg("cvs"),
+    interviews: agg("interviews"),
+    onsite: agg("onsite"),
+    offers: agg("offers"),
+    placements: agg("placements"),
     calls: pipelineMean(entries.map(e => e.calls)),
     phoneHours: pipelineMean(entries.map(e => e.phoneHours)),
     pctCvInterview: pipelineMean(entries.map(e => e.pctCvInterview !== undefined ? e.pctCvInterview : pipelinePctOrNull(e.interviews, e.cvs))),
@@ -565,7 +558,16 @@ function computeYearPipelineForPerson(kpiLiveMonthly, person, placementCountsByC
   const months = allMonthNumbers.map(m => computeOneMonthForPerson(kpiLiveMonthly, person, placementCountsByConsultant, `${year}-${String(m).padStart(2, "0")}`, kpiOverrides, ringoverByMonth));
   const started = new Set(startedMonthNumbers(year, allMonthNumbers));
   const startedMonths = months.filter((m, i) => started.has(allMonthNumbers[i]));
-  const average = pipelineAverageOf(startedMonths);
+  // Onsite, Offers and Deals Agreed are a genuine SUM across this
+  // person's own started months here -- confirmed directly by Scott: an
+  // "average onsite per month" of a fraction like 0.3 wasn't a useful
+  // figure the way a concrete "3 onsites this quarter" is for numbers
+  // this small and infrequent. CVs, Interviews, Calls and Phone Hrs stay
+  // genuine averages. This SAME principle does NOT carry through to the
+  // team/company summary row further down (computeScopeAverage), which
+  // stays a true average across people for every field, these three
+  // included -- Scott's own later, explicit correction.
+  const average = pipelineAverageOf(startedMonths, ["onsite", "offers", "placements"]);
   return { months, average };
 }
 // Same idea, one quarter (1-4) instead of the whole year -- the average
@@ -577,7 +579,7 @@ function computeQuarterPipelineForPerson(kpiLiveMonthly, person, placementCounts
   const months = monthNumbers.map(m => computeOneMonthForPerson(kpiLiveMonthly, person, placementCountsByConsultant, `${year}-${String(m).padStart(2, "0")}`, kpiOverrides, ringoverByMonth));
   const started = new Set(startedMonthNumbers(year, monthNumbers));
   const startedMonths = months.filter((m, i) => started.has(monthNumbers[i]));
-  const average = pipelineAverageOf(startedMonths);
+  const average = pipelineAverageOf(startedMonths, ["onsite", "offers", "placements"]);
   return { months, average };
 }
 
@@ -595,11 +597,15 @@ function computeQuarterPipelineForPerson(kpiLiveMonthly, person, placementCounts
 function excludeTeamLeads(people) {
   return people.filter(p => !p.isTeamLead);
 }
-// Generalized across month/quarter/year: this is always the mean of each
-// person's OWN average for the period (never a pooled sum, and never
-// "the mean of everyone's yearly total" the way this used to work for
-// Year specifically) -- so it's always in the same units as the rows
-// above it, whichever period is selected.
+// This is always the mean of each person's OWN figure for the period --
+// for every column, Onsite/Offers/Deals Agreed included. A person's own
+// row above may show those three as a period TOTAL (see
+// computeYearPipelineForPerson/computeQuarterPipelineForPerson's own
+// sumFields), but this summary row deliberately does NOT sum those
+// totals back together -- it still answers "what does a typical person
+// on this team look like", not "what did the whole team produce",
+// across every column, Scott's own later correction after first trying
+// the sum-of-totals approach here too.
 function computeScopeAverage(kpiLiveMonthly, scopedPeople, placementCountsByConsultant, periodMode, year, monthOrQuarter, kpiOverrides, ringoverByMonth) {
   const rows = computePeriodPipelineRows(kpiLiveMonthly, excludeTeamLeads(scopedPeople), placementCountsByConsultant, periodMode, year, monthOrQuarter, kpiOverrides, ringoverByMonth);
   return pipelineAverageOf(rows);
