@@ -1246,6 +1246,8 @@ function App() {
   const [atlasEndpointsProjectId, setAtlasEndpointsProjectId] = useState("");
   const [atlasEndpointsCandidateId, setAtlasEndpointsCandidateId] = useState("");
   const [atlasEndpointsCandidateName, setAtlasEndpointsCandidateName] = useState("");
+  const [atlasEndpointsSearchYear, setAtlasEndpointsSearchYear] = useState("");
+  const [atlasEndpointsSearchMonth, setAtlasEndpointsSearchMonth] = useState("");
   async function runAtlasEndpointsCheck() {
     setAtlasEndpointsLoading(true);
     setAtlasEndpointsResult(null);
@@ -1254,6 +1256,11 @@ function App() {
       if (atlasEndpointsProjectId.trim()) params.set("projectId", atlasEndpointsProjectId.trim());
       if (atlasEndpointsCandidateId.trim()) params.set("candidateId", atlasEndpointsCandidateId.trim());
       if (atlasEndpointsCandidateName.trim()) params.set("candidateName", atlasEndpointsCandidateName.trim());
+      // Without these, the search defaults to the real current month —
+      // these let it target any other month a candidate's actual
+      // activity might genuinely be in instead.
+      if (atlasEndpointsSearchYear.trim()) params.set("year", atlasEndpointsSearchYear.trim());
+      if (atlasEndpointsSearchMonth.trim()) params.set("month", atlasEndpointsSearchMonth.trim());
       const res = await fetch(`/api/league?${params.toString()}`, {
         headers: { Authorization: `Bearer ${authUser.token}` },
       });
@@ -5018,11 +5025,21 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           }),
           React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: INDIGO_MUTED } },
             React.createElement("input", {
-              type: "text", placeholder: "candidateName (search all of September)", value: atlasEndpointsCandidateName,
+              type: "text", placeholder: "candidateName (searches current month, or year/month below)", value: atlasEndpointsCandidateName,
               onChange: (e) => setAtlasEndpointsCandidateName(e.target.value),
               style: { padding: "5px 8px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 12, width: 220 }
             })
           ),
+          React.createElement("input", {
+            type: "text", placeholder: "year (optional)", value: atlasEndpointsSearchYear,
+            onChange: (e) => setAtlasEndpointsSearchYear(e.target.value),
+            style: { padding: "5px 8px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 12, width: 90 }
+          }),
+          React.createElement("input", {
+            type: "text", placeholder: "month (1-12)", value: atlasEndpointsSearchMonth,
+            onChange: (e) => setAtlasEndpointsSearchMonth(e.target.value),
+            style: { padding: "5px 8px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, fontSize: 12, width: 90 }
+          }),
           React.createElement("button", {
             onClick: runAtlasEndpointsCheck,
             disabled: atlasEndpointsLoading,
