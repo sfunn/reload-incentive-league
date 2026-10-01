@@ -477,12 +477,34 @@ function computeOneMonthForPerson(kpiLiveMonthly, person, placementCountsByConsu
 // CVs per month" is what every summary figure in Quarter and Year views
 // means, consistently, so it's always directly comparable to any other
 // summary figure regardless of how many months went into it.
+// A genuine sum, not an average — null/undefined entries contribute 0,
+// the same way a month or person with no activity at all naturally
+// would, rather than being skipped as if they didn't exist (which is
+// the right behavior for pipelineMean, but not for a running total).
+function pipelineSum(values) {
+  return values.reduce((s, v) => s + (v || 0), 0);
+}
 function pipelineAverageOf(entries) {
   return {
     cvs: pipelineMean(entries.map(e => e.cvs)),
     interviews: pipelineMean(entries.map(e => e.interviews)),
-    onsite: pipelineMean(entries.map(e => e.onsite)),
-    offers: pipelineMean(entries.map(e => e.offers)),
+    // Onsite and Offers are deliberately a genuine SUM here, not an
+    // average — confirmed directly by Scott: an "average onsite per
+    // month" of a fraction like 0.3 wasn't a useful figure the way a
+    // concrete "3 onsites this quarter" is for numbers this small and
+    // infrequent. This one change correctly cascades through both
+    // places this function is used: a person's own Quarter/Year row
+    // becomes their own total across the period (not their average per
+    // month), and the bottom summary row, built from averaging those
+    // same person-rows again, becomes the sum of everyone's own totals
+    // — exactly "the bottom row sums those totals", across every tab,
+    // since this same function also drives the Month view's own bottom
+    // row (where a single month's figure needs no further aggregation
+    // either way, so nothing changes there in practice). CVs,
+    // Interviews, Calls, Phone Hrs and Deals Agreed are unaffected,
+    // still genuine averages throughout.
+    onsite: pipelineSum(entries.map(e => e.onsite)),
+    offers: pipelineSum(entries.map(e => e.offers)),
     placements: pipelineMean(entries.map(e => e.placements)),
     calls: pipelineMean(entries.map(e => e.calls)),
     phoneHours: pipelineMean(entries.map(e => e.phoneHours)),
@@ -4879,7 +4901,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
     // (single-person) view, never the "Everyone" grid, where all ten
     // numbers already sit side by side.
     function cellWithAvg(width, value, avgValue, isPercent, bold, candidates, onViewCandidates) {
-      const mainText = isPercent ? fmtPipelinePct(value) : value;
+      const mainText = isPercent ? fmtPipelinePct(value) : (value === null || value === undefined ? value : Math.round(value * 10) / 10);
       const avgText = avgValue === null || avgValue === undefined ? null : (isPercent ? fmtPipelinePct(avgValue) : Math.round(avgValue * 10) / 10);
       const comparisonColor = avgComparisonColor(value, avgValue);
       return React.createElement("div", { style: { width, flexShrink: 0 } },
