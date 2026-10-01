@@ -1186,16 +1186,22 @@ function App() {
   // Lets a Super Admin manually warm the KPI page's own cache right now,
   // rather than waiting for the schedule — useful since Vercel's Hobby
   // plan may restrict how often a cron job can actually run, so this is
-  // a genuine fallback, not just a convenience. Refetches the current
-  // month afterward so the page reflects the freshly warmed result
-  // immediately.
+  // a genuine fallback, not just a convenience. Warms whichever month is
+  // CURRENTLY SELECTED on the page (via the Month tabs above), not
+  // always "now" — a logic fix deployed partway through a past month
+  // (like this one) needs that SPECIFIC month force-recomputed to
+  // actually take effect, since a past month's cache is otherwise
+  // considered fresh for 30 days and would keep serving its old, stale
+  // figures regardless of what the underlying code now does
+  // differently. Refetches that same month afterward so the page
+  // reflects the freshly warmed result immediately.
   const [kpiWarmLoading, setKpiWarmLoading] = useState(false);
   const [kpiWarmResult, setKpiWarmResult] = useState(null);
   async function runWarmKpiCache() {
     setKpiWarmLoading(true);
     setKpiWarmResult(null);
     try {
-      const res = await fetch("/api/atlas-reconcile-cron?task=warm-kpi-cache", {
+      const res = await fetch(`/api/atlas-reconcile-cron?task=warm-kpi-cache&year=${pipelineYear}&month=${pipelineMonth}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${authUser.token}` },
       });
@@ -4993,7 +4999,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
           onClick: runWarmKpiCache,
           disabled: kpiWarmLoading,
           style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: kpiWarmLoading ? "default" : "pointer" }
-        }, kpiWarmLoading ? "Warming…" : "Warm this month's KPI cache now"),
+        }, kpiWarmLoading ? "Warming…" : `Force-recompute ${monthLabel(`${pipelineYear}-${String(pipelineMonth).padStart(2, "0")}`)} now`),
         React.createElement("button", {
           onClick: runStageNameCoverageCheck,
           disabled: stageCoverageLoading,
