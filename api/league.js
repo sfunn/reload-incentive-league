@@ -408,21 +408,35 @@ module.exports = async (req, res) => {
     // wherever in the month they actually fall. The real candidate id
     // for that person is sitting right there in a matching event,
     // unambiguous, nothing to extract from a URL at all.
+    //
+    // Which month: an explicit ?year=&month= always wins; otherwise this
+    // defaults to the REAL current month, computed fresh each call —
+    // never hardcoded to a specific month. A hardcoded month search was
+    // the actual, confirmed cause of a real debugging dead end: a
+    // candidate's own activity was genuinely in a different month than
+    // the one this was silently always searching, so it reported zero
+    // matches while implying the candidate simply didn't exist, rather
+    // than naming which month it had actually searched.
     const candidateName = req.query.candidateName;
     if (candidateName) {
       try {
+        const now = new Date();
+        const searchYear = req.query.year ? Number(req.query.year) : now.getUTCFullYear();
+        const searchMonth = req.query.month ? Number(req.query.month) : (now.getUTCMonth() + 1);
+        const searchMonthKey = `${searchYear}-${String(searchMonth).padStart(2, "0")}`;
+        const daysInSearchMonth = new Date(Date.UTC(searchYear, searchMonth, 0)).getUTCDate();
         const needle = candidateName.trim().toLowerCase();
         const matches = [];
         let cursorDate = null, cursorId = null, pagesFetched = 0;
         const MAX_SEARCH_PAGES = 30; // comfortably covers a full month (~2000-3000 events at 100/page) within one request
         while (pagesFetched < MAX_SEARCH_PAGES) {
-          const params = new URLSearchParams({ createdAfter: "2026-09-01T00:00:00.000Z", createdBefore: "2026-09-30T23:59:59.999Z", pageSize: "100" });
+          const params = new URLSearchParams({ createdAfter: `${searchMonthKey}-01T00:00:00.000Z`, createdBefore: `${searchMonthKey}-${String(daysInSearchMonth).padStart(2, "0")}T23:59:59.999Z`, pageSize: "100" });
           if (cursorDate && cursorId) { params.set("cursorDate", cursorDate); params.set("cursorId", cursorId); }
           const res4 = await fetchAtlasWithRetry(
             `https://api.recruitwithatlas.com/api/v1/candidate-stage-events?${params.toString()}`,
             { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
           );
-          if (!res4.ok) { results.candidateNameSearch = { status: res4.status, ok: false, body: (await res4.text().catch(() => "")).slice(0, 300) }; break; }
+          if (!res4.ok) { results.candidateNameSearch = { status: res4.status, ok: false, body: (await res4.text().catch(() => "")).slice(0, 300), searchedMonth: searchMonthKey }; break; }
           const json4 = await res4.json();
           pagesFetched++;
           for (const ev of json4.data || []) {
@@ -430,17 +444,17 @@ module.exports = async (req, res) => {
             if (full.includes(needle)) matches.push(ev);
           }
           const pagination = json4.pagination || {};
-          if (!pagination.hasMore) { results.candidateNameSearch = { ok: true, pagesSearched: pagesFetched, matchCount: matches.length, matches }; break; }
+          if (!pagination.hasMore) { results.candidateNameSearch = { ok: true, searchedMonth: searchMonthKey, pagesSearched: pagesFetched, matchCount: matches.length, matches }; break; }
           cursorDate = pagination.nextCursor && pagination.nextCursor.cursorDate;
           cursorId = pagination.nextCursor && pagination.nextCursor.cursorId;
-          if (!cursorDate || !cursorId) { results.candidateNameSearch = { ok: true, pagesSearched: pagesFetched, matchCount: matches.length, matches, note: "stopped — pagination cursor missing" }; break; }
+          if (!cursorDate || !cursorId) { results.candidateNameSearch = { ok: true, searchedMonth: searchMonthKey, pagesSearched: pagesFetched, matchCount: matches.length, matches, note: "stopped — pagination cursor missing" }; break; }
         }
-        if (!results.candidateNameSearch) results.candidateNameSearch = { ok: true, pagesSearched: pagesFetched, matchCount: matches.length, matches, note: `stopped at the ${MAX_SEARCH_PAGES}-page search cap` };
+        if (!results.candidateNameSearch) results.candidateNameSearch = { ok: true, searchedMonth: searchMonthKey, pagesSearched: pagesFetched, matchCount: matches.length, matches, note: `stopped at the ${MAX_SEARCH_PAGES}-page search cap` };
       } catch (e) {
         results.candidateNameSearch = { error: e.message };
       }
     } else {
-      results.candidateNameSearch = { skipped: "needs ?candidateName= (a first and/or last name to search for across all of September)" };
+      results.candidateNameSearch = { skipped: "needs ?candidateName= (a first and/or last name to search for); searches the current real month by default, or add &year=&month= to search a specific one" };
     }
 
     const testedCount = Object.values(results).filter((r) => !r.skipped).length;
