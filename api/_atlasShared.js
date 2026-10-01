@@ -126,19 +126,21 @@ const METRIC_RANK = { cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
 const FIRST_REACHED_CACHE_PREFIX = "atlas-first-reached:";
 
 // A genuinely different dedup from the one above, for the Offers metric
-// specifically: keyed by candidateId ALONE (never +projectId, unlike
-// every other dedup in this file), storing the date of the last offer
-// COUNTED for that candidate, anywhere, any project. Confirmed directly
-// by Scott: several separate offers to the same candidate across
-// different projects (a strong candidate drawing interest from Citadel,
-// Point72 and Jump Trading all at once, say) were inflating Offers and
-// distorting the Offer:Agreed rate, when in Reload's own terms that's one
-// real outcome worth counting once, not several. A 3-MONTH ROLLING
-// window, not "same calendar month" and not a permanent one-ever claim:
-// an offer genuinely more than 3 months after the last counted one is a
-// fresh, separate result. The breakdown list a person actually opens
-// always shows every individual offer event regardless — only the
-// headline COUNT folds nearby repeats together.
+// specifically: keyed by the candidate's PERSON id (never +projectId,
+// unlike every other dedup in this file — and deliberately NOT Atlas's
+// own per-pipeline candidate.id either, see personId's own comment at
+// its extraction above for why), storing the date of the last offer
+// COUNTED for that real person, anywhere, any project. Confirmed
+// directly by Scott: several separate offers to the same candidate
+// across different projects (a strong candidate drawing interest from
+// Citadel, Point72 and Jump Trading all at once, say) were inflating
+// Offers and distorting the Offer:Agreed rate, when in Reload's own
+// terms that's one real outcome worth counting once, not several. A
+// 3-MONTH ROLLING window, not "same calendar month" and not a permanent
+// one-ever claim: an offer genuinely more than 3 months after the last
+// counted one is a fresh, separate result. The breakdown list a person
+// actually opens always shows every individual offer event regardless —
+// only the headline COUNT folds nearby repeats together.
 const OFFER_DEDUP_PREFIX = "atlas-offer-dedup:";
 const OFFER_DEDUP_WINDOW_MONTHS = 3;
 
@@ -586,6 +588,21 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
 
       const projectId = event.project && event.project.id;
       const candidateId = event.candidate && event.candidate.id;
+      // Atlas gives each project pipeline its own, separate "candidate"
+      // record — the SAME real person submitted to three different
+      // roles gets three different candidate.id values, one per
+      // pipeline. candidate.person.id is the one field that stays
+      // constant across all of them, the actual human underneath.
+      // candidateId above stays the key for per-pipeline tracking
+      // (pairing, and the existing cross-period CVs/Interviews/etc
+      // dedup, which is deliberately scoped per pipeline) — personId
+      // exists specifically for the Offers dedup below, which needs the
+      // real person, not any one of their per-pipeline records.
+      // Confirmed directly against real production data: Ethan Stone's
+      // three separate offers each had a different candidate.id, which
+      // is exactly why keying the dedup on candidateId never once
+      // caught them as the same person.
+      const personId = event.candidate && event.candidate.person && event.candidate.person.id;
       if (!projectId || !candidateId) continue;
 
       // Deduped by the EVENT's own id now, not by candidate:project:metric
@@ -607,7 +624,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
 
       const pairKey = `${candidateId}:${projectId}`;
       if (!pairsToResolve.has(pairKey)) {
-        pairsToResolve.set(pairKey, { projectId, candidateId, events: [] });
+        pairsToResolve.set(pairKey, { projectId, candidateId, personId, events: [] });
       }
       pairsToResolve.get(pairKey).events.push({ metric, movedAt: event.movedAt || null });
     }
@@ -687,7 +704,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       break;
     }
     const batch = pairs.slice(i, i + LOOKUP_CONCURRENCY);
-    const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, events }) => {
+    const resolved = await Promise.all(batch.map(async ({ projectId, candidateId, personId, events }) => {
       const projectDetails = await lookupProjectDetails(kv, projectId);
       const projectJobRole = projectDetails ? projectDetails.jobRole : null;
       // The exclusion check compares against the PROJECT's own title
@@ -840,7 +857,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       // under two different labels was a real, visible bug: every
       // candidate in a breakdown showed the identical text twice
       // instead of the job title alongside the actual client.
-      return { consultantId, candidateId, metrics: metricsToCount, candidateOfferDate, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
+      return { consultantId, candidateId, personId, metrics: metricsToCount, candidateOfferDate, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
     }));
 
     for (let bi = 0; bi < batch.length; bi++) {
@@ -865,7 +882,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
           // same reason: this same candidate's other offers, across
           // different projects, may still be resolving concurrently
           // elsewhere in this very batch.
-          pendingOfferCandidates.push({ consultantId: r.consultantId, candidateId: r.candidateId, offerDate: r.candidateOfferDate });
+          pendingOfferCandidates.push({ consultantId: r.consultantId, personId: r.personId || r.candidateId, offerDate: r.candidateOfferDate });
           continue;
         }
         people[r.consultantId][metric] += 1;
@@ -885,12 +902,12 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
   //    whatever's already stored from an earlier run);
   // 2) whichever ones survive that get checked against the persistent,
   //    cross-run anchor, exactly once per candidate.
-  const offersByCandidateId = {};
+  const offersByPersonId = {};
   for (const o of pendingOfferCandidates) {
-    if (!offersByCandidateId[o.candidateId]) offersByCandidateId[o.candidateId] = [];
-    offersByCandidateId[o.candidateId].push(o);
+    if (!offersByPersonId[o.personId]) offersByPersonId[o.personId] = [];
+    offersByPersonId[o.personId].push(o);
   }
-  for (const [candidateId, offersForCandidate] of Object.entries(offersByCandidateId)) {
+  for (const [personId, offersForCandidate] of Object.entries(offersByPersonId)) {
     // Sort earliest-first so an undated entry (offerDate somehow null --
     // not expected in practice, but failing open rather than silently
     // dropping a real offer) always counts, having nothing to compare
@@ -901,7 +918,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       return new Date(a.offerDate) - new Date(b.offerDate);
     });
     let inRunAnchor = null; // the most recent offerDate THIS run has already decided counts
-    const offerDedupKey = `${OFFER_DEDUP_PREFIX}${candidateId}`;
+    const offerDedupKey = `${OFFER_DEDUP_PREFIX}${personId}`;
     const persistedIso = await kv.get(offerDedupKey);
     let persistedAnchor = persistedIso ? new Date(persistedIso) : null;
     for (const o of sorted) {
