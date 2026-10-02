@@ -86,19 +86,23 @@ function isoWeekKey(dateStr) {
 
 // Subtracts manually excluded candidate+project pairs (a mistaken
 // submission, see the toggle-kpi-exclusion endpoint's own comment for
-// the full reasoning) from a person's raw counts — moved here from the
-// Consultant KPIs page's own frontend specifically so this endpoint
-// itself returns the already-correct number: anyone calling
-// kpi-live-monthly directly (the Directors site included) gets the same
-// adjusted figure automatically, with no need to separately read
-// kpi-exclusions or replicate this subtraction themselves. Deliberately
-// leaves monthlyDetails completely untouched — the breakdown list a
-// person opens must always show the true, complete history regardless,
-// only the headline count itself is adjusted. Returns a NEW object
-// rather than mutating the one passed in, since the caller's own
-// variable may still be the thing about to get cached or reused
-// elsewhere unexcluded.
-function applyKpiExclusionsToMonthly(monthly, monthlyDetails, exclusions) {
+// the full reasoning) from a person's raw counts — shared by BOTH
+// kpi-live-monthly and week-live, deliberately: an exclusion made once,
+// on the KPI page, is keyed on the candidate+project pair itself, not
+// on "month" or "week" at all, so it must take effect everywhere that
+// pair could ever show up, with nothing further for Scott to action on
+// the Weekly Incentive page separately. Moved here from the frontend
+// specifically so each endpoint itself returns the already-correct
+// number: anyone calling either endpoint directly (the Directors site
+// included) gets the same adjusted figure automatically, with no need
+// to separately read kpi-exclusions or replicate this subtraction
+// themselves. Deliberately leaves the details/breakdown argument
+// completely untouched — the breakdown list a person opens must always
+// show the true, complete history regardless, only the headline count
+// itself is adjusted. Returns a NEW object rather than mutating the one
+// passed in, since the caller's own variable may still be the thing
+// about to get cached or reused elsewhere unexcluded.
+function applyKpiExclusions(monthly, monthlyDetails, exclusions) {
   if (!exclusions || Object.keys(exclusions).length === 0) return monthly;
   const adjusted = {};
   for (const [personId, counts] of Object.entries(monthly || {})) {
@@ -741,6 +745,13 @@ module.exports = async (req, res) => {
       }
     }
 
+    // A manual exclusion made on the Consultant KPIs page applies here
+    // automatically — see applyKpiExclusions' own comment for why this
+    // is deliberately shared with kpi-live-monthly, not something Scott
+    // needs to separately action on this page too.
+    const kpiExclusions = (await kv.get("kpi-exclusions")) || {};
+    computed = applyKpiExclusions(computed, computedDetails, kpiExclusions);
+
     const overrides = (await kv.get(WEEK_OVERRIDES_KEY)) || {};
     const weekOverrides = overrides[weekKey] || {};
 
@@ -880,7 +891,7 @@ module.exports = async (req, res) => {
     const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
     // Fetched once, applied to whichever of the three response paths
-    // below actually gets used — see applyKpiExclusionsToMonthly's own
+    // below actually gets used — see applyKpiExclusions's own
     // comment for why this lives here, in the endpoint itself, rather
     // than left for each separate consumer of this endpoint to
     // replicate on their own.
@@ -892,7 +903,7 @@ module.exports = async (req, res) => {
     // information-incomplete result for up to 6 hours.
     if (cached && cached.cachedAt && cached.monthlyDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
-      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusionsToMonthly(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails } });
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails } });
     }
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
@@ -914,7 +925,7 @@ module.exports = async (req, res) => {
       if (cached && cached.monthlyDetails) {
         console.warn(`[kpi-live-monthly] serving stale cache for ${requestedMonthKey} — Atlas is unreachable, age: ${cached.cachedAt ? Math.round((Date.now() - cached.cachedAt) / 60000) + "min" : "unknown"}`);
         return res.status(200).json({
-          year, month, monthly: { [requestedMonthKey]: applyKpiExclusionsToMonthly(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails },
+          year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails },
           stale: true, staleReason: `Couldn't reach Atlas for a fresh number — showing the last successfully loaded data instead${cached.cachedAt ? ` (from ${Math.round((Date.now() - cached.cachedAt) / 60000)} minutes ago)` : ""}.`,
         });
       }
@@ -934,7 +945,7 @@ module.exports = async (req, res) => {
     // candidate back".
     await kv.set(CACHE_KEY, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
 
-    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusionsToMonthly(live.people, live.peopleDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails }, stale: isStale, staleReason });
+    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(live.people, live.peopleDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails }, stale: isStale, staleReason });
   }
 
   if (req.method === "GET" && action === "placement-counts") {
