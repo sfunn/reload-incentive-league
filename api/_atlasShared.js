@@ -24,6 +24,15 @@
 // step is covered automatically, without needing to be spotted and
 // reported individually each time.
 const CVS_OUT_STAGES = ["CV Sent", "CV Submitted", "Presented"];
+// Confirmed by Scott: always spelled exactly "Sourcing", no variants
+// seen. A candidate moved BACK to Sourcing — a genuine correction of a
+// mistaken forward move, not a tracked stage of its own — should stop
+// counting toward anything at all, the same way any other backward move
+// already lowers what counts, extended one rank further down: Sourcing
+// sits BELOW CV Sent (rank 0, see SOURCING_RANK below), so landing back
+// on it as the candidate's last move wipes out every metric this pair
+// would otherwise count toward, not just CV Sent specifically.
+const SOURCING_STAGES = ["Sourcing"];
 // "Screen 1" and "Screen 2" both confirmed by Scott as genuine
 // interview-equivalent stages — matching the same "only first-round
 // interviews count" policy already applied to "1st Stage Interview".
@@ -108,7 +117,15 @@ const EXCLUDED_PROJECT_NAME = "citsec options";
 // stage was touched at some point; what should count is determined by
 // where they genuinely, currently stand, not by the highest point ever
 // briefly touched along the way.
-const METRIC_RANK = { cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
+// "sourcing" deliberately included here, at rank 0, below cvsOut — never
+// a metric anyone is counted toward directly, but letting it participate
+// in the SAME rank comparison the real metrics already use is what makes
+// a genuine move back to Sourcing correctly lower the ceiling to
+// "nothing counts", the exact same mechanism that already handles a
+// move from Onsite back to Interview correctly. Explicitly filtered back
+// out of metricsToCount below, every time, since there's no
+// people[...].sourcing field for it to ever land in.
+const METRIC_RANK = { sourcing: 0, cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
 // Confirmed by Scott directly: each candidate/project pair should only
 // ever count toward a given metric ONCE across its whole history — not
 // once per month. Without this, a candidate whose first interview
@@ -124,6 +141,27 @@ const METRIC_RANK = { cvsOut: 1, interviews: 2, onsite: 3, offers: 4 };
 // that record and skips re-counting anything already claimed by an
 // earlier one.
 const FIRST_REACHED_CACHE_PREFIX = "atlas-first-reached:";
+
+// Tracks the most recent "moved back to Sourcing" event ever seen for a
+// given candidate+project pair, regardless of which period's own
+// computation happened to see it — needed specifically because each
+// period only ever fetches its OWN events: a reset recorded in September
+// is invisible to August's own computation, which never queries
+// September's date range at all. Confirmed by Scott: this needs to work
+// across months, not just within one. Updated whenever ANY period's
+// computation encounters a Sourcing event for this pair (storing the
+// LATEST such date seen so far), and checked by EVERY period's own
+// computation, including one that saw no Sourcing event of its own —
+// if this pair's recorded reset date is later than whatever this
+// period's own events show, the reset wins and nothing counts, even
+// though this period's own fetch never touched it directly. This
+// doesn't retroactively fix an already-cached month on its own — same
+// as every other logic change in this file, a month already sitting in
+// cache keeps showing its old figure until it's genuinely recomputed —
+// but once Sourcing is recognized here, recomputing an earlier month
+// will correctly pick up a reset that happened later.
+const SOURCING_RESET_PREFIX = "atlas-sourcing-reset:";
+
 
 // A genuinely different dedup from the one above, for the Offers metric
 // specifically: keyed by the candidate's PERSON id (never +projectId,
@@ -173,6 +211,7 @@ function isoWeekKey(dateStr) {
 // from the candidate-stage-events API), returns which KPI metric it counts
 // toward, or null if it's not a tracked stage at all.
 function metricForStageName(stageName) {
+  if (SOURCING_STAGES.includes(stageName)) return "sourcing";
   if (CVS_OUT_STAGES.includes(stageName)) return "cvsOut";
   if (INTERVIEW_STAGES.includes(stageName)) return "interviews";
   if (ONSITE_STAGES.includes(stageName)) return "onsite";
@@ -758,8 +797,57 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       const actualRanks = events.map((e) => METRIC_RANK[e.metric]);
       const minRankEvidenced = Math.min(...actualRanks);
       let metricsToCount = Object.entries(METRIC_RANK)
-        .filter(([, rank]) => rank >= minRankEvidenced && rank <= finalRank)
+        .filter(([m, rank]) => m !== "sourcing" && rank >= minRankEvidenced && rank <= finalRank)
         .map(([m]) => m);
+      // Cross-month Sourcing reset (see SOURCING_RESET_PREFIX's own
+      // comment for the full reasoning) — two steps, independent of each
+      // other: first, if THIS window's own events show a reset, record
+      // it as the latest one known for this pair (only ever moving the
+      // recorded date forward, never backward, the same principle the
+      // offers dedup anchor already uses). Second, regardless of what
+      // this window's own events show, check whether a LATER reset is
+      // already on record for this pair from some other period's own
+      // computation — if so, it wins: nothing in this window counts,
+      // even though this window's own fetch never touched the reset
+      // event directly.
+      // finalRank === 0 specifically (not "minRankEvidenced === 0", which
+      // would also match the normal, initial "Added to role, Sourcing"
+      // event every candidate starts with, even one who went on to
+      // progress normally afterward with no backward move at all) --
+      // only a Sourcing event that's the chronologically LAST one in
+      // this window is a genuine reset worth recording.
+      if (finalRank === 0) {
+        const latestSourcingDate = new Date(sorted[sorted.length - 1].movedAt || 0);
+        const resetKey = `${SOURCING_RESET_PREFIX}${candidateId}:${projectId}`;
+        const existingIso = await kv.get(resetKey);
+        if (!existingIso || latestSourcingDate > new Date(existingIso)) {
+          await kv.set(resetKey, latestSourcingDate.toISOString());
+          // Also clears whatever the EXISTING cross-period dedup above
+          // already has on record for this pair (both granularities,
+          // tracked independently) — that mechanism's own rule is "once
+          // claimed, stays claimed forever", which is exactly right for
+          // an ordinary candidate's genuine progress, but wrong here: a
+          // reset candidate who later moves forward again needs to be
+          // able to freshly re-claim cvsOut/interviews/etc, not be
+          // silently blocked by a claim their own correction just
+          // invalidated. Clearing it entirely (rather than trying to
+          // reason about which individual metrics still apply) is the
+          // safe choice — the very next genuine event for this pair,
+          // whenever it comes, re-establishes it correctly from there.
+          await kv.del(`${FIRST_REACHED_CACHE_PREFIX}month:${candidateId}:${projectId}`);
+          await kv.del(`${FIRST_REACHED_CACHE_PREFIX}week:${candidateId}:${projectId}`);
+        }
+      }
+      if (metricsToCount.length > 0) {
+        const resetKey = `${SOURCING_RESET_PREFIX}${candidateId}:${projectId}`;
+        const recordedResetIso = await kv.get(resetKey);
+        if (recordedResetIso) {
+          const latestEventDateInWindow = new Date(sorted[sorted.length - 1].movedAt || 0);
+          if (new Date(recordedResetIso) > latestEventDateInWindow) {
+            metricsToCount = [];
+          }
+        }
+      }
       // Cross-period dedup — confirmed by Scott: a candidate should only
       // ever count toward a given metric once, ever, not once per period.
       // Only applied when there's an actual period identity to dedup
