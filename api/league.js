@@ -84,6 +84,36 @@ function isoWeekKey(dateStr) {
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+// Subtracts manually excluded candidate+project pairs (a mistaken
+// submission, see the toggle-kpi-exclusion endpoint's own comment for
+// the full reasoning) from a person's raw counts — moved here from the
+// Consultant KPIs page's own frontend specifically so this endpoint
+// itself returns the already-correct number: anyone calling
+// kpi-live-monthly directly (the Directors site included) gets the same
+// adjusted figure automatically, with no need to separately read
+// kpi-exclusions or replicate this subtraction themselves. Deliberately
+// leaves monthlyDetails completely untouched — the breakdown list a
+// person opens must always show the true, complete history regardless,
+// only the headline count itself is adjusted. Returns a NEW object
+// rather than mutating the one passed in, since the caller's own
+// variable may still be the thing about to get cached or reused
+// elsewhere unexcluded.
+function applyKpiExclusionsToMonthly(monthly, monthlyDetails, exclusions) {
+  if (!exclusions || Object.keys(exclusions).length === 0) return monthly;
+  const adjusted = {};
+  for (const [personId, counts] of Object.entries(monthly || {})) {
+    const personDetails = (monthlyDetails || {})[personId] || {};
+    const excludedCountFor = (metric) => (personDetails[metric] || []).filter(c => c.candidateId && c.projectId && exclusions[`${c.candidateId}:${c.projectId}`]).length;
+    adjusted[personId] = {
+      cvsOut: Math.max(0, (counts.cvsOut || 0) - excludedCountFor("cvsOut")),
+      interviews: Math.max(0, (counts.interviews || 0) - excludedCountFor("interviews")),
+      onsite: Math.max(0, (counts.onsite || 0) - excludedCountFor("onsite")),
+      offers: Math.max(0, (counts.offers || 0) - excludedCountFor("offers")),
+    };
+  }
+  return adjusted;
+}
+
 // The Monday and Sunday (as YYYY-MM-DD) that a given ISO week key covers.
 function isoWeekToDates(weekKey) {
   const [yearStr, wStr] = weekKey.split("-W");
@@ -829,6 +859,12 @@ module.exports = async (req, res) => {
     // many times between each real refresh.
     const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     const cached = await kv.get(CACHE_KEY);
+    // Fetched once, applied to whichever of the three response paths
+    // below actually gets used — see applyKpiExclusionsToMonthly's own
+    // comment for why this lives here, in the endpoint itself, rather
+    // than left for each separate consumer of this endpoint to
+    // replicate on their own.
+    const kpiExclusions = (await kv.get("kpi-exclusions")) || {};
     // Same reasoning as week-live's own cache check just above: a cache
     // entry from before this feature existed has no monthlyDetails at
     // all, and is treated as stale regardless of its age so it gets
@@ -836,7 +872,7 @@ module.exports = async (req, res) => {
     // information-incomplete result for up to 6 hours.
     if (cached && cached.cachedAt && cached.monthlyDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       console.log(`[kpi-live-monthly] ${requestedMonthKey}: served from cache (${Math.round((Date.now() - cached.cachedAt) / 1000)}s old)`);
-      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: cached.monthly }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails } });
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusionsToMonthly(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails } });
     }
 
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
@@ -858,7 +894,7 @@ module.exports = async (req, res) => {
       if (cached && cached.monthlyDetails) {
         console.warn(`[kpi-live-monthly] serving stale cache for ${requestedMonthKey} — Atlas is unreachable, age: ${cached.cachedAt ? Math.round((Date.now() - cached.cachedAt) / 60000) + "min" : "unknown"}`);
         return res.status(200).json({
-          year, month, monthly: { [requestedMonthKey]: cached.monthly }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails },
+          year, month, monthly: { [requestedMonthKey]: applyKpiExclusionsToMonthly(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails },
           stale: true, staleReason: `Couldn't reach Atlas for a fresh number — showing the last successfully loaded data instead${cached.cachedAt ? ` (from ${Math.round((Date.now() - cached.cachedAt) / 60000)} minutes ago)` : ""}.`,
         });
       }
@@ -871,9 +907,14 @@ module.exports = async (req, res) => {
       if (!live.people[personId]) live.people[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
     }
 
+    // The cache itself always stores the raw, UN-excluded numbers,
+    // deliberately — exclusions are applied fresh at response time
+    // below, never baked into what's cached, so un-excluding something
+    // later doesn't need a full recompute to correctly "add the
+    // candidate back".
     await kv.set(CACHE_KEY, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
 
-    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: live.people }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails }, stale: isStale, staleReason });
+    return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusionsToMonthly(live.people, live.peopleDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails }, stale: isStale, staleReason });
   }
 
   if (req.method === "GET" && action === "placement-counts") {
