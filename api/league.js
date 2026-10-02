@@ -951,6 +951,49 @@ module.exports = async (req, res) => {
     return res.status(200).json({ overrides });
   }
 
+  // A genuinely different mechanism from kpi-overrides above: that one
+  // replaces a whole month's figure outright with a manually-typed
+  // number; this one excludes one specific, mistaken candidate
+  // submission from the count, leaving everything else that genuinely
+  // belongs in that figure untouched. Keyed on candidateId:projectId --
+  // Atlas's own per-pipeline identifiers, the same ones every dedup
+  // elsewhere in this app already keys on, deliberately never the
+  // candidate's shared person.id -- so excluding one mistaken submission
+  // for one specific role never touches that same real person's other,
+  // genuinely separate roles. Applies across every metric for that one
+  // pair (Scott's own explicit call: a mistaken submission is wrong at
+  // the root, so whatever stage it reached under that submission
+  // shouldn't count either), but is applied entirely on the frontend,
+  // as a subtraction from the already-computed figure -- never baked
+  // into computeMonthlyKpiLive itself -- so excluding something takes
+  // effect immediately, with no force-recompute ever needed the way an
+  // actual logic change to the underlying counting would.
+  const KPI_EXCLUSIONS_KEY = "kpi-exclusions";
+  if (req.method === "GET" && action === "kpi-exclusions") {
+    const exclusions = (await kv.get(KPI_EXCLUSIONS_KEY)) || {};
+    return res.status(200).json({ exclusions });
+  }
+
+  if (req.method === "POST" && action === "toggle-kpi-exclusion") {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) {
+      return res.status(401).json({ error: "Super Admin access required." });
+    }
+    const { candidateId, projectId, excluded } = req.body || {};
+    if (!candidateId || !projectId || typeof excluded !== "boolean") {
+      return res.status(400).json({ error: "candidateId, projectId, and a boolean excluded are all required." });
+    }
+    const exclusions = (await kv.get(KPI_EXCLUSIONS_KEY)) || {};
+    const pairKey = `${candidateId}:${projectId}`;
+    if (excluded) {
+      exclusions[pairKey] = { excludedAt: Date.now(), excludedBy: user.email };
+    } else {
+      delete exclusions[pairKey];
+    }
+    await kv.set(KPI_EXCLUSIONS_KEY, exclusions);
+    return res.status(200).json({ ok: true, exclusions });
+  }
+
   if (req.method === "GET" && action === "cv-history-backfill-status") {
     // Lets the KPI page's own backfill tools check what's already
     // genuinely, fully done (written by atlas-reconcile-cron.js
