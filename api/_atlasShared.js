@@ -906,6 +906,27 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
           // claimed it the first time around.
           if (!firstReached[metric] || firstReached[metric] === periodKey) metricsToCount.push(metric);
         }
+        // Withdraws a claim THIS SAME period made earlier, if this
+        // period's CURRENT, complete view no longer evidences that
+        // metric at all. Confirmed directly against real production
+        // data: a candidate reached Interview, had that correctly
+        // claimed by September on an earlier, partial recompute, then
+        // was genuinely moved back to CV Sent later that SAME month (a
+        // mistake) — September's own final rank is now CV Sent, but
+        // the earlier, now-stale Interview claim had no way to ever
+        // self-correct, permanently blocking a later, genuine interview
+        // in any future period from ever being counted. Only ever
+        // withdraws a claim THIS SAME period made (periodKey match) —
+        // an earlier period's own, legitimate claim is completely
+        // unrelated to this period's own internal, within-window
+        // backward move, and must never be touched here.
+        let withdrew = false;
+        for (const [metric, claimedPeriod] of Object.entries(firstReached)) {
+          if (claimedPeriod === periodKey && METRIC_RANK[metric] > finalRank) {
+            delete firstReached[metric];
+            withdrew = true;
+          }
+        }
         // A metric stays countable in THIS period if: nothing's recorded
         // yet, this IS the period already recorded (so re-warming the
         // same period doesn't lose its own count), or this period is
@@ -917,7 +938,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
         // 2026-W38), so plain string comparison sorts chronologically.
         const stillNew = metricsToCount.filter((m) => !firstReached[m] || firstReached[m] === periodKey || periodKey < firstReached[m]);
         const updated = { ...firstReached };
-        let changed = false;
+        let changed = withdrew;
         for (const m of stillNew) {
           if (!updated[m] || periodKey < updated[m]) { updated[m] = periodKey; changed = true; }
         }
