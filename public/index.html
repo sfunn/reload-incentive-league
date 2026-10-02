@@ -491,36 +491,6 @@ function pipelineSum(values) {
 // every field, these three included (Scott's own later correction: the
 // period-total principle applies to a person's own row, not to how the
 // team's figures get summarized underneath it).
-// A derived version of kpiLiveMonthly with manually excluded
-// candidate+project pairs already subtracted out, per metric, per
-// person, per month -- a plain, top-level function (rather than an
-// inline useMemo callback) specifically so it's directly testable, the
-// same way every other piece of this page's own logic already is.
-// Every one of this page's own computation functions already takes
-// kpiLiveMonthly as their first argument, so passing THIS adjusted
-// version in its place at the actual render call sites is enough, with
-// no changes needed to any of those functions themselves. Falls back to
-// the original, untouched object the moment there are no exclusions at
-// all, so this costs nothing extra for the common case.
-function computeKpiLiveMonthlyAdjusted(kpiLiveMonthly, kpiLiveMonthlyDetails, kpiExclusions) {
-  if (!kpiExclusions || Object.keys(kpiExclusions).length === 0) return kpiLiveMonthly;
-  const adjusted = {};
-  for (const [monthKey, people] of Object.entries(kpiLiveMonthly || {})) {
-    adjusted[monthKey] = {};
-    const monthDetails = (kpiLiveMonthlyDetails || {})[monthKey] || {};
-    for (const [personId, counts] of Object.entries(people)) {
-      const personDetails = monthDetails[personId] || {};
-      const excludedCountFor = (metric) => (personDetails[metric] || []).filter(c => c.candidateId && c.projectId && kpiExclusions[`${c.candidateId}:${c.projectId}`]).length;
-      adjusted[monthKey][personId] = {
-        cvsOut: Math.max(0, (counts.cvsOut || 0) - excludedCountFor("cvsOut")),
-        interviews: Math.max(0, (counts.interviews || 0) - excludedCountFor("interviews")),
-        onsite: Math.max(0, (counts.onsite || 0) - excludedCountFor("onsite")),
-        offers: Math.max(0, (counts.offers || 0) - excludedCountFor("offers")),
-      };
-    }
-  }
-  return adjusted;
-}
 function pipelineAverageOf(entries, sumFields = []) {
   const agg = (field) => sumFields.includes(field) ? pipelineSum(entries.map(e => e[field])) : pipelineMean(entries.map(e => e[field]));
   return {
@@ -1135,21 +1105,13 @@ function App() {
   const [kpiFetchErrors, setKpiFetchErrors] = useState({}); // { [monthKey]: errorMessage } — a month that failed to load, distinct from a month that genuinely has zero activity
   const [kpiFetchLoading, setKpiFetchLoading] = useState({}); // { [monthKey]: true } — a month genuinely still being fetched, distinct from real zeros and from a real failure; a busy month can take 5-10s, this is what makes that visible instead of looking broken or empty
   const [kpiStaleWarnings, setKpiStaleWarnings] = useState({}); // { [monthKey]: reason } — Atlas was unreachable and this is the last successfully loaded data, not a fresh number; distinct from both a real error and a genuinely current result
-  // A derived version of kpiLiveMonthly with manually excluded
-  // candidate+project pairs already subtracted out, per metric, per
-  // person, per month — built once here rather than threading
-  // kpiExclusions through every one of this page's own computation
-  // functions (computeOneMonthForPerson, computeQuarterPipelineForPerson
-  // and the rest): every one of them already takes kpiLiveMonthly as
-  // their first argument, so passing THIS adjusted version in its place
-  // at the actual render call sites is enough, with no changes needed
-  // to any of those functions themselves. Falls back to the original,
-  // untouched object the moment there are no exclusions at all, so this
-  // costs nothing extra for the common case.
-  const kpiLiveMonthlyAdjusted = useMemo(
-    () => computeKpiLiveMonthlyAdjusted(kpiLiveMonthly, kpiLiveMonthlyDetails, kpiExclusions),
-    [kpiLiveMonthly, kpiLiveMonthlyDetails, kpiExclusions]
-  );
+  // Manual exclusions are now applied directly by the backend
+  // (kpi-live-monthly itself returns the already-adjusted figure, see
+  // applyKpiExclusionsToMonthly in league.js) — kpiLiveMonthly below
+  // already arrives correct, with no further frontend adjustment needed.
+  // This also means anyone else calling that same endpoint directly
+  // (the Directors site included) gets the same adjusted number
+  // automatically, with nothing to replicate on their own side.
   const fetchKpiMonth = useCallback(async (year, month) => {
     const mk = `${year}-${String(month).padStart(2, "0")}`;
     if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
@@ -1273,7 +1235,7 @@ function App() {
         .then(r => r.json())
         .then(d => {
           // Both must refresh together — kpiLiveMonthlyDetails is what
-          // the "who?" breakdown (and, via kpiLiveMonthlyAdjusted, every
+          // the "who?" breakdown (and, via kpiLiveMonthly, every
           // manual exclusion's own matching) reads from; updating only
           // the raw counts and leaving this stale would show a genuinely
           // fresh number sitting next to a breakdown list that still
@@ -5225,16 +5187,16 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       focusedPerson ? (() => {
         const isQuarterView = pipelinePeriodMode === "quarter";
         const { months, average } = isQuarterView
-          ? computeQuarterPipelineForPerson(kpiLiveMonthlyAdjusted, focusedPerson, placementCounts, pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
-          : computeYearPipelineForPerson(kpiLiveMonthlyAdjusted, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
+          ? computeQuarterPipelineForPerson(kpiLiveMonthly, focusedPerson, placementCounts, pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
+          : computeYearPipelineForPerson(kpiLiveMonthly, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
         const scopeAvg = isQuarterView
-          ? computeScopeAverage(kpiLiveMonthlyAdjusted, ALL_PIPELINE_PEOPLE, placementCounts, "quarter", pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
-          : computeScopeAverage(kpiLiveMonthlyAdjusted, ALL_PIPELINE_PEOPLE, placementCounts, "year", pipelineYear, null, kpiOverrides, ringoverByMonth);
+          ? computeScopeAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, "quarter", pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
+          : computeScopeAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, "year", pipelineYear, null, kpiOverrides, ringoverByMonth);
         return React.createElement(React.Fragment, null,
           isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
           months.map(m => {
-            const monthAvg = computeEveryoneMonthAverage(kpiLiveMonthlyAdjusted, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
+            const monthAvg = computeEveryoneMonthAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
             return React.createElement(RowLine, { key: m.monthKey },
               React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
               isAdmin
@@ -5281,9 +5243,9 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         );
       })() : (() => {
         const monthOrQuarter = pipelinePeriodMode === "quarter" ? pipelineQuarter : pipelinePeriodMode === "month" ? pipelineMonth : null;
-        const unsortedRows = computePeriodPipelineRows(kpiLiveMonthlyAdjusted, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
+        const unsortedRows = computePeriodPipelineRows(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
         const rows = sortPipelineRows(unsortedRows, pipelineSortColumn, pipelineSortDirection);
-        const scopeAvg = computeScopeAverage(kpiLiveMonthlyAdjusted, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
+        const scopeAvg = computeScopeAverage(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
         const fmtAvgCount = (v) => v === null || v === undefined ? "—" : Math.round(v * 10) / 10;
         // Clicking a column already sorted by toggles its direction;
         // clicking a different column switches to it, defaulting to
