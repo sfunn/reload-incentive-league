@@ -857,7 +857,7 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       // under two different labels was a real, visible bug: every
       // candidate in a breakdown showed the identical text twice
       // instead of the job title alongside the actual client.
-      return { consultantId, candidateId, personId, metrics: metricsToCount, candidateOfferDate, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
+      return { consultantId, candidateId, projectId, personId, metrics: metricsToCount, candidateOfferDate, candidateName: (details && details.name) || null, projectName: (projectDetails && projectDetails.companyName) || null, jobRole: (details && details.jobRole) || null };
     }));
 
     for (let bi = 0; bi < batch.length; bi++) {
@@ -871,7 +871,14 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       for (const metric of r.metrics) {
         // The breakdown list always gets every real event, unconditionally
         // — opening "who?" must always show the true, complete history.
-        peopleDetails[r.consultantId][metric].push({ candidateName: r.candidateName, projectName: r.projectName, jobRole: r.jobRole });
+        // candidateId and projectId (Atlas's own per-pipeline identifiers,
+        // the same ones every dedup in this file already keys on, never
+        // the shared person.id) are included here specifically so the
+        // frontend's own manual exclusion feature has something stable
+        // and unique to exclude by — excluding one mistaken submission
+        // for one specific role, without ever touching that same real
+        // person's other, genuinely separate roles.
+        peopleDetails[r.consultantId][metric].push({ candidateName: r.candidateName, projectName: r.projectName, jobRole: r.jobRole, candidateId: r.candidateId, projectId: r.projectId });
         eventsCounted++;
         if (metric === "offers") {
           // The headline COUNT for offers is deferred to a single,
