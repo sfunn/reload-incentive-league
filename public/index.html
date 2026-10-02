@@ -1271,7 +1271,16 @@ function App() {
       // synchronous, so that approach could race and skip the refetch.
       fetch(`/api/league?action=kpi-live-monthly&year=${data.monthKey.split("-")[0]}&month=${Number(data.monthKey.split("-")[1])}`)
         .then(r => r.json())
-        .then(d => { if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly })); })
+        .then(d => {
+          // Both must refresh together — kpiLiveMonthlyDetails is what
+          // the "who?" breakdown (and, via kpiLiveMonthlyAdjusted, every
+          // manual exclusion's own matching) reads from; updating only
+          // the raw counts and leaving this stale would show a genuinely
+          // fresh number sitting next to a breakdown list that still
+          // reflects whatever was last loaded before this recompute.
+          if (d && d.monthly) setKpiLiveMonthly(prev => ({ ...prev, ...d.monthly }));
+          if (d && d.monthlyDetails) setKpiLiveMonthlyDetails(prev => ({ ...prev, ...d.monthlyDetails }));
+        })
         .catch(() => {});
     } catch (e) {
       setKpiWarmResult({ ok: false, error: e.message });
