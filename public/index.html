@@ -491,6 +491,36 @@ function pipelineSum(values) {
 // every field, these three included (Scott's own later correction: the
 // period-total principle applies to a person's own row, not to how the
 // team's figures get summarized underneath it).
+// A derived version of kpiLiveMonthly with manually excluded
+// candidate+project pairs already subtracted out, per metric, per
+// person, per month -- a plain, top-level function (rather than an
+// inline useMemo callback) specifically so it's directly testable, the
+// same way every other piece of this page's own logic already is.
+// Every one of this page's own computation functions already takes
+// kpiLiveMonthly as their first argument, so passing THIS adjusted
+// version in its place at the actual render call sites is enough, with
+// no changes needed to any of those functions themselves. Falls back to
+// the original, untouched object the moment there are no exclusions at
+// all, so this costs nothing extra for the common case.
+function computeKpiLiveMonthlyAdjusted(kpiLiveMonthly, kpiLiveMonthlyDetails, kpiExclusions) {
+  if (!kpiExclusions || Object.keys(kpiExclusions).length === 0) return kpiLiveMonthly;
+  const adjusted = {};
+  for (const [monthKey, people] of Object.entries(kpiLiveMonthly || {})) {
+    adjusted[monthKey] = {};
+    const monthDetails = (kpiLiveMonthlyDetails || {})[monthKey] || {};
+    for (const [personId, counts] of Object.entries(people)) {
+      const personDetails = monthDetails[personId] || {};
+      const excludedCountFor = (metric) => (personDetails[metric] || []).filter(c => c.candidateId && c.projectId && kpiExclusions[`${c.candidateId}:${c.projectId}`]).length;
+      adjusted[monthKey][personId] = {
+        cvsOut: Math.max(0, (counts.cvsOut || 0) - excludedCountFor("cvsOut")),
+        interviews: Math.max(0, (counts.interviews || 0) - excludedCountFor("interviews")),
+        onsite: Math.max(0, (counts.onsite || 0) - excludedCountFor("onsite")),
+        offers: Math.max(0, (counts.offers || 0) - excludedCountFor("offers")),
+      };
+    }
+  }
+  return adjusted;
+}
 function pipelineAverageOf(entries, sumFields = []) {
   const agg = (field) => sumFields.includes(field) ? pipelineSum(entries.map(e => e[field])) : pipelineMean(entries.map(e => e[field]));
   return {
@@ -1064,6 +1094,18 @@ function App() {
       .catch(() => {});
   }, []);
   useEffect(() => { refreshKpiOverrides(); }, [refreshKpiOverrides]);
+  // Keyed on candidateId:projectId (see the backend's own toggle-kpi-
+  // exclusion comment for the full reasoning) -- a manually excluded,
+  // mistaken submission, applied as a subtraction from the already-
+  // computed figure, never baked into the underlying computation itself.
+  const [kpiExclusions, setKpiExclusions] = useState({});
+  const refreshKpiExclusions = useCallback(() => {
+    fetch("/api/league?action=kpi-exclusions")
+      .then(r => r.json())
+      .then(d => setKpiExclusions(d.exclusions || {}))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshKpiExclusions(); }, [refreshKpiExclusions]);
   const [ringoverByMonth, setRingoverByMonth] = useState({});
   useEffect(() => {
     fetch("/api/ringover-webhook?action=monthly-tally")
@@ -1093,6 +1135,21 @@ function App() {
   const [kpiFetchErrors, setKpiFetchErrors] = useState({}); // { [monthKey]: errorMessage } — a month that failed to load, distinct from a month that genuinely has zero activity
   const [kpiFetchLoading, setKpiFetchLoading] = useState({}); // { [monthKey]: true } — a month genuinely still being fetched, distinct from real zeros and from a real failure; a busy month can take 5-10s, this is what makes that visible instead of looking broken or empty
   const [kpiStaleWarnings, setKpiStaleWarnings] = useState({}); // { [monthKey]: reason } — Atlas was unreachable and this is the last successfully loaded data, not a fresh number; distinct from both a real error and a genuinely current result
+  // A derived version of kpiLiveMonthly with manually excluded
+  // candidate+project pairs already subtracted out, per metric, per
+  // person, per month — built once here rather than threading
+  // kpiExclusions through every one of this page's own computation
+  // functions (computeOneMonthForPerson, computeQuarterPipelineForPerson
+  // and the rest): every one of them already takes kpiLiveMonthly as
+  // their first argument, so passing THIS adjusted version in its place
+  // at the actual render call sites is enough, with no changes needed
+  // to any of those functions themselves. Falls back to the original,
+  // untouched object the moment there are no exclusions at all, so this
+  // costs nothing extra for the common case.
+  const kpiLiveMonthlyAdjusted = useMemo(
+    () => computeKpiLiveMonthlyAdjusted(kpiLiveMonthly, kpiLiveMonthlyDetails, kpiExclusions),
+    [kpiLiveMonthly, kpiLiveMonthlyDetails, kpiExclusions]
+  );
   const fetchKpiMonth = useCallback(async (year, month) => {
     const mk = `${year}-${String(month).padStart(2, "0")}`;
     if (kpiLiveMonthly[mk]) return; // already cached — nothing to do
@@ -1291,6 +1348,27 @@ function App() {
       return true;
     } catch (e) {
       setKpiOverrideError("Couldn't reach the server to save that correction.");
+      return false;
+    }
+  }, [authUser]);
+  const [kpiExclusionError, setKpiExclusionError] = useState("");
+  const toggleKpiExclusion = useCallback(async (candidateId, projectId, excluded) => {
+    setKpiExclusionError("");
+    try {
+      const res = await fetch("/api/league?action=toggle-kpi-exclusion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser ? authUser.token : ""}` },
+        body: JSON.stringify({ candidateId, projectId, excluded }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setKpiExclusionError(data.error || "Couldn't save that exclusion.");
+        return false;
+      }
+      setKpiExclusions(data.exclusions || {});
+      return true;
+    } catch (e) {
+      setKpiExclusionError("Couldn't reach the server to save that exclusion.");
       return false;
     }
   }, [authUser]);
@@ -2780,7 +2858,7 @@ function App() {
       color: INDIGO,
       fontFamily: "'Work Sans', sans-serif"
     }
-  }, /*#__PURE__*/React.createElement("style", null, fontImport), /*#__PURE__*/React.createElement(CandidateBreakdownModal, { viewing: viewingCandidates, onClose: () => setViewingCandidates(null) }), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("style", null, fontImport), /*#__PURE__*/React.createElement(CandidateBreakdownModal, { viewing: viewingCandidates, onClose: () => setViewingCandidates(null), isSuperAdmin, kpiExclusions, onToggleExclusion: toggleKpiExclusion }), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "24px 24px 0",
       background: WHITE,
@@ -5138,16 +5216,16 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       focusedPerson ? (() => {
         const isQuarterView = pipelinePeriodMode === "quarter";
         const { months, average } = isQuarterView
-          ? computeQuarterPipelineForPerson(kpiLiveMonthly, focusedPerson, placementCounts, pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
-          : computeYearPipelineForPerson(kpiLiveMonthly, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
+          ? computeQuarterPipelineForPerson(kpiLiveMonthlyAdjusted, focusedPerson, placementCounts, pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
+          : computeYearPipelineForPerson(kpiLiveMonthlyAdjusted, focusedPerson, placementCounts, pipelineYear, kpiOverrides, ringoverByMonth);
         const scopeAvg = isQuarterView
-          ? computeScopeAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, "quarter", pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
-          : computeScopeAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, "year", pipelineYear, null, kpiOverrides, ringoverByMonth);
+          ? computeScopeAverage(kpiLiveMonthlyAdjusted, ALL_PIPELINE_PEOPLE, placementCounts, "quarter", pipelineYear, pipelineQuarter, kpiOverrides, ringoverByMonth)
+          : computeScopeAverage(kpiLiveMonthlyAdjusted, ALL_PIPELINE_PEOPLE, placementCounts, "year", pipelineYear, null, kpiOverrides, ringoverByMonth);
         return React.createElement(React.Fragment, null,
           isAdmin && kpiOverrideError && React.createElement("div", { style: { fontSize: 12.5, color: MELON, fontWeight: 600, marginBottom: 8 } }, kpiOverrideError),
           React.createElement(TableHeader, { cols: tableCols }),
           months.map(m => {
-            const monthAvg = computeEveryoneMonthAverage(kpiLiveMonthly, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
+            const monthAvg = computeEveryoneMonthAverage(kpiLiveMonthlyAdjusted, ALL_PIPELINE_PEOPLE, placementCounts, m.monthKey, kpiOverrides, ringoverByMonth);
             return React.createElement(RowLine, { key: m.monthKey },
               React.createElement(Cell, { flex: true }, monthLabel(m.monthKey)),
               isAdmin
@@ -5194,9 +5272,9 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         );
       })() : (() => {
         const monthOrQuarter = pipelinePeriodMode === "quarter" ? pipelineQuarter : pipelinePeriodMode === "month" ? pipelineMonth : null;
-        const unsortedRows = computePeriodPipelineRows(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
+        const unsortedRows = computePeriodPipelineRows(kpiLiveMonthlyAdjusted, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
         const rows = sortPipelineRows(unsortedRows, pipelineSortColumn, pipelineSortDirection);
-        const scopeAvg = computeScopeAverage(kpiLiveMonthly, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
+        const scopeAvg = computeScopeAverage(kpiLiveMonthlyAdjusted, scopedPeople, placementCounts, pipelinePeriodMode, pipelineYear, monthOrQuarter, kpiOverrides, ringoverByMonth);
         const fmtAvgCount = (v) => v === null || v === undefined ? "—" : Math.round(v * 10) / 10;
         // Clicking a column already sorted by toggles its direction;
         // clicking a different column switches to it, defaulting to
@@ -5387,8 +5465,17 @@ function Cell({
 // mismatched week or month against Atlas directly rather than staring
 // at a bare count wondering what's missing. `viewing` is null when
 // closed, or { consultantName, metricLabel, candidates } when open.
-function CandidateBreakdownModal({ viewing, onClose }) {
+function CandidateBreakdownModal({ viewing, onClose, isSuperAdmin, kpiExclusions, onToggleExclusion }) {
   if (!viewing) return null;
+  // A mistaken submission a consultant put on by accident — Super Admin
+  // only (Scott's own explicit call), keyed on candidateId:projectId so
+  // excluding one wrong role for a candidate never touches that same
+  // real person's other, genuinely separate roles elsewhere. Excluded
+  // entries stay visible here, clearly marked, rather than vanishing —
+  // the count above adjusts, but this list always stays the honest,
+  // complete record of what's really there.
+  const exclusions = kpiExclusions || {};
+  const excludedCount = (viewing.candidates || []).filter(c => c.candidateId && c.projectId && exclusions[`${c.candidateId}:${c.projectId}`]).length;
   return React.createElement("div", {
     onClick: onClose,
     style: {
@@ -5422,17 +5509,30 @@ function CandidateBreakdownModal({ viewing, onClose }) {
             if (!a.candidateName) return 1;
             if (!b.candidateName) return -1;
             return a.candidateName.localeCompare(b.candidateName);
-          }).map((c, i) => React.createElement("div", {
-            key: i,
-            style: { padding: "8px 10px", background: "rgba(46,64,91,0.04)", borderRadius: 6 }
-          },
-            React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: INDIGO } }, c.candidateName || "Unknown candidate"),
-            c.jobRole && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginTop: 2 } }, c.jobRole),
-            c.projectName && React.createElement("div", { style: { fontSize: 11.5, color: INDIGO_MUTED, marginTop: 1 } }, c.projectName)
-          ))
+          }).map((c, i) => {
+            const pairKey = c.candidateId && c.projectId ? `${c.candidateId}:${c.projectId}` : null;
+            const isExcluded = pairKey && !!exclusions[pairKey];
+            return React.createElement("div", {
+              key: i,
+              style: { padding: "8px 10px", background: isExcluded ? "rgba(181,116,79,0.08)" : "rgba(46,64,91,0.04)", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, opacity: isExcluded ? 0.65 : 1 }
+            },
+              React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: INDIGO, textDecoration: isExcluded ? "line-through" : "none" } }, c.candidateName || "Unknown candidate"),
+                c.jobRole && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginTop: 2 } }, c.jobRole),
+                c.projectName && React.createElement("div", { style: { fontSize: 11.5, color: INDIGO_MUTED, marginTop: 1 } }, c.projectName),
+                isExcluded && React.createElement("div", { style: { fontSize: 11, color: "#B5744F", fontWeight: 700, marginTop: 3, textTransform: "uppercase", letterSpacing: "0.03em" } }, "Excluded — mistaken submission")
+              ),
+              isSuperAdmin && pairKey && React.createElement("button", {
+                onClick: () => onToggleExclusion(c.candidateId, c.projectId, !isExcluded),
+                style: { padding: "4px 10px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: isExcluded ? INDIGO : "#B5744F", fontSize: 11.5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }
+              }, isExcluded ? "Un-exclude" : "Exclude")
+            );
+          })
         ),
       viewing.candidates && viewing.candidates.length > 0 && React.createElement("div", { style: { marginTop: 12, fontSize: 11.5, color: INDIGO_MUTED } },
-        `${viewing.candidates.length} candidate${viewing.candidates.length === 1 ? "" : "s"} make up this figure.`
+        excludedCount > 0
+          ? `${viewing.candidates.length} candidate${viewing.candidates.length === 1 ? "" : "s"} make up this figure, ${excludedCount} excluded as a mistaken submission — the count above reflects ${viewing.candidates.length - excludedCount}.`
+          : `${viewing.candidates.length} candidate${viewing.candidates.length === 1 ? "" : "s"} make up this figure.`
       )
     )
   );
