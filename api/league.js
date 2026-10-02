@@ -426,6 +426,26 @@ module.exports = async (req, res) => {
       results.candidateDetail = { skipped: "needs both ?projectId= and ?candidateId=" };
     }
 
+    // Reads the actual, current STORED tracking state for one specific
+    // candidate+project pair directly — not what Atlas itself says, but
+    // what this app has separately recorded: whether a Sourcing reset is
+    // on file for this pair, and which period (if any) has already
+    // claimed each metric via the cross-period dedup. Built specifically
+    // to diagnose "why isn't this candidate showing up" cases precisely,
+    // rather than guessing — these are the two pieces of persisted state
+    // that could cause exactly that, invisibly, from outside Atlas's own
+    // data entirely.
+    if (projectId && candidateId) {
+      const [sourcingResetIso, firstReachedMonth, firstReachedWeek] = await Promise.all([
+        kv.get(`atlas-sourcing-reset:${candidateId}:${projectId}`),
+        kv.get(`atlas-first-reached:month:${candidateId}:${projectId}`),
+        kv.get(`atlas-first-reached:week:${candidateId}:${projectId}`),
+      ]);
+      results.pairTrackingState = { sourcingReset: sourcingResetIso || null, firstReachedMonth: firstReachedMonth || null, firstReachedWeek: firstReachedWeek || null };
+    } else {
+      results.pairTrackingState = { skipped: "needs both ?projectId= and ?candidateId=" };
+    }
+
     // Added specifically to sidestep a real, recurring problem: Atlas's
     // own UI shows several different kinds of id (a "profile" id in one
     // URL, a project-scoped candidate id in another), and copying the
