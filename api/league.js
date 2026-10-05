@@ -468,6 +468,12 @@ module.exports = async (req, res) => {
       results.pairTrackingState = { skipped: "needs both ?projectId= and ?candidateId=" };
     }
 
+    // The most recent webhook events the fee webhook received and
+    // ignored (see recordSkippedEvent in atlas-fee-webhook.js). Shown
+    // every time, no parameter needed: it is the durable replacement for
+    // reading Vercel's logs, which expire after about an hour.
+    results.recentIgnoredWebhookEvents = (await kv.get("atlas-fee-webhook-skipped-events")) || [];
+
     // Looks up one fee by its Atlas fee id and shows, side by side, the
     // fee record this app stored and the placement record (if any) it
     // matches against, plus the verdict the placement-counts rule would
@@ -586,9 +592,18 @@ module.exports = async (req, res) => {
       results.candidateNameSearch = { skipped: "needs ?candidateName= (a first and/or last name to search for); searches the current real month by default, or add &year=&month= to search a specific one" };
     }
 
-    const testedCount = Object.values(results).filter((r) => !r.skipped).length;
-    const allOk = Object.values(results).every((r) => r.ok || r.skipped);
-    const allFailed = Object.entries(results).filter(([, r]) => !r.skipped).every(([, r]) => !r.ok);
+    // Only genuine Atlas endpoint checks count toward the summary below.
+    // The sections about this app's OWN stored data (pair tracking
+    // state, the fee record lookup, the ignored webhook events) are not
+    // Atlas endpoints and carry no ok/skipped flag, so counting them
+    // wrongly flipped "every endpoint came back fine" into "mixed
+    // results" whenever one of them had real content to show. The full
+    // results are still returned; only the summary ignores them.
+    const NON_ENDPOINT_RESULT_KEYS = new Set(["pairTrackingState", "feeRecordState", "recentIgnoredWebhookEvents"]);
+    const endpointResults = Object.fromEntries(Object.entries(results).filter(([k]) => !NON_ENDPOINT_RESULT_KEYS.has(k)));
+    const testedCount = Object.values(endpointResults).filter((r) => !r.skipped).length;
+    const allOk = Object.values(endpointResults).every((r) => r.ok || r.skipped);
+    const allFailed = Object.entries(endpointResults).filter(([, r]) => !r.skipped).every(([, r]) => !r.ok);
 
     return res.status(200).json({
       results,
