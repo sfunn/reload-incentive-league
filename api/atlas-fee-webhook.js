@@ -95,6 +95,48 @@ async function recordSkippedEvent(payload) {
   }
 }
 
+// Placement events. Confirmed from a real production capture: Atlas
+// sends "placement.updated" to this same endpoint (approving a placement
+// fires it, one second after the placement's own updatedAt), and until
+// now this handler threw every one of them away as "not a fee event",
+// which is why an approved placement never reached the store that
+// decides Deals Agreed and the Citadel uplift, and its fee sat in the
+// onsite bucket. "placement.created" is handled the same way on the
+// assumption it carries the same data; if it does not, the strict check
+// below refuses to store it rather than store something incomplete.
+// Stores exactly the four fields the existing records carry
+// (candidateName, clientCompanyName, startDate, updatedAt), merged onto
+// whatever is already there, never overwriting a good value with a blank.
+const PLACEMENTS_KEY = "atlas-placements";
+const PLACEMENT_EVENTS = new Set(["placement.created", "placement.updated"]);
+async function handlePlacementEvent(payload, res) {
+  const data = payload && payload.data && typeof payload.data === "object" ? payload.data : {};
+  const placementId = data.id || null;
+  const candidateName = data.candidate && typeof data.candidate.name === "string" ? data.candidate.name.trim() : "";
+  const client = data.client && typeof data.client === "object" ? data.client : {};
+  const clientCompanyName = client.companyName || (client.company && client.company.name) || null;
+  if (!placementId || !candidateName) {
+    console.log("[atlas-fee-webhook] placement event skipped: missing id or candidate name. event was:", payload.event);
+    await recordSkippedEvent(payload);
+    return res.status(200).json({ ok: true, skipped: true, reason: "placement event missing id or candidate name" });
+  }
+  const store = (await kv.get(PLACEMENTS_KEY)) || {};
+  const incoming = {
+    candidateName,
+    clientCompanyName,
+    startDate: data.startDate || null,
+    updatedAt: data.updatedAt || new Date().toISOString(),
+  };
+  const merged = { ...(store[placementId] || {}) };
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v !== null && v !== undefined && v !== "") merged[k] = v;
+  }
+  store[placementId] = merged;
+  await kv.set(PLACEMENTS_KEY, store);
+  console.log("[atlas-fee-webhook] stored placement:", JSON.stringify({ placementId, clientCompanyName, startDate: merged.startDate || null }));
+  return res.status(200).json({ ok: true, placementId, stored: true });
+}
+
 const PROJECT_NAME_CACHE_PREFIX = "atlas-project-name:"; // one key per project — SHARED with _atlasShared.js's own copy of this lookup
 async function lookupProjectName(projectId) {
   if (!projectId) return null;
@@ -172,6 +214,10 @@ export default async function handler(req, res) {
   } catch (e) {
     console.error("[atlas-fee-webhook] verification failed:", e.message);
     return res.status(401).json({ error: "Invalid webhook signature" });
+  }
+
+  if (PLACEMENT_EVENTS.has(payload.event)) {
+    return handlePlacementEvent(payload, res);
   }
 
   if (payload.event !== "financial.feeCreated" && payload.event !== "financial.feeUpdated") {
