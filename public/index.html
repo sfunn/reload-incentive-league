@@ -1277,6 +1277,27 @@ function App() {
   const [atlasEndpointsFeeId, setAtlasEndpointsFeeId] = useState("");
   const [atlasEndpointsSearchYear, setAtlasEndpointsSearchYear] = useState("");
   const [atlasEndpointsSearchMonth, setAtlasEndpointsSearchMonth] = useState("");
+  const [placementRepair, setPlacementRepair] = useState(null);
+  const [placementRepairLoading, setPlacementRepairLoading] = useState(false);
+  // apply=false previews only (writes nothing); apply=true is the
+  // separate, confirmed step that actually adds the placements.
+  async function runPlacementRepair(apply) {
+    if (apply && !window.confirm("Add the previewed placements to the store? They will start counting as genuine placements (Deals Agreed, commission, the Citadel uplift where it applies). Only placements still missing are added; nothing existing is overwritten.")) return;
+    setPlacementRepairLoading(true);
+    try {
+      const res = await fetch("/api/league?action=backfill-placements", {
+        method: apply ? "POST" : "GET",
+        headers: { Authorization: `Bearer ${authUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Placement repair failed");
+      setPlacementRepair({ ok: true, ...data });
+    } catch (e) {
+      setPlacementRepair({ ok: false, error: e.message });
+    } finally {
+      setPlacementRepairLoading(false);
+    }
+  }
   async function runAtlasEndpointsCheck() {
     setAtlasEndpointsLoading(true);
     setAtlasEndpointsResult(null);
@@ -5101,6 +5122,31 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             disabled: atlasEndpointsLoading,
             style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: atlasEndpointsLoading ? "default" : "pointer" }
           }, atlasEndpointsLoading ? "Checking…" : "Check which Atlas endpoints are reachable")
+        ),
+        React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${INDIGO_HAIRLINE}` } },
+          React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED, marginBottom: 6 } }, "Fees stuck as onsite because their placement never reached us: preview first, nothing is written until you confirm."),
+          React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            React.createElement("button", {
+              onClick: () => runPlacementRepair(false), disabled: placementRepairLoading,
+              style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO_HAIRLINE}`, background: WHITE, color: INDIGO, fontSize: 12.5, cursor: placementRepairLoading ? "default" : "pointer" }
+            }, placementRepairLoading ? "Working…" : "Preview missing placements"),
+            placementRepair && placementRepair.ok && placementRepair.proposed && placementRepair.proposed.length > 0 && React.createElement("button", {
+              onClick: () => runPlacementRepair(true), disabled: placementRepairLoading,
+              style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO}`, background: INDIGO, color: WHITE, fontSize: 12.5, cursor: placementRepairLoading ? "default" : "pointer" }
+            }, `Add ${placementRepair.proposed.length} placement${placementRepair.proposed.length === 1 ? "" : "s"} to the store`)
+          ),
+          placementRepair && React.createElement("div", { style: { fontSize: 12.5, marginTop: 8 } },
+            !placementRepair.ok
+              ? React.createElement("div", { style: { color: "#b00020" } }, placementRepair.error)
+              : React.createElement(React.Fragment, null,
+                  React.createElement("div", { style: { color: INDIGO_MUTED, marginBottom: 4 } },
+                    `${placementRepair.dryRun ? "PREVIEW, nothing written." : `ADDED ${placementRepair.written}.`} Fees point at ${placementRepair.missingPlacementIds} placement${placementRepair.missingPlacementIds === 1 ? "" : "s"} we have no record of; checked ${placementRepair.checkedThisRun} this run${placementRepair.remaining > 0 ? `, ${placementRepair.remaining} still to check (run again)` : ""}.`),
+                  ...(placementRepair.proposed || []).map((p) => React.createElement("div", { key: p.placementId, style: { marginBottom: 3 } },
+                    `${placementRepair.dryRun ? "Would add" : "Added"}: ${p.record.candidateName} / ${p.record.clientCompanyName || "no client"} / starts ${p.record.startDate ? p.record.startDate.slice(0, 10) : "unknown"}  (fees: ${p.fees.map((f) => `${f.consultantId || "no consultant"} ${f.shareAmount} ${f.currency}`).join(", ")})`)),
+                  ...(placementRepair.unresolved || []).map((u) => React.createElement("div", { key: u.placementId, style: { marginBottom: 3, color: INDIGO_MUTED } },
+                    `Left alone: ${u.placementId} (fees: ${u.fees.map((f) => `${f.consultantId || "no consultant"} ${f.shareAmount} ${f.currency}`).join(", ")}): ${u.reason}`))
+                )
+          )
         ),
         atlasEndpointsResult && React.createElement("div", { style: { fontSize: 12.5, marginTop: 6 } },
           atlasEndpointsResult.ok
