@@ -1138,6 +1138,75 @@ module.exports = async (req, res) => {
     return res.status(200).json({ placementCounts: byConsultantMonth, placementDetails: byConsultantMonthDetails });
   }
 
+  // Repairs fees stuck as "onsite" because the placement they point at
+  // never reached atlas-placements (see handlePlacementEvent in
+  // atlas-fee-webhook.js for how that happened). For every placementId a
+  // stored fee points at that has no record here, asks Atlas for that
+  // placement directly and proposes a record in the exact shape the
+  // existing ones have. GET only previews and writes nothing; POST is
+  // the separate, explicit step that writes, and even then only adds
+  // placements that are STILL missing at write time, never overwriting an
+  // existing record. Anything Atlas cannot confirm (deleted there, no
+  // candidate name, unreachable) is reported and left alone. Stops when
+  // its time budget runs out and says how many remain, so it is safe to
+  // run repeatedly. Super Admin only: this store decides Deals Agreed and
+  // commission.
+  if ((req.method === "GET" || req.method === "POST") && action === "backfill-placements") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    const apply = req.method === "POST";
+    const [feeRecords, placementsNow] = await Promise.all([
+      kv.get(RECORDS_KEY).then((v) => v || []),
+      kv.get(PLACEMENTS_KEY).then((v) => v || {}),
+    ]);
+    const missing = {};
+    for (const r of feeRecords) {
+      if (!r.placementId || placementsNow[r.placementId]) continue;
+      (missing[r.placementId] = missing[r.placementId] || []).push({ feeId: r.feeId, consultantId: r.consultantId || null, shareAmount: r.shareAmount, currency: r.currency, feeDate: r.feeDate || null });
+    }
+    const missingIds = Object.keys(missing);
+    const proposed = [];
+    const unresolved = [];
+    const startedAt = Date.now();
+    let checked = 0;
+    for (const id of missingIds) {
+      if (Date.now() - startedAt > 8000) break;
+      checked++;
+      try {
+        const ar = await fetchAtlasWithRetry(`https://api.recruitwithatlas.com/api/v1/placements/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } });
+        if (ar.status === 404) { unresolved.push({ placementId: id, fees: missing[id], reason: "Atlas has no placement with this id (probably deleted there)" }); continue; }
+        if (!ar.ok) { unresolved.push({ placementId: id, fees: missing[id], reason: `Atlas answered ${ar.status}` }); continue; }
+        const json = await ar.json();
+        const d = json && json.data;
+        if (!d) { unresolved.push({ placementId: id, fees: missing[id], reason: "Atlas returned no placement data" }); continue; }
+        if (d.deletedAt) { unresolved.push({ placementId: id, fees: missing[id], reason: "placement is marked deleted in Atlas" }); continue; }
+        const candidateName = d.candidate && typeof d.candidate.name === "string" ? d.candidate.name.trim() : "";
+        if (!candidateName) { unresolved.push({ placementId: id, fees: missing[id], reason: "Atlas returned the placement but with no candidate name" }); continue; }
+        proposed.push({
+          placementId: id,
+          record: {
+            candidateName,
+            clientCompanyName: (d.client && d.client.company && d.client.company.name) || (d.client && d.client.companyName) || null,
+            startDate: d.startDate || null,
+            updatedAt: d.updatedAt || new Date().toISOString(),
+          },
+          fees: missing[id],
+        });
+      } catch (e) {
+        unresolved.push({ placementId: id, fees: missing[id], reason: `could not reach Atlas: ${e.message}` });
+      }
+    }
+    let written = 0;
+    if (apply && proposed.length > 0) {
+      const fresh = (await kv.get(PLACEMENTS_KEY)) || {};
+      for (const p of proposed) {
+        if (!fresh[p.placementId]) { fresh[p.placementId] = p.record; written++; }
+      }
+      if (written > 0) await kv.set(PLACEMENTS_KEY, fresh);
+    }
+    return res.status(200).json({ dryRun: !apply, missingPlacementIds: missingIds.length, checkedThisRun: checked, remaining: missingIds.length - checked, proposed, unresolved, written });
+  }
+
   // Manual corrections to the Consultant KPIs page — only ever a MONTHLY
   // override for one specific field (cvs/interviews/onsite/offers/
   // placements), never touching the underlying weekly Atlas data or the
