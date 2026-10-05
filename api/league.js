@@ -84,6 +84,24 @@ function isoWeekKey(dateStr) {
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+// Mirrors, rule for rule, the test the placement-counts action applies
+// to decide whether a fee record counts as a genuine placement (Deals
+// Agreed) or falls into the onsite-fee bucket. Exists only for the
+// debug-atlas-endpoints feeId lookup, so a misclassified fee can be
+// diagnosed from live data instead of guessed at. Deliberately a
+// separate copy rather than a refactor of placement-counts itself: that
+// action feeds money-adjacent pages and works, so it is left untouched,
+// and a test asserts this stays in step with it.
+function classifyFeeRecordForPlacement(record, placements) {
+  if (!record.consultantId) return { counts: false, reason: "no consultant mapped to this fee's owner email" };
+  if (!record.placementId) return { counts: false, reason: "fee has no placementId, so it is treated as an onsite fee" };
+  if (record.projectName && record.projectName.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return { counts: false, reason: "project is the excluded CitSec Options project" };
+  const placement = placements[record.placementId];
+  if (!placement) return { counts: false, reason: "fee has a placementId but no matching record exists in atlas-placements" };
+  if (!placement.candidateName) return { counts: false, reason: "a placement record exists but has no candidateName, so it is not treated as a genuine placement" };
+  return { counts: true, reason: "has a linked placement record with a candidate name, so it counts as a genuine placement" };
+}
+
 // Subtracts manually excluded candidate+project pairs (a mistaken
 // submission, see the toggle-kpi-exclusion endpoint's own comment for
 // the full reasoning) from a person's raw counts — shared by BOTH
@@ -448,6 +466,43 @@ module.exports = async (req, res) => {
       results.pairTrackingState = { sourcingReset: sourcingResetIso || null, firstReachedMonth: firstReachedMonth || null, firstReachedWeek: firstReachedWeek || null };
     } else {
       results.pairTrackingState = { skipped: "needs both ?projectId= and ?candidateId=" };
+    }
+
+    // Looks up one fee by its Atlas fee id and shows, side by side, the
+    // fee record this app stored and the placement record (if any) it
+    // matches against, plus the verdict the placement-counts rule would
+    // give it and the specific reason. Built for "why is this fee
+    // showing as an onsite instead of a placement": the answer is always
+    // one of a short list of reasons, and this names which one.
+    const feeIdQuery = typeof req.query.feeId === "string" ? req.query.feeId.trim() : "";
+    if (feeIdQuery) {
+      const [feeRecords, placementsStore] = await Promise.all([
+        kv.get(RECORDS_KEY).then((v) => v || []),
+        kv.get(PLACEMENTS_KEY).then((v) => v || {}),
+      ]);
+      const matching = feeRecords.filter((r) => r.feeId === feeIdQuery);
+      results.feeRecordState = matching.length === 0
+        ? { found: false, note: "No stored fee record has this feeId. The fee webhook may not have recorded it, or the id is mistyped.", totalFeeRecordsStored: feeRecords.length }
+        : {
+            found: true,
+            placementRecordsInStore: Object.keys(placementsStore).length,
+            records: matching.map((r) => {
+              const placement = r.placementId ? placementsStore[r.placementId] || null : null;
+              return {
+                consultantId: r.consultantId || null,
+                shareAmount: r.shareAmount,
+                currency: r.currency,
+                feeDate: r.feeDate || null,
+                projectName: r.projectName || null,
+                notes: r.notes || null,
+                placementId: r.placementId || null,
+                placementRecord: placement ? { candidateName: placement.candidateName || null, startDate: placement.startDate || null, clientCompanyName: placement.clientCompanyName || null } : null,
+                verdict: classifyFeeRecordForPlacement(r, placementsStore),
+              };
+            }),
+          };
+    } else {
+      results.feeRecordState = { skipped: "needs ?feeId= (the Atlas fee id, e.g. from the fee webhook log)" };
     }
 
     // Added specifically to sidestep a real, recurring problem: Atlas's
