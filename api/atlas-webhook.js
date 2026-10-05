@@ -1,28 +1,16 @@
 import { kv } from "@vercel/kv";
 import { Webhook } from "svix";
+import atlasShared from "./_atlasShared.js";
 
-// ============================================================================
-// CONFIG
-// ============================================================================
-// This map is SEPARATE from the one in atlas-webhook.js on purpose: the Deal
-// Lead Award includes James and Josh (team leaders), whereas the CVs Out /
-// Interviews league table does not.
-const EMAIL_TO_CONSULTANT = {
-  "alex@reloadsearch.com": "alex-silverman",
-  "ash@reloadsearch.com": "ash-thiara",
-  "jack@reloadsearch.com": "jack-thompson",
-  "max@reloadsearch.com": "max-hart",
-  "oleg@reloadsearch.com": "oleg-sokyrka",
-  "alexander@reloadsearch.com": "alex-aparo",
-  "jackr@reloadsearch.com": "jack-routledge",
-  "joe@reloadsearch.com": "joe-purton",
-  "joshd@reloadsearch.com": "josh-davis",
-  "natasha@reloadsearch.com": "natasha-barnard",
-  "james@reloadsearch.com": "james-lancer",
-  "josh@reloadsearch.com": "josh-stark",
-  "scott@reloadsearch.com": "scott-finn",
-  "lee@reloadsearch.com": "lee-mamo",
-};
+const {
+  EXCLUDED_PROJECT_NAME,
+  EMAIL_TO_CONSULTANT,
+  DEDUPE_KEY_BY_METRIC,
+  metricForStageName,
+  lookupProjectDetails,
+  lookupCandidateOwnerEmail,
+  writeTally,
+} = atlasShared;
 // ============================================================================
 
 function getRawBody(req) {
@@ -34,122 +22,6 @@ function getRawBody(req) {
   });
 }
 
-function yearFromDateStr(dateStr) {
-  if (!dateStr) return null;
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return null;
-  return d.getUTCFullYear();
-}
-
-// Every fee event includes a projectId even when there's no placement
-// connected yet — and a project always belongs to a client company in
-// Atlas. So when a fee has no linked placement (and therefore no client
-// name from that route), this gives us a real fallback instead of a blank.
-async function lookupProjectClientName(projectId) {
-  if (!projectId) return null;
-  try {
-    const res = await fetch(
-      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
-      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    const company = json.data && json.data.company;
-    return company ? company.name : null;
-  } catch (e) {
-    console.error("[atlas-fee-webhook] project client lookup failed:", e.message);
-    return null;
-  }
-}
-
-// Scott's rule: CitSec Options is excluded from every consultant KPI
-// number entirely, including "Deals Agreed" on the Consultant KPIs page,
-// which is computed from these fee records over in league.js. Storing the
-// project's own name on every record (not just when there's no placement)
-// is what makes that filter possible downstream. Cached by project id
-// (shared KV key with atlas-webhook.js's own identical lookup) so a
-// project's name is only ever fetched from Atlas once, not on every fee
-// event tied to that same project.
-// Every webhook event this endpoint ignores gets a short, durable record
-// in KV, not just a log line. Vercel only keeps logs for about an hour,
-// which twice now has meant the evidence of what Atlas actually sent was
-// gone before anyone could look at it. Stores the event name, the data's
-// own id, and the SHAPE of the data (field names only, one level deep),
-// never the values themselves, so no candidate, salary or fee details
-// are retained. Capped, newest first, and strictly best effort: a failure
-// here must never change what the webhook responds with.
-const SKIPPED_EVENTS_KEY = "atlas-fee-webhook-skipped-events";
-const MAX_SKIPPED_EVENTS = 20;
-async function recordSkippedEvent(payload) {
-  try {
-    const data = payload && payload.data && typeof payload.data === "object" ? payload.data : {};
-    const dataShape = {};
-    for (const [k, v] of Object.entries(data)) {
-      dataShape[k] = Array.isArray(v) ? "array" : v && typeof v === "object" ? Object.keys(v) : typeof v;
-    }
-    const entry = { at: new Date().toISOString(), event: (payload && payload.event) || null, dataId: data.id || null, dataShape };
-    const existing = (await kv.get(SKIPPED_EVENTS_KEY)) || [];
-    await kv.set(SKIPPED_EVENTS_KEY, [entry, ...existing].slice(0, MAX_SKIPPED_EVENTS));
-  } catch (e) {
-    console.error("[atlas-fee-webhook] couldn't record skipped event:", e.message);
-  }
-}
-
-const PROJECT_NAME_CACHE_PREFIX = "atlas-project-name:"; // one key per project — SHARED with _atlasShared.js's own copy of this lookup
-async function lookupProjectName(projectId) {
-  if (!projectId) return null;
-  const cacheKey = `${PROJECT_NAME_CACHE_PREFIX}${projectId}`;
-  const cached = await kv.get(cacheKey);
-  if (cached !== null && cached !== undefined) return cached;
-  let name = null;
-  try {
-    const res = await fetch(
-      `https://api.recruitwithatlas.com/api/v1/projects/${projectId}`,
-      { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } }
-    );
-    if (res.ok) {
-      const json = await res.json();
-      // "CitSec Options" (the value the exclusion check compares
-      // against) is the PROJECT's own title, e.g. "Aaron Rosen: PDT -
-      // SWE Pipeline" — confirmed directly, not the client company name
-      // (that's company.name, a genuinely different field, e.g. "PDT
-      // Partners", used for projectClientName above). This function
-      // guessed company.name for a while, on the assumption "CitSec
-      // Options" was itself a company name — it isn't, so that guess
-      // meant the exclusion this feeds was still checking the wrong
-      // field even after that "fix". jobRole sits flat on this
-      // project-detail response (json.data.jobRole), no nested lookup
-      // needed. One key per project rather than one shared object for
-      // every project ever seen, too — see _atlasShared.js's own copy of
-      // this function for the fuller reasoning on that, since both must
-      // stay on the identical key prefix.
-      const data = json.data || {};
-      name = data.jobRole || null;
-    }
-  } catch (e) {
-    console.error("[atlas-fee-webhook] project name lookup failed:", e.message);
-  }
-  if (name !== null) await kv.set(cacheKey, name);
-  return name;
-}
-
-// Fee/split "share" is treated as a percentage (e.g. "50" meaning 50%) when
-// present. If a split has no share (or there's only one split), it gets
-// full credit for the fee amount.
-function computeShareAmount(totalAmount, share, splitCount) {
-  const amount = parseFloat(totalAmount);
-  if (isNaN(amount)) return null;
-  if (share === null || share === undefined || share === "") {
-    // No explicit share — if there's only one split, they get it all;
-    // if there are multiple splits with no share info, divide evenly
-    // as a safe fallback (better than double-counting or dropping it).
-    return splitCount > 1 ? amount / splitCount : amount;
-  }
-  const pct = parseFloat(share);
-  if (isNaN(pct)) return splitCount > 1 ? amount / splitCount : amount;
-  return amount * (pct / 100);
-}
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -157,7 +29,8 @@ export default async function handler(req, res) {
 
   const rawBody = await getRawBody(req);
 
-  console.log("[atlas-fee-webhook] rawBody length:", rawBody.length);
+  console.log("[atlas-webhook] rawBody length:", rawBody.length);
+  console.log("[atlas-webhook] secret configured, length:", (process.env.ATLAS_WEBHOOK_SECRET || "").length);
 
   const svixHeaders = {
     "svix-id": req.headers["svix-id"] || req.headers["webhook-id"],
@@ -167,127 +40,83 @@ export default async function handler(req, res) {
 
   let payload;
   try {
-    const wh = new Webhook(process.env.ATLAS_FEE_WEBHOOK_SECRET);
+    const wh = new Webhook(process.env.ATLAS_WEBHOOK_SECRET);
     payload = wh.verify(rawBody, svixHeaders);
   } catch (e) {
-    console.error("[atlas-fee-webhook] verification failed:", e.message);
+    console.error("[atlas-webhook] verification failed:", e.message);
     return res.status(401).json({ error: "Invalid webhook signature" });
   }
 
-  if (payload.event !== "financial.feeCreated" && payload.event !== "financial.feeUpdated") {
-    console.log("[atlas-fee-webhook] skipped: not a fee event. event was:", payload.event);
-    await recordSkippedEvent(payload);
-    return res.status(200).json({ ok: true, skipped: true, reason: "not a fee event" });
+  // Only handle stage-move events; acknowledge (200) everything else so
+  // Atlas doesn't keep retrying events we don't care about.
+  if (payload.event !== "candidate.stageMoved") {
+    console.log("[atlas-webhook] skipped: not a stage move. event was:", payload.event);
+    return res.status(200).json({ ok: true, skipped: true, reason: "not a stage move" });
   }
 
-  const data = payload.data || {};
-  const { id: feeId, feeDate, amount, currency, splits, placementId, projectId, notes } = data;
-
-  if (!feeId || !amount || !currency || !Array.isArray(splits) || splits.length === 0) {
-    console.log("[atlas-fee-webhook] skipped: missing fields. data was:", JSON.stringify(data));
+  const { newStage, candidateId, projectId, movedAt } = payload.data || {};
+  if (!newStage || !candidateId || !projectId || !movedAt) {
+    console.log("[atlas-webhook] skipped: missing fields. data was:", JSON.stringify(payload.data));
     return res.status(200).json({ ok: true, skipped: true, reason: "missing fields" });
   }
 
-  const year = yearFromDateStr(feeDate) || new Date().getUTCFullYear();
-
-  // Only bother calling out to Atlas for the project's client when there's
-  // no placement connected — if a placement exists, its own webhook will
-  // supply the client name via the normal join, so this avoids an
-  // unnecessary API call on the common case.
-  const projectClientName = placementId ? null : await lookupProjectClientName(projectId);
-  // Unlike the client-name lookup above, this one always runs regardless
-  // of placement — every record needs its own project name so the
-  // CitSec Options exclusion can be applied downstream in league.js.
-  const projectName = await lookupProjectName(projectId);
-
-  // Load existing records, strip out any prior entries for this fee (so
-  // financial.feeUpdated replaces cleanly instead of duplicating), then
-  // add fresh entries — one per split.
-  const RECORDS_KEY = "atlas-fee-records";
-  const existing = (await kv.get(RECORDS_KEY)) || [];
-  // Preserve any "paid" status already set on a matching split before we
-  // rebuild it below — a financial.feeUpdated re-send shouldn't silently
-  // wipe out a deal Scott/Lee already marked as paid.
-  const priorPaidBySplit = {};
-  existing.forEach((r) => {
-    if (r.feeId === feeId) {
-      priorPaidBySplit[r.splitId] = {
-        paid: r.paid,
-        paidMarkedAt: r.paidMarkedAt,
-        monthOverrides: r.monthOverrides,
-        source: r.source,
-        coordinatorId: r.coordinatorId,
-        consultantEmail: r.consultantEmail,
-        consultantId: r.consultantId,
-        consultantName: r.consultantName,
-      };
-    }
-  });
-  const filtered = existing.filter((r) => r.feeId !== feeId);
-
-  const newRecords = [];
-  for (const split of splits) {
-    const prior = priorPaidBySplit[split.id] || {
-      paid: false, paidMarkedAt: null, monthOverrides: {}, source: null, coordinatorId: null,
-      consultantEmail: null, consultantId: null, consultantName: null,
-    };
-
-    // Atlas uses TWO DIFFERENT shapes for fee-earner info depending on the
-    // event type: financial.feeCreated nests it as split.feeEarner.email,
-    // while financial.feeUpdated flattens it to split.feeEarnerEmail. Not
-    // handling both meant every single feeUpdated event silently read as
-    // "no owner" — this line fixes that at the source, with the "keep
-    // whatever we already knew" fallback below as a safety net for any
-    // future case where an event genuinely has neither.
-    const incomingEmail = (split.feeEarner && split.feeEarner.email) || split.feeEarnerEmail || null;
-    const incomingName = (split.feeEarner && split.feeEarner.name) || split.feeEarnerName || null;
-    const email = incomingEmail || prior.consultantEmail;
-    const consultantId = incomingEmail
-      ? (EMAIL_TO_CONSULTANT[incomingEmail] || null)
-      : prior.consultantId;
-    const consultantName = incomingEmail ? incomingName : prior.consultantName;
-    const shareAmount = computeShareAmount(amount, split.share, splits.length);
-
-    const record = {
-      feeId,
-      splitId: split.id,
-      feeDate: feeDate || null,
-      year,
-      currency,
-      totalAmount: parseFloat(amount),
-      share: split.share || null,
-      shareAmount,
-      consultantEmail: email || null,
-      consultantId,
-      consultantName,
-      placementId: placementId || null,
-      notes: notes || null,
-      projectClientName: projectClientName || null,
-      projectName: projectName || null,
-      paid: prior.paid,
-      paidMarkedAt: prior.paidMarkedAt,
-      monthOverrides: prior.monthOverrides || {},
-      source: prior.source || null,
-      coordinatorId: prior.coordinatorId || null,
-      updatedAt: new Date().toISOString(),
-    };
-
-    console.log(
-      "[atlas-fee-webhook] recorded split:",
-      JSON.stringify({ feeId, email, consultantId, shareAmount, currency, placementId: placementId || null, keptFromPrior: !incomingEmail })
-    );
-
-    if (!consultantId) {
-      console.log("[atlas-fee-webhook] note: no consultant mapped for owner email:", email);
-    }
-
-    newRecords.push(record);
+  // The exclusion check compares against the PROJECT's own title (jobRole,
+  // e.g. "CitSec Options") — confirmed directly, not the client company
+  // name, which lookupProjectDetails also returns but which isn't what's
+  // being checked against here.
+  const projectDetails = await lookupProjectDetails(kv, projectId);
+  const projectJobRole = projectDetails ? projectDetails.jobRole : null;
+  if (projectJobRole && projectJobRole.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) {
+    console.log("[atlas-webhook] skipped: CitSec Options project is excluded from all KPI numbers");
+    return res.status(200).json({ ok: true, skipped: true, reason: "excluded project (CitSec Options)" });
   }
 
-  const updated = [...filtered, ...newRecords];
-  await kv.set(RECORDS_KEY, updated);
+  const metric = metricForStageName(newStage.name);
+  if (!metric) {
+    console.log("[atlas-webhook] skipped: not a tracked stage. newStage.name was:", JSON.stringify(newStage.name));
+    return res.status(200).json({ ok: true, skipped: true, reason: "not a tracked stage" });
+  }
 
-  return res.status(200).json({ ok: true, feeId, recordsAdded: newRecords.length, year });
+  let consultantId = null;
+  try {
+    // Credit goes to whoever OWNS the candidate, not whoever physically moved
+    // the pipeline stage — so admin/manager moves made on a consultant's
+    // behalf still count correctly for that consultant.
+    const email = await lookupCandidateOwnerEmail(projectId, candidateId);
+    console.log("[atlas-webhook] candidate owner email:", email);
+
+    if (email) consultantId = EMAIL_TO_CONSULTANT[email] || null;
+  } catch (e) {
+    console.error("[atlas-webhook] owner lookup failed:", e.message);
+    // Still acknowledge receipt so Atlas doesn't retry indefinitely on our error
+    return res.status(200).json({ ok: true, error: "candidate owner lookup failed" });
+  }
+
+  if (!consultantId) {
+    console.log("[atlas-webhook] skipped: no consultant mapped for this owner email");
+    return res.status(200).json({ ok: true, skipped: true, reason: "unmapped candidate owner" });
+  }
+
+  // Interview, Onsite, and Offer stages each only ever count once per
+  // candidate per process — check (and record) that here, before touching
+  // the tally at all. Each metric uses its OWN independent counted-key, so
+  // a candidate's interview, onsite, and offer counts never interfere with
+  // one another even though they follow the same pattern.
+  if (DEDUPE_KEY_BY_METRIC[metric]) {
+    const dedupeStoreKey = DEDUPE_KEY_BY_METRIC[metric];
+    const dedupeKey = `${candidateId}:${projectId}`;
+    const alreadyCounted = (await kv.get(dedupeStoreKey)) || {};
+    if (alreadyCounted[dedupeKey]) {
+      console.log(`[atlas-webhook] skipped: this candidate's ${metric} process was already counted`, dedupeKey);
+      return res.status(200).json({ ok: true, skipped: true, reason: `${metric} already counted for this candidate/process` });
+    }
+    alreadyCounted[dedupeKey] = true;
+    await kv.set(dedupeStoreKey, alreadyCounted);
+  }
+
+  const { weekKey, monthKey } = await writeTally(kv, consultantId, metric, movedAt);
+
+  return res.status(200).json({ ok: true, consultantId, metric, weekKey, monthKey });
 }
 
 export const config = {
