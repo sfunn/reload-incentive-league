@@ -102,6 +102,18 @@ function classifyFeeRecordForPlacement(record, placements) {
   return { counts: true, reason: "has a linked placement record with a candidate name, so it counts as a genuine placement" };
 }
 
+// A leftover from a deleted-and-re-entered fee is always dated close to
+// the live one, so possible duplicates are limited to fees within about
+// four months of each other. Without this, a person with many identical
+// amounts across the years (Natasha has nine $150k fees from 2021 on)
+// buries the one record that matters under irrelevant history. A fee with
+// no usable date is kept rather than silently dropped.
+function feeDatesAreNear(a, b) {
+  const da = new Date(a), db = new Date(b);
+  if (isNaN(da.getTime()) || isNaN(db.getTime())) return true;
+  return Math.abs(da.getTime() - db.getTime()) <= 120 * 24 * 60 * 60 * 1000;
+}
+
 // Subtracts manually excluded candidate+project pairs (a mistaken
 // submission, see the toggle-kpi-exclusion endpoint's own comment for
 // the full reasoning) from a person's raw counts — shared by BOTH
@@ -487,11 +499,38 @@ module.exports = async (req, res) => {
         kv.get(PLACEMENTS_KEY).then((v) => v || {}),
       ]);
       const matching = feeRecords.filter((r) => r.feeId === feeIdQuery);
+      // When a fee points at a placement we have no record of, ask Atlas
+      // directly what it says about that placement, read-only. Two
+      // probes, because I do not know which of these endpoints exists:
+      // the single placement by id, and a short list (which also shows
+      // what fields a placement carries, including any approval status).
+      // Also returns the newest placement record already in the store, in
+      // full, as the known-good shape to compare Atlas's answer against.
+      const missingPlacement = matching.find((r) => r.placementId && !placementsStore[r.placementId]);
+      let atlasPlacementProbes = null;
+      if (missingPlacement) {
+        const probe = async (path) => {
+          try {
+            const pr = await fetchAtlasWithRetry(`https://api.recruitwithatlas.com${path}`, { headers: { Authorization: `Bearer ${process.env.ATLAS_API_KEY}` } });
+            return { path, status: pr.status, ok: pr.ok, body: (await pr.text().catch(() => "")).slice(0, 1500) };
+          } catch (e) {
+            return { path, error: e.message };
+          }
+        };
+        atlasPlacementProbes = [
+          await probe(`/api/v1/placements/${encodeURIComponent(missingPlacement.placementId)}`),
+          await probe(`/api/v1/placements?pageSize=3`),
+        ];
+      }
+      const newestStored = Object.entries(placementsStore)
+        .sort((a, b) => String((b[1] && b[1].startDate) || "").localeCompare(String((a[1] && a[1].startDate) || "")))[0];
       results.feeRecordState = matching.length === 0
         ? { found: false, note: "No stored fee record has this feeId. The fee webhook may not have recorded it, or the id is mistyped.", totalFeeRecordsStored: feeRecords.length }
         : {
             found: true,
             placementRecordsInStore: Object.keys(placementsStore).length,
+            atlasPlacementProbes,
+            newestStoredPlacement: newestStored ? { placementId: newestStored[0], record: newestStored[1] } : null,
             records: matching.map((r) => {
               const placement = r.placementId ? placementsStore[r.placementId] || null : null;
               return {
@@ -512,7 +551,7 @@ module.exports = async (req, res) => {
                 // surfaces it with the ids needed to tell the two apart
                 // before anything gets deleted. Read-only; capped.
                 possibleDuplicates: feeRecords
-                  .filter((o) => o.feeId !== r.feeId && o.consultantId === r.consultantId && o.shareAmount === r.shareAmount && o.currency === r.currency)
+                  .filter((o) => o.feeId !== r.feeId && o.consultantId === r.consultantId && o.shareAmount === r.shareAmount && o.currency === r.currency && feeDatesAreNear(o.feeDate, r.feeDate))
                   .sort((a, b) => String(b.feeDate || "").localeCompare(String(a.feeDate || "")))
                   .slice(0, 10)
                   .map((o) => ({
