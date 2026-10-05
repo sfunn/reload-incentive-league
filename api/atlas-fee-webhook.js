@@ -70,6 +70,31 @@ async function lookupProjectClientName(projectId) {
 // (shared KV key with atlas-webhook.js's own identical lookup) so a
 // project's name is only ever fetched from Atlas once, not on every fee
 // event tied to that same project.
+// Every webhook event this endpoint ignores gets a short, durable record
+// in KV, not just a log line. Vercel only keeps logs for about an hour,
+// which twice now has meant the evidence of what Atlas actually sent was
+// gone before anyone could look at it. Stores the event name, the data's
+// own id, and the SHAPE of the data (field names only, one level deep),
+// never the values themselves, so no candidate, salary or fee details
+// are retained. Capped, newest first, and strictly best effort: a failure
+// here must never change what the webhook responds with.
+const SKIPPED_EVENTS_KEY = "atlas-fee-webhook-skipped-events";
+const MAX_SKIPPED_EVENTS = 20;
+async function recordSkippedEvent(payload) {
+  try {
+    const data = payload && payload.data && typeof payload.data === "object" ? payload.data : {};
+    const dataShape = {};
+    for (const [k, v] of Object.entries(data)) {
+      dataShape[k] = Array.isArray(v) ? "array" : v && typeof v === "object" ? Object.keys(v) : typeof v;
+    }
+    const entry = { at: new Date().toISOString(), event: (payload && payload.event) || null, dataId: data.id || null, dataShape };
+    const existing = (await kv.get(SKIPPED_EVENTS_KEY)) || [];
+    await kv.set(SKIPPED_EVENTS_KEY, [entry, ...existing].slice(0, MAX_SKIPPED_EVENTS));
+  } catch (e) {
+    console.error("[atlas-fee-webhook] couldn't record skipped event:", e.message);
+  }
+}
+
 const PROJECT_NAME_CACHE_PREFIX = "atlas-project-name:"; // one key per project — SHARED with _atlasShared.js's own copy of this lookup
 async function lookupProjectName(projectId) {
   if (!projectId) return null;
@@ -151,6 +176,7 @@ export default async function handler(req, res) {
 
   if (payload.event !== "financial.feeCreated" && payload.event !== "financial.feeUpdated") {
     console.log("[atlas-fee-webhook] skipped: not a fee event. event was:", payload.event);
+    await recordSkippedEvent(payload);
     return res.status(200).json({ ok: true, skipped: true, reason: "not a fee event" });
   }
 
