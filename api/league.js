@@ -498,6 +498,26 @@ module.exports = async (req, res) => {
                 placementId: r.placementId || null,
                 placementRecord: placement ? { candidateName: placement.candidateName || null, startDate: placement.startDate || null, clientCompanyName: placement.clientCompanyName || null } : null,
                 verdict: classifyFeeRecordForPlacement(r, placementsStore),
+                // Other stored fees for the same person, same amount and
+                // currency. Atlas does not tell us when a fee is deleted
+                // (the fee webhook only handles created/updated), so a
+                // fee that was deleted and re-entered leaves the first
+                // one behind as a second, identical-looking deal. This
+                // surfaces it with the ids needed to tell the two apart
+                // before anything gets deleted. Read-only; capped.
+                possibleDuplicates: feeRecords
+                  .filter((o) => o.feeId !== r.feeId && o.consultantId === r.consultantId && o.shareAmount === r.shareAmount && o.currency === r.currency)
+                  .sort((a, b) => String(b.feeDate || "").localeCompare(String(a.feeDate || "")))
+                  .slice(0, 10)
+                  .map((o) => ({
+                    feeId: o.feeId,
+                    splitId: o.splitId || null,
+                    feeDate: o.feeDate || null,
+                    projectName: o.projectName || null,
+                    notes: o.notes || null,
+                    placementId: o.placementId || null,
+                    placementRecordExists: !!(o.placementId && placementsStore[o.placementId]),
+                  })),
               };
             }),
           };
