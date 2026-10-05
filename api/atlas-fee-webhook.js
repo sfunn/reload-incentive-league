@@ -248,7 +248,7 @@ export default async function handler(req, res) {
 
     console.log(
       "[atlas-fee-webhook] recorded split:",
-      JSON.stringify({ feeId, email, consultantId, shareAmount, currency, keptFromPrior: !incomingEmail })
+      JSON.stringify({ feeId, email, consultantId, shareAmount, currency, placementId: placementId || null, keptFromPrior: !incomingEmail })
     );
 
     if (!consultantId) {
