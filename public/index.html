@@ -272,6 +272,25 @@ function isoWeekKey(dateStr) {
   const week = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
+// What the "Refresh now" / "Recalculate this week" buttons say happened,
+// including how many events Atlas actually returned, so a week that
+// still looks wrong can be told apart (Atlas returned nothing, versus it
+// returned plenty and none counted) without guessing.
+function describeWeekRefresh(data) {
+  const r = data && data.refresh;
+  if (!r) return "";
+  const s = r.stats ? ` (${r.stats.eventsSeen} events from Atlas, ${r.stats.eventsCounted} counted)` : "";
+  if (r.outcome === "recomputed") return `Recalculated from Atlas just now${s}.`;
+  if (r.outcome === "skipped-recent") return `Already recalculated ${r.ageSeconds} seconds ago, so these are current.`;
+  if (r.outcome === "incomplete") return `The recalculation didn't finish in time${s}, so these are the last complete numbers. Press again to carry on.`;
+  if (r.outcome === "failed") return "Couldn't reach Atlas. These are the last numbers that loaded.";
+  if (r.outcome === "not-signed-in") return "Sign in to recalculate from Atlas.";
+  return "";
+}
+function weekNoteLine(note, data) {
+  const when = data && data.computedAt ? `Numbers calculated at ${new Date(data.computedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+  return [note, when].filter(Boolean).join(" ");
+}
 // Returns the last n week keys, most recent first, starting from the
 // current week. Walks backward 7 days at a time rather than doing
 // week-number arithmetic directly, so it never has to handle a
@@ -1450,19 +1469,34 @@ function App() {
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       setLiveWeekData(data);
-      const outcome = data.refresh && data.refresh.outcome;
-      setLiveWeekRefreshNote(
-        outcome === "recomputed" ? "Recalculated from Atlas just now."
-        : outcome === "skipped-recent" ? `Already recalculated ${data.refresh.ageSeconds} seconds ago, so these are current.`
-        : outcome === "incomplete" ? "The recalculation didn't finish in time, so these are the last complete numbers. Press Refresh now again to carry on."
-        : outcome === "failed" ? "Couldn't reach Atlas. These are the last numbers that loaded."
-        : outcome === "not-signed-in" ? "Sign in to recalculate from Atlas."
-        : ""
-      );
+      setLiveWeekRefreshNote(describeWeekRefresh(data));
     } catch (e) {
       setLiveWeekRefreshNote("Couldn't refresh. The numbers shown are the last ones that loaded.");
     } finally {
       setLiveWeekLoading(false);
+    }
+  }
+  const [pastWeekRefreshNote, setPastWeekRefreshNote] = useState("");
+  // Recalculates ONE past week from Atlas and replaces its saved copy.
+  // Exists because a past week can end up with a wrong saved copy (for
+  // example from a recalculation that ran out of time) and, until now,
+  // had no way to be redone: the saved copy simply had to expire.
+  async function recalculatePastWeek() {
+    if (!pastWeekData) return;
+    const wk = pastWeekData.weekKey;
+    setPastWeekLoading(true);
+    setPastWeekRefreshNote("");
+    try {
+      const res = await fetch(`/api/league?action=week-live&week=${encodeURIComponent(wk)}&force=1`, { headers: authUser ? { Authorization: `Bearer ${authUser.token}` } : {} });
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setPastWeekData(data);
+      setPastWeekRefreshNote(describeWeekRefresh(data));
+      await refreshStandingsWeek(wk);
+    } catch (e) {
+      setPastWeekRefreshNote("Couldn't recalculate. The numbers shown are the last ones that loaded.");
+    } finally {
+      setPastWeekLoading(false);
     }
   }
   async function setCurrentWeekConfig(metric, threshold) {
@@ -3238,11 +3272,12 @@ function App() {
               title: viewingPast ? "Reviewing this week" : "Live tally"
             }),
             viewingPast
-              ? React.createElement("button", { onClick: () => setPastWeekData(null), style: ghostStyle }, "Back to this week")
+              ? React.createElement("div", { style: { display: "flex", gap: 8 } },
+                  React.createElement("button", { onClick: recalculatePastWeek, disabled: pastWeekLoading, style: ghostStyle }, pastWeekLoading ? "Recalculating…" : "Recalculate this week"),
+                  React.createElement("button", { onClick: () => setPastWeekData(null), style: ghostStyle }, "Back to this week"))
               : React.createElement("button", { onClick: refreshLiveWeekNow, disabled: liveWeekLoading, style: ghostStyle }, liveWeekLoading ? "Refreshing…" : "Refresh now")
           ),
-          !viewingPast && (liveWeekRefreshNote || (liveWeekData && liveWeekData.computedAt)) && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 10 } },
-            [liveWeekRefreshNote, liveWeekData && liveWeekData.computedAt ? `Numbers calculated at ${new Date(liveWeekData.computedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : ""].filter(Boolean).join(" ")),
+          (() => { const line = viewingPast ? weekNoteLine(pastWeekRefreshNote, pastWeekData) : weekNoteLine(liveWeekRefreshNote, liveWeekData); return line ? React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 10 } }, line) : null; })(),
           weekOverrideError && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK, marginBottom: 10 } }, weekOverrideError),
           activeLoading && !activeWeek ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
           !activeWeek || !Array.isArray(activeWeek.consultants) ? null :
