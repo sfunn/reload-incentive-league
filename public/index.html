@@ -1277,6 +1277,27 @@ function App() {
   const [atlasEndpointsFeeId, setAtlasEndpointsFeeId] = useState("");
   const [atlasEndpointsSearchYear, setAtlasEndpointsSearchYear] = useState("");
   const [atlasEndpointsSearchMonth, setAtlasEndpointsSearchMonth] = useState("");
+  const [ownerRefresh, setOwnerRefresh] = useState(null);
+  const [ownerRefreshLoading, setOwnerRefreshLoading] = useState(false);
+  async function refreshCandidateOwner() {
+    if (!window.confirm("Refresh the stored owner for this candidate from Atlas? Their CV, interview and other credit moves to the current owner the next time the affected month is recomputed.")) return;
+    setOwnerRefreshLoading(true);
+    try {
+      const res = await fetch("/api/league?action=refresh-candidate-owner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ candidateId: atlasEndpointsCandidateId.trim(), projectId: atlasEndpointsProjectId.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Owner refresh failed");
+      setOwnerRefresh({ ok: true, ...data });
+      runAtlasEndpointsCheck();
+    } catch (e) {
+      setOwnerRefresh({ ok: false, error: e.message });
+    } finally {
+      setOwnerRefreshLoading(false);
+    }
+  }
   const [placementRepair, setPlacementRepair] = useState(null);
   const [placementRepairLoading, setPlacementRepairLoading] = useState(false);
   // apply=false previews only (writes nothing); apply=true is the
@@ -5148,6 +5169,10 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 )
           )
         ),
+        ownerRefresh && React.createElement("div", { style: { fontSize: 12.5, marginTop: 6, color: ownerRefresh.ok ? INDIGO : "#b00020" } },
+          ownerRefresh.ok
+            ? `Owner refresh: ${ownerRefresh.before ? `was ${ownerRefresh.before.email} (${ownerRefresh.before.mappedTo || "not a mapped consultant"})` : "nothing was stored"}; now ${ownerRefresh.after ? `${ownerRefresh.after.email} (${ownerRefresh.after.mappedTo || "not a mapped consultant"})` : "unknown"}. ${ownerRefresh.note}`
+            : ownerRefresh.error),
         atlasEndpointsResult && React.createElement("div", { style: { fontSize: 12.5, marginTop: 6 } },
           atlasEndpointsResult.ok
             ? React.createElement(React.Fragment, null,
@@ -5155,6 +5180,12 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
                 React.createElement("div", null, `candidate-stage-events: ${JSON.stringify(atlasEndpointsResult.results.candidateStageEvents)}`),
                 React.createElement("div", null, `project detail: ${JSON.stringify(atlasEndpointsResult.results.projectDetail)}`),
                 React.createElement("div", null, `candidate detail: ${JSON.stringify(atlasEndpointsResult.results.candidateDetail)}`),
+                React.createElement("div", { style: { marginTop: 4, wordBreak: "break-all", fontWeight: 600 } }, `owner check (who we attribute this candidate to vs who Atlas says owns them): ${JSON.stringify(atlasEndpointsResult.results.ownerDiagnosis)}`),
+                atlasEndpointsResult.results.ownerDiagnosis && /^MISMATCH/.test(atlasEndpointsResult.results.ownerDiagnosis.verdict || "") && React.createElement("div", { style: { margin: "6px 0" } },
+                  React.createElement("button", {
+                    onClick: refreshCandidateOwner, disabled: ownerRefreshLoading,
+                    style: { padding: "6px 14px", borderRadius: 6, border: `1px solid ${INDIGO}`, background: INDIGO, color: WHITE, fontSize: 12.5, cursor: ownerRefreshLoading ? "default" : "pointer" }
+                  }, ownerRefreshLoading ? "Refreshing…" : "Refresh this candidate's owner from Atlas")),
                 React.createElement("div", null, `pair tracking state (Sourcing reset / cross-period claims): ${JSON.stringify(atlasEndpointsResult.results.pairTrackingState)}`),
                 React.createElement("div", { style: { marginTop: 4, wordBreak: "break-all" } }, `fee record state: ${JSON.stringify(atlasEndpointsResult.results.feeRecordState)}`),
                 React.createElement("div", { style: { marginTop: 4, wordBreak: "break-all" } }, `recent ignored webhook events (newest first): ${JSON.stringify(atlasEndpointsResult.results.recentIgnoredWebhookEvents)}`),
