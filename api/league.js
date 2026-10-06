@@ -884,6 +884,7 @@ module.exports = async (req, res) => {
     // stale regardless of age, forcing a fresh recompute, rather than
     // silently serving a technically-fresh-by-timestamp result that's
     // missing information it's now supposed to carry.
+    let incomplete = false;
     let useCache = !!(cached && cached.cachedAt && cached.peopleDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS);
     let computedAt = cached && cached.cachedAt ? cached.cachedAt : null;
 
@@ -922,29 +923,40 @@ module.exports = async (req, res) => {
     } else {
       try {
         const live = await computeWeeklyKpiLive(kv, weekKey);
-        if (refresh && refresh.outcome === "recomputed" && live.isFullyComplete === false) {
-          // Ran out of time. Never replace complete numbers with an
-          // unfinished calculation: keep showing the last complete copy
-          // (or, if there is none, the partial one, unsaved), and release
-          // the cooldown so pressing the button again continues straight
-          // away from the progress already saved, instead of making
-          // them wait out the minute.
-          refresh = { requested: true, outcome: "incomplete" };
-          await kv.del(forceLockKey);
+        const stats = { eventsSeen: live.eventsSeen, eventsCounted: live.eventsCounted, pairsResolved: live.pairsResolved, pairsPending: live.pairsPending, pagesFetched: live.pagesFetched, hitPageCap: !!live.hitPageCap };
+        if (live.isFullyComplete === false) {
+          // Ran out of time before finishing. An unfinished calculation is
+          // NEVER saved, on any request, because it is not a result: with
+          // a slow Atlas it can come back as nothing but zeros, and saving
+          // that replaced a week's good numbers with an empty copy that
+          // then stood as the answer for hours (seen on two past weeks at
+          // once). Show the last complete copy if there is one, flagged
+          // so the page says so; otherwise the partial one, unsaved. The
+          // calculation is resumable, so the next load or press carries
+          // on from the progress already stored.
+          incomplete = true;
+          isStale = true;
+          if (refresh && refresh.outcome === "recomputed") {
+            refresh = { requested: true, outcome: "incomplete", stats };
+            await kv.del(forceLockKey);
+          }
           if (cached && cached.peopleDetails) {
             computed = cached.people;
             computedDetails = cached.peopleDetails;
             computedAt = cached.cachedAt || null;
+            staleReason = `Still recalculating from Atlas, so these are the last complete numbers${cached.cachedAt ? ` (from ${Math.round((Date.now() - cached.cachedAt) / 60000)} minutes ago)` : ""}. Reload, or press Recalculate, to carry on.`;
           } else {
             computed = live.people;
             computedDetails = live.peopleDetails;
             computedAt = null;
+            staleReason = "Still calculating from Atlas, so these numbers are incomplete and have not been saved. Reload, or press Recalculate, to carry on.";
           }
         } else {
           computed = live.people;
           computedDetails = live.peopleDetails;
           computedAt = Date.now();
           await kv.set(CACHE_KEY, { people: computed, peopleDetails: computedDetails, cachedAt: computedAt });
+          if (refresh && refresh.outcome === "recomputed") refresh = { ...refresh, stats };
         }
       } catch (e) {
         console.error("[week-live] live Atlas query failed:", e.message);
@@ -1030,7 +1042,7 @@ module.exports = async (req, res) => {
       isCurrentWeek,
       consultants, teamLeads,
       stale: isStale, staleReason,
-      computedAt, refresh,
+      computedAt, refresh, incomplete,
     });
   }
 
