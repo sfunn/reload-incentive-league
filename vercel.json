@@ -7,10 +7,6 @@
     {
       "path": "/api/atlas-reconcile-cron?task=warm-kpi-cache",
       "schedule": "0 12 * * *"
-    },
-    {
-      "path": "/api/xero-reports?action=auto-pull",
-      "schedule": "0 7 * * *"
     }
   ]
 }
