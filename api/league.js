@@ -1206,7 +1206,7 @@ module.exports = async (req, res) => {
     if (!fresh || !fresh.email) {
       return res.status(200).json({ changed: false, before: before ? { email: before.email, mappedTo: mappedTo(before.email) } : null, after: null, note: "Atlas returned no owner for this candidate, so nothing was changed." });
     }
-    await Promise.all([kv.set(detailKey, fresh), kv.set(ownerKey, fresh.email)]);
+    await Promise.all([kv.set(detailKey, { ...fresh, cachedAt: Date.now() }), kv.set(ownerKey, fresh.email)]);
     const changed = !before || String(before.email || "").toLowerCase() !== String(fresh.email).toLowerCase();
     return res.status(200).json({
       changed,
