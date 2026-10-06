@@ -7,6 +7,8 @@ const {
   fetchAtlasWithRetry,
   metricForStageName,
   lookupProjectDetails,
+  lookupCandidateDetails,
+  EMAIL_TO_CONSULTANT,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
@@ -453,11 +455,42 @@ module.exports = async (req, res) => {
         );
         const body = await res3.text().catch(() => "");
         results.candidateDetail = { status: res3.status, ok: res3.ok, body: body.slice(0, 300) };
+        // The 300 characters above stop right before the owner's email,
+        // so the owner is read from the FULL body here and compared with
+        // the owner this app actually attributes by. Attribution reads the
+        // cached atlas-candidate-detail record, which is looked up once
+        // and never expires, so a candidate whose owner changed in Atlas
+        // after that first lookup (for example added to a role by a
+        // coordinator who is not a mapped consultant, then taken over by a
+        // consultant) keeps being attributed to the old owner, or to
+        // nobody, with no visible error.
+        try {
+          const owner = (JSON.parse(body).data || {}).owner || null;
+          const currentEmail = owner && owner.email ? String(owner.email).toLowerCase() : null;
+          const cachedDetail = await kv.get(`atlas-candidate-detail:${candidateId}`);
+          const cachedEmail = cachedDetail && cachedDetail.email ? String(cachedDetail.email).toLowerCase() : null;
+          const who = (e) => (e ? (EMAIL_TO_CONSULTANT[e] || null) : null);
+          const label = (e) => (!e ? "nobody" : who(e) ? who(e) : `nobody (${e} is not a mapped consultant)`);
+          let verdict;
+          if (!currentEmail) verdict = "Atlas returned no owner for this candidate.";
+          else if (!cachedEmail) verdict = `Nothing cached yet, so the next computation will attribute to Atlas's current owner: ${label(currentEmail)}.`;
+          else if (cachedEmail === currentEmail) verdict = `MATCH: cached owner equals Atlas's current owner. Attributed to ${label(currentEmail)}.`;
+          else verdict = `MISMATCH: we are attributing to ${label(cachedEmail)} from a cached owner, but Atlas now says the owner is ${currentEmail} (${label(currentEmail)}). Counts for this candidate stay wrong until the cached owner is refreshed.`;
+          results.ownerDiagnosis = {
+            currentOwnerInAtlas: owner ? { name: owner.name || null, email: currentEmail, mappedTo: who(currentEmail) } : null,
+            ownerWeHaveCached: cachedEmail ? { email: cachedEmail, mappedTo: who(cachedEmail) } : null,
+            verdict,
+          };
+        } catch (e) {
+          results.ownerDiagnosis = { error: `could not read the owner from Atlas's response: ${e.message}` };
+        }
       } catch (e) {
         results.candidateDetail = { error: e.message };
+        results.ownerDiagnosis = { error: e.message };
       }
     } else {
       results.candidateDetail = { skipped: "needs both ?projectId= and ?candidateId=" };
+      results.ownerDiagnosis = { skipped: "needs both ?projectId= and ?candidateId=" };
     }
 
     // Reads the actual, current STORED tracking state for one specific
@@ -638,7 +671,7 @@ module.exports = async (req, res) => {
     // wrongly flipped "every endpoint came back fine" into "mixed
     // results" whenever one of them had real content to show. The full
     // results are still returned; only the summary ignores them.
-    const NON_ENDPOINT_RESULT_KEYS = new Set(["pairTrackingState", "feeRecordState", "recentIgnoredWebhookEvents"]);
+    const NON_ENDPOINT_RESULT_KEYS = new Set(["pairTrackingState", "feeRecordState", "recentIgnoredWebhookEvents", "ownerDiagnosis"]);
     const endpointResults = Object.fromEntries(Object.entries(results).filter(([k]) => !NON_ENDPOINT_RESULT_KEYS.has(k)));
     const testedCount = Object.values(endpointResults).filter((r) => !r.skipped).length;
     const allOk = Object.values(endpointResults).every((r) => r.ok || r.skipped);
@@ -1136,6 +1169,53 @@ module.exports = async (req, res) => {
       });
     }
     return res.status(200).json({ placementCounts: byConsultantMonth, placementDetails: byConsultantMonthDetails });
+  }
+
+  // Refreshes ONE candidate's stored owner from Atlas. Attribution reads
+  // the owner from a cached record that is looked up once and then never
+  // expires, so when a pipeline entry's owner changes in Atlas after that
+  // first lookup (a coordinator assigns it to the wrong consultant, then
+  // corrects it), the credit keeps going to the old owner no matter how
+  // many times it is moved afterwards. This replaces that one cached
+  // record with what Atlas says now. Deliberately a manual, per-candidate
+  // action rather than an automatic expiry: expiring owners wholesale
+  // would also move credit on PAST months whenever their cache is next
+  // recomputed (for example after a consultant leaves and their
+  // candidates are reassigned), which is not something to do silently.
+  // Writes only after Atlas answers successfully, so a failed lookup can
+  // never leave the candidate worse off than before. The affected month
+  // still has to be recomputed for the credit to actually move.
+  if (req.method === "POST" && action === "refresh-candidate-owner") {
+    const caller = await getUserFromRequest(req);
+    if (!caller || !caller.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    const { candidateId, projectId } = req.body || {};
+    if (typeof candidateId !== "string" || !candidateId.trim() || typeof projectId !== "string" || !projectId.trim()) {
+      return res.status(400).json({ error: "candidateId and projectId are both required" });
+    }
+    const cid = candidateId.trim(), pid = projectId.trim();
+    const detailKey = `atlas-candidate-detail:${cid}`;
+    const ownerKey = `atlas-candidate-owner:${cid}`;
+    const mappedTo = (e) => (e ? EMAIL_TO_CONSULTANT[String(e).toLowerCase()] || null : null);
+    const before = await kv.get(detailKey);
+    let fresh;
+    try {
+      fresh = await lookupCandidateDetails(pid, cid);
+    } catch (e) {
+      return res.status(502).json({ error: `Atlas could not be reached for this candidate (${e.message}). Nothing was changed.` });
+    }
+    if (!fresh || !fresh.email) {
+      return res.status(200).json({ changed: false, before: before ? { email: before.email, mappedTo: mappedTo(before.email) } : null, after: null, note: "Atlas returned no owner for this candidate, so nothing was changed." });
+    }
+    await Promise.all([kv.set(detailKey, fresh), kv.set(ownerKey, fresh.email)]);
+    const changed = !before || String(before.email || "").toLowerCase() !== String(fresh.email).toLowerCase();
+    return res.status(200).json({
+      changed,
+      before: before ? { email: before.email, mappedTo: mappedTo(before.email) } : null,
+      after: { email: fresh.email, name: fresh.name || null, mappedTo: mappedTo(fresh.email) },
+      note: changed
+        ? "Owner refreshed. The credit only moves once the affected month is recomputed: use Force-recompute on the KPI page for that month, and the Weekly Incentive refresh for that week."
+        : "The stored owner already matched Atlas, so nothing changed.",
+    });
   }
 
   // Repairs fees stuck as "onsite" because the placement they point at
