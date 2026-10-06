@@ -1437,6 +1437,34 @@ function App() {
       setLiveWeekLoading(false);
     }
   }, []);
+  const [liveWeekRefreshNote, setLiveWeekRefreshNote] = useState("");
+  // The "Refresh now" button. Unlike loadLiveWeek (which any part of the
+  // page calls and which may be answered from a saved copy for up to 6
+  // hours), this asks the server to recalculate from Atlas, and then says
+  // plainly what happened, because the old button gave no sign either way.
+  async function refreshLiveWeekNow() {
+    setLiveWeekLoading(true);
+    setLiveWeekRefreshNote("");
+    try {
+      const res = await fetch("/api/league?action=week-live&force=1", { headers: authUser ? { Authorization: `Bearer ${authUser.token}` } : {} });
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setLiveWeekData(data);
+      const outcome = data.refresh && data.refresh.outcome;
+      setLiveWeekRefreshNote(
+        outcome === "recomputed" ? "Recalculated from Atlas just now."
+        : outcome === "skipped-recent" ? `Already recalculated ${data.refresh.ageSeconds} seconds ago, so these are current.`
+        : outcome === "incomplete" ? "The recalculation didn't finish in time, so these are the last complete numbers. Press Refresh now again to carry on."
+        : outcome === "failed" ? "Couldn't reach Atlas. These are the last numbers that loaded."
+        : outcome === "not-signed-in" ? "Sign in to recalculate from Atlas."
+        : ""
+      );
+    } catch (e) {
+      setLiveWeekRefreshNote("Couldn't refresh. The numbers shown are the last ones that loaded.");
+    } finally {
+      setLiveWeekLoading(false);
+    }
+  }
   async function setCurrentWeekConfig(metric, threshold) {
     // Works on whichever week is actually being looked at right now — the
     // live current week, or a specific past week opened for review —
@@ -3211,8 +3239,10 @@ function App() {
             }),
             viewingPast
               ? React.createElement("button", { onClick: () => setPastWeekData(null), style: ghostStyle }, "Back to this week")
-              : React.createElement("button", { onClick: loadLiveWeek, disabled: liveWeekLoading, style: ghostStyle }, liveWeekLoading ? "Refreshing…" : "Refresh now")
+              : React.createElement("button", { onClick: refreshLiveWeekNow, disabled: liveWeekLoading, style: ghostStyle }, liveWeekLoading ? "Refreshing…" : "Refresh now")
           ),
+          !viewingPast && (liveWeekRefreshNote || (liveWeekData && liveWeekData.computedAt)) && React.createElement("div", { style: { fontSize: 12, color: INDIGO_MUTED, marginBottom: 10 } },
+            [liveWeekRefreshNote, liveWeekData && liveWeekData.computedAt ? `Numbers calculated at ${new Date(liveWeekData.computedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : ""].filter(Boolean).join(" ")),
           weekOverrideError && React.createElement("div", { style: { fontSize: 12, color: MELON_LINK, marginBottom: 10 } }, weekOverrideError),
           activeLoading && !activeWeek ? React.createElement("div", { style: { padding: 20, textAlign: "center", color: INDIGO_MUTED } }, "Loading…") :
           !activeWeek || !Array.isArray(activeWeek.consultants) ? null :
