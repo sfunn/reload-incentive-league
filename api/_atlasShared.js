@@ -447,10 +447,55 @@ const CANDIDATE_DETAILS_CACHE_PREFIX = "atlas-candidate-detail:"; // one key per
 // every touch on a shared object means reading and rewriting the whole,
 // ever-growing thing, and concurrent lookups (up to 15 at once) writing
 // back to that one key can silently overwrite each other's additions.
-async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
+// Owner re-checking. The cached owner is what every KPI is attributed
+// by, and it used to be looked up once and kept forever. That is wrong
+// in the normal workflow here: a coordinator assigns a pipeline entry to
+// the wrong consultant, then corrects it, and the credit stayed with the
+// first (wrong) owner no matter what happened afterwards. Confirmed
+// against real data (a Citadel CV Sent credited to James Lancer while
+// Atlas said Oleg owned it).
+//
+// The fix is deliberately NOT "let owners expire": recomputing an old
+// month would then re-read every owner as of today, silently moving
+// credit between people for work done long ago (for example when a
+// consultant leaves and their candidates are reassigned). Instead only
+// pairs with RECENT activity are re-checked, because that is where
+// assignment mistakes get corrected; anything older stays frozen exactly
+// as before. A recent pair is re-asked of Atlas only when its cached
+// owner is at least OWNER_RECHECK_MIN_AGE_MS old, so a busy period does
+// not turn into one Atlas call per pair per computation.
+const OWNER_RECHECK_RECENT_MS = 7 * 24 * 60 * 60 * 1000;
+const OWNER_RECHECK_MIN_AGE_MS = 3 * 60 * 60 * 1000;
+
+async function lookupCandidateDetailsCached(kv, projectId, candidateId, options = {}) {
   const cacheKey = `${CANDIDATE_DETAILS_CACHE_PREFIX}${candidateId}`;
   const cached = await kv.get(cacheKey);
-  if (cached !== null && cached !== undefined) return cached;
+  if (cached !== null && cached !== undefined) {
+    const recheckAfterMs = options && options.recheckIfOlderThanMs;
+    if (!recheckAfterMs) return cached;
+    // An entry written before this existed has no cachedAt, which counts
+    // as infinitely old: every recent pair gets confirmed once.
+    const ageMs = cached.cachedAt ? Date.now() - cached.cachedAt : Infinity;
+    if (ageMs < recheckAfterMs) return cached;
+    try {
+      const fresh = await lookupCandidateDetails(projectId, candidateId);
+      // Only replace the stored owner when Atlas actually names one. A
+      // failed or empty answer must never leave the candidate worse off
+      // than the owner already on record.
+      if (fresh && fresh.email) {
+        const updated = { ...fresh, name: fresh.name || cached.name || null, jobRole: fresh.jobRole || cached.jobRole || null, cachedAt: Date.now() };
+        await kv.set(cacheKey, updated);
+        if (String(cached.email || "").toLowerCase() !== String(fresh.email).toLowerCase()) {
+          await kv.set(`${CANDIDATE_OWNER_CACHE_PREFIX}${candidateId}`, fresh.email);
+          console.log(`[atlas-shared] candidate owner changed in Atlas, now attributing by the new owner: ${cached.email} -> ${fresh.email}`);
+        }
+        return updated;
+      }
+    } catch (e) {
+      console.error("[atlas-shared] owner re-check failed, keeping the stored owner:", e.message);
+    }
+    return cached;
+  }
   let details = null;
   try {
     details = await lookupCandidateDetails(projectId, candidateId);
@@ -463,7 +508,7 @@ async function lookupCandidateDetailsCached(kv, projectId, candidateId) {
   // lookup already had to be fixed for once, so this must not
   // reintroduce the same failure mode for any future edge case.
   if (details && details.name) {
-    await kv.set(cacheKey, details);
+    await kv.set(cacheKey, { ...details, cachedAt: Date.now() });
   }
   return details;
 }
@@ -752,7 +797,9 @@ async function computeKpiLiveForRange(kv, createdAfter, createdBefore, timeBudge
       // below for what's actually shown to a person reading the
       // breakdown.
       if (projectJobRole && projectJobRole.trim().toLowerCase() === EXCLUDED_PROJECT_NAME) return null;
-      const details = await lookupCandidateDetailsCached(kv, projectId, candidateId);
+      const latestEventMs = Math.max(0, ...events.map((e) => (e.movedAt ? new Date(e.movedAt).getTime() : 0)));
+      const hasRecentActivity = latestEventMs > 0 && Date.now() - latestEventMs < OWNER_RECHECK_RECENT_MS;
+      const details = await lookupCandidateDetailsCached(kv, projectId, candidateId, hasRecentActivity ? { recheckIfOlderThanMs: OWNER_RECHECK_MIN_AGE_MS } : {});
       const email = details ? details.email : null;
       const consultantId = email ? EMAIL_TO_CONSULTANT[email] : null;
       if (!consultantId) return null;
@@ -1189,6 +1236,8 @@ module.exports = {
   lookupCandidateOwnerEmailCached,
   lookupCandidateDetails,
   lookupCandidateDetailsCached,
+  OWNER_RECHECK_RECENT_MS,
+  OWNER_RECHECK_MIN_AGE_MS,
   isoWeekToDates,
   computeKpiLiveForRange,
   computeMonthlyKpiLive,
