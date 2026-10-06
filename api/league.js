@@ -884,17 +884,74 @@ module.exports = async (req, res) => {
     // stale regardless of age, forcing a fresh recompute, rather than
     // silently serving a technically-fresh-by-timestamp result that's
     // missing information it's now supposed to carry.
-    if (cached && cached.cachedAt && cached.peopleDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+    let useCache = !!(cached && cached.cachedAt && cached.peopleDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS);
+    let computedAt = cached && cached.cachedAt ? cached.cachedAt : null;
+
+    // "Refresh now" on the Weekly Incentive page asks for force=1. Without
+    // this the button could only ever re-read the saved copy, which stays
+    // valid for 6 hours, so it appeared to do nothing. A forced recompute
+    // is real work against Atlas, so it requires a signed-in user, and is
+    // limited to one per week per minute: a second press inside that
+    // minute is simply handed the numbers that were just calculated,
+    // however many people press it. The outcome is reported back in
+    // `refresh` so the page can say what actually happened.
+    const forceRequested = req.query.force === "1";
+    const FORCE_COOLDOWN_MS = 60 * 1000;
+    const forceLockKey = `atlas-week-force-lock:${weekKey}`;
+    let refresh = null;
+    if (forceRequested) {
+      const forcingUser = await getUserFromRequest(req);
+      if (!forcingUser) {
+        refresh = { requested: true, outcome: "not-signed-in" };
+      } else {
+        const lastForcedAt = await kv.get(forceLockKey);
+        const sinceMs = lastForcedAt ? Date.now() - lastForcedAt : Infinity;
+        if (sinceMs < FORCE_COOLDOWN_MS && useCache) {
+          refresh = { requested: true, outcome: "skipped-recent", ageSeconds: Math.round(sinceMs / 1000) };
+        } else {
+          await kv.set(forceLockKey, Date.now());
+          useCache = false;
+          refresh = { requested: true, outcome: "recomputed" };
+        }
+      }
+    }
+
+    if (useCache) {
       computed = cached.people;
       computedDetails = cached.peopleDetails;
     } else {
       try {
         const live = await computeWeeklyKpiLive(kv, weekKey);
-        computed = live.people;
-        computedDetails = live.peopleDetails;
-        await kv.set(CACHE_KEY, { people: computed, peopleDetails: computedDetails, cachedAt: Date.now() });
+        if (refresh && refresh.outcome === "recomputed" && live.isFullyComplete === false) {
+          // Ran out of time. Never replace complete numbers with an
+          // unfinished calculation: keep showing the last complete copy
+          // (or, if there is none, the partial one, unsaved), and release
+          // the cooldown so pressing the button again continues straight
+          // away from the progress already saved, instead of making
+          // them wait out the minute.
+          refresh = { requested: true, outcome: "incomplete" };
+          await kv.del(forceLockKey);
+          if (cached && cached.peopleDetails) {
+            computed = cached.people;
+            computedDetails = cached.peopleDetails;
+            computedAt = cached.cachedAt || null;
+          } else {
+            computed = live.people;
+            computedDetails = live.peopleDetails;
+            computedAt = null;
+          }
+        } else {
+          computed = live.people;
+          computedDetails = live.peopleDetails;
+          computedAt = Date.now();
+          await kv.set(CACHE_KEY, { people: computed, peopleDetails: computedDetails, cachedAt: computedAt });
+        }
       } catch (e) {
         console.error("[week-live] live Atlas query failed:", e.message);
+        if (refresh && refresh.outcome === "recomputed") {
+          refresh = { requested: true, outcome: "failed" };
+          await kv.del(forceLockKey);
+        }
         if (cached && cached.peopleDetails) {
           console.warn(`[week-live] serving stale cache for ${weekKey} — Atlas is unreachable, age: ${cached.cachedAt ? Math.round((Date.now() - cached.cachedAt) / 60000) + "min" : "unknown"}`);
           computed = cached.people;
@@ -973,6 +1030,7 @@ module.exports = async (req, res) => {
       isCurrentWeek,
       consultants, teamLeads,
       stale: isStale, staleReason,
+      computedAt, refresh,
     });
   }
 
