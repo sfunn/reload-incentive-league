@@ -1170,6 +1170,23 @@ module.exports = async (req, res) => {
       if (!live.people[personId]) live.people[personId] = { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
     }
 
+    // An unfinished calculation is NEVER saved (see week-live's own
+    // comment for the incident this guards against): with a slow Atlas
+    // it can be nothing but zeros, and saving it made that the month's
+    // answer, for this page and for the team lead bonus that reads the
+    // same copy. Show the last complete copy if there is one, flagged;
+    // otherwise the partial one, unsaved and flagged. The calculation is
+    // resumable, so the next load carries on.
+    if (live.isFullyComplete === false) {
+      const lastComplete = cached && cached.monthlyDetails ? cached : null;
+      const shownMonthly = lastComplete ? lastComplete.monthly : live.people;
+      const shownDetails = lastComplete ? lastComplete.monthlyDetails : live.peopleDetails;
+      const reason = lastComplete
+        ? `Still recalculating from Atlas, so these are the last complete numbers${cached.cachedAt ? ` (from ${Math.round((Date.now() - cached.cachedAt) / 60000)} minutes ago)` : ""}. Reload, or press Force-recompute, to carry on.`
+        : "Still calculating from Atlas, so these numbers are incomplete and have not been saved. Reload, or press Force-recompute, to carry on.";
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(shownMonthly, shownDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: shownDetails }, stale: true, staleReason: reason, incomplete: true });
+    }
+
     // The cache itself always stores the raw, UN-excluded numbers,
     // deliberately — exclusions are applied fresh at response time
     // below, never baked into what's cached, so un-excluding something
