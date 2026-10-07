@@ -7,6 +7,7 @@ const {
   EMAIL_TO_CONSULTANT,
   DEDUPE_KEY_BY_METRIC,
   metricForStageName,
+  countedMetricForStageName,
   lookupProjectDetails,
   lookupCandidateOwnerEmail,
   writeTally,
@@ -71,7 +72,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, skipped: true, reason: "excluded project (CitSec Options)" });
   }
 
-  const metric = metricForStageName(newStage.name);
+  const metric = countedMetricForStageName(newStage.name);
   if (!metric) {
     console.log("[atlas-webhook] skipped: not a tracked stage. newStage.name was:", JSON.stringify(newStage.name));
     return res.status(200).json({ ok: true, skipped: true, reason: "not a tracked stage" });
