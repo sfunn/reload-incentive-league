@@ -131,9 +131,25 @@ async function getMonthlyKpiData(monthlyKpiCache, year, month) {
     monthlyDetails = cached.monthlyDetails;
   } else {
     const live = await computeMonthlyKpiLive(kv, year, month);
-    monthly = live.people;
-    monthlyDetails = live.peopleDetails;
-    await kv.set(`${KPI_CACHE_PREFIX}${monthKey}`, { monthly, monthlyDetails, cachedAt: Date.now() });
+    if (live.isFullyComplete === false) {
+      // This feeds a bonus, so a partial month must never be used as if
+      // it were final, and must never be saved where the KPI page would
+      // then read it too. Fall back to the last COMPLETE copy if there is
+      // one (merely expired is fine), otherwise refuse with a clear
+      // message rather than pay out on understated numbers.
+      if (cached && cached.monthlyDetails) {
+        monthly = cached.monthly;
+        monthlyDetails = cached.monthlyDetails;
+      } else {
+        const err = new Error(`The KPI numbers for ${monthKey} are still being calculated, so the bonus can't be worked out yet. Open the Consultant KPIs page, press Force-recompute for that month until it finishes, then try again.`);
+        err.kpiIncomplete = true;
+        throw err;
+      }
+    } else {
+      monthly = live.people;
+      monthlyDetails = live.peopleDetails;
+      await kv.set(`${KPI_CACHE_PREFIX}${monthKey}`, { monthly, monthlyDetails, cachedAt: Date.now() });
+    }
   }
   monthlyKpiCache[monthKey] = monthly;
   return monthly;
@@ -320,7 +336,13 @@ module.exports = async (req, res) => {
     const monthlyKpiCache = {}; // fresh per request -- see getMonthlyKpiData's own comment for why this must never be module-level state
     for (const mk of monthKeys) {
       const [y, m] = mk.split("-").map(Number);
-      const monthlyData = await getMonthlyKpiData(monthlyKpiCache, y, m);
+      let monthlyData;
+      try {
+        monthlyData = await getMonthlyKpiData(monthlyKpiCache, y, m);
+      } catch (e) {
+        if (e && e.kpiIncomplete) return res.status(503).json({ error: e.message });
+        throw e;
+      }
       for (const consultantId of perMonth[mk].activeConsultants) {
         perMonth[mk].cvs += kpiValueFor(kpiOverrides, monthlyData, consultantId, mk, "cvs", "cvsOut");
         perMonth[mk].interviews += kpiValueFor(kpiOverrides, monthlyData, consultantId, mk, "interviews", "interviews");
