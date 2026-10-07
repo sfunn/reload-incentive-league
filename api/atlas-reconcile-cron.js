@@ -5,6 +5,7 @@ const {
   EMAIL_TO_CONSULTANT,
   DEDUPE_KEY_BY_METRIC,
   metricForStageName,
+  countedMetricForStageName,
   lookupProjectDetails,
   lookupCandidateOwnerEmail,
   isoWeekKey,
@@ -130,7 +131,7 @@ module.exports = async function handler(req, res) {
         }
 
         const stageName = event.stageTo && event.stageTo.name;
-        const metric = metricForStageName(stageName);
+        const metric = countedMetricForStageName(stageName);
         if (!metric) { eventsSkippedNotTracked++; continue; }
 
         const projectId = event.project && event.project.id;
@@ -295,9 +296,18 @@ async function warmKpiCache(req, res) {
     // doing nothing), and was never including the candidate breakdown
     // at all, which would have forced a live recompute on every real
     // page load regardless of how "warm" this made the cache look.
-    await kv.set(`atlas-kpi-cache-v4:${monthKey}`, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
+    // Never save an unfinished calculation over the saved copy: with a
+    // slow Atlas it can be nothing but zeros, and it would then stand as
+    // the month's answer (for the KPI page AND the team lead bonus, which
+    // reads this same copy). An unfinished run still keeps its progress,
+    // so running this again carries on; only the saving is withheld.
+    const monthComplete = live.isFullyComplete !== false;
+    if (monthComplete) {
+      await kv.set(`atlas-kpi-cache-v4:${monthKey}`, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
+    }
     result.month = {
       ok: true,
+      saved: monthComplete,
       pagesFetched: live.pagesFetched,
       eventsSeen: live.eventsSeen,
       eventsCounted: live.eventsCounted,
@@ -321,9 +331,13 @@ async function warmKpiCache(req, res) {
     try {
       const liveWeek = await computeWeeklyKpiLive(kv, weekKey);
       // Same reasoning as the month cache just above.
-      await kv.set(`atlas-week-cache-v4:${weekKey}`, { people: liveWeek.people, peopleDetails: liveWeek.peopleDetails, cachedAt: Date.now() });
+      const weekComplete = liveWeek.isFullyComplete !== false;
+      if (weekComplete) {
+        await kv.set(`atlas-week-cache-v4:${weekKey}`, { people: liveWeek.people, peopleDetails: liveWeek.peopleDetails, cachedAt: Date.now() });
+      }
       result.week = {
         ok: true,
+        saved: weekComplete,
         pagesFetched: liveWeek.pagesFetched,
         eventsSeen: liveWeek.eventsSeen,
         eventsCounted: liveWeek.eventsCounted,
