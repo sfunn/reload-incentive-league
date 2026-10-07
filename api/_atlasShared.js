@@ -210,6 +210,19 @@ function isoWeekKey(dateStr) {
 // Given a stage name (e.g. newStage.name from the webhook, or stageTo.name
 // from the candidate-stage-events API), returns which KPI metric it counts
 // toward, or null if it's not a tracked stage at all.
+// The metrics the older, webhook-fed tallies actually COUNT. metricForStageName
+// also answers "sourcing" now (needed by the KPI rank logic so a move back to
+// Sourcing can lower what counts), but the tally code adds one to a field named
+// after the metric and has no "sourcing" field: letting it through quietly wrote
+// a junk field per Sourcing event, and made the daily job and the stage webhook
+// do owner and project lookups for every Sourcing move. Callers that tally must
+// use this, never metricForStageName directly.
+const TALLY_METRICS = ["cvsOut", "interviews", "onsite", "offers"];
+function countedMetricForStageName(stageName) {
+  const metric = metricForStageName(stageName);
+  return TALLY_METRICS.includes(metric) ? metric : null;
+}
+
 function metricForStageName(stageName) {
   if (SOURCING_STAGES.includes(stageName)) return "sourcing";
   if (CVS_OUT_STAGES.includes(stageName)) return "cvsOut";
@@ -1189,6 +1202,10 @@ async function computeWeeklyKpiLive(kv, weekKey, timeBudgetMs = 45000) {
 }
 
 async function writeTally(kv, consultantId, metric, movedAt) {
+  // Defence in depth: only ever add to a metric the tally really has.
+  if (!TALLY_METRICS.includes(metric)) {
+    return { weekKey: `atlas-tally:${isoWeekKey(movedAt)}`, monthKey: new Date(movedAt).toISOString().slice(0, 7) };
+  }
   const weekKey = `atlas-tally:${isoWeekKey(movedAt)}`;
   const current = (await kv.get(weekKey)) || {};
   if (!current[consultantId]) {
@@ -1230,6 +1247,7 @@ module.exports = {
   DEDUPE_KEY_BY_METRIC,
   isoWeekKey,
   metricForStageName,
+  countedMetricForStageName,
   fetchAtlasWithRetry,
   lookupProjectDetails,
   lookupCandidateOwnerEmail,
