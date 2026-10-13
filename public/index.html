@@ -41,9 +41,9 @@ const TEAMS = {
     short: "JAM"
   },
   josh: {
-    label: "Team Josh",
+    label: "New Team",
     color: HEATHER,
-    short: "JSH"
+    short: "NEW"
   }
 };
 const INITIAL_CONSULTANTS = [{
@@ -527,7 +527,7 @@ function pipelineAverageOf(entries, sumFields = []) {
     pctOfferPlacement: pipelineMean(entries.map(e => e.pctOfferPlacement !== undefined ? e.pctOfferPlacement : pipelinePctOrNull(e.placements, e.offers))),
   };
 }
-// Sorts the list view's rows (Everyone/Team James/Team Josh -- never
+// Sorts the list view's rows (Everyone/Team James/New Team -- never
 // used for the individual drill-down's own chronological months) by
 // whichever column was last clicked. "name" sorts alphabetically;
 // every other column sorts numerically, with a missing/null value (an
@@ -1045,6 +1045,10 @@ function App() {
   const [newPasswordInputs, setNewPasswordInputs] = useState({});
   const [pwdSavingEmail, setPwdSavingEmail] = useState(null);
   const [pwdError, setPwdError] = useState("");
+  const [teamHistory, setTeamHistory] = useState({});
+  const [teamMoveDraft, setTeamMoveDraft] = useState({ consultantId: "", team: "james", date: "" });
+  const [teamMoveSaving, setTeamMoveSaving] = useState(false);
+  const [teamMoveError, setTeamMoveError] = useState("");
   const [pwdNoticeEmail, setPwdNoticeEmail] = useState(null);
   const [paidDateDrafts, setPaidDateDrafts] = useState({});
 
@@ -1416,6 +1420,7 @@ function App() {
   const [newPromotionId, setNewPromotionId] = useState("");
   const [finalizeDateDraft, setFinalizeDateDraft] = useState("");
   const [finalizeSaving, setFinalizeSaving] = useState(false);
+  const [finalizeError, setFinalizeError] = useState("");
 
   const refreshWeeks = useCallback(async () => {
     try {
@@ -1910,7 +1915,7 @@ function App() {
           max_tokens: 1000,
           messages: [{
             role: "user",
-            content: `You are analysing a recruitment incentive league table for Reload. Two teams: Team James and Team Josh, 10 consultants total. Here is the full season's weekly data as JSON (each week has a rotating metric, CVs Out, and computed weekly points which already include rank points and any penalties):\n\n${JSON.stringify(dataset)}\n\nAnswer this question concisely, referencing specific consultants/numbers where relevant:\n\n${question}`
+            content: `You are analysing a recruitment incentive league table for Reload. Two teams: Team James and New Team, 10 consultants total. Here is the full season's weekly data as JSON (each week has a rotating metric, CVs Out, and computed weekly points which already include rank points and any penalties):\n\n${JSON.stringify(dataset)}\n\nAnswer this question concisely, referencing specific consultants/numbers where relevant:\n\n${question}`
           }]
         })
       });
@@ -1972,6 +1977,19 @@ function App() {
       // silent — the deal details fetch already surfaces a connection error if relevant
     }
   }, [authUser]);
+  const loadTeamHistory = useCallback(async () => {
+    if (!authUser) return;
+    try {
+      const res = await fetch("/api/league?action=team-history", {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+      setTeamHistory(data.history || {});
+    } catch (e) {
+      // silent — the Team moves panel simply shows no recorded moves
+    }
+  }, [authUser]);
   async function setUserPassword(email) {
     const newPassword = (newPasswordInputs[email] || "").trim();
     if (!newPassword || newPassword.length < 8) {
@@ -2024,8 +2042,47 @@ function App() {
       const data = await res.json();
       if (!res.ok) { setPwdError(data.error || "Couldn't change their team."); return; }
       setTeamOverrides(data.teams || {});
+      loadTeamHistory();
     } catch (e) {
       setPwdError("Couldn't reach the server — try again.");
+    }
+  }
+  async function recordTeamMove() {
+    const { consultantId, team, date } = teamMoveDraft;
+    if (!consultantId) { setTeamMoveError("Choose who moved."); return; }
+    setTeamMoveSaving(true);
+    setTeamMoveError("");
+    try {
+      const res = await fetch("/api/league?action=set-team", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ consultantId, team, effectiveDate: date || todayStr() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setTeamMoveError(data.error || "Couldn't record the move."); return; }
+      setTeamOverrides(data.teams || {});
+      await loadTeamHistory();
+    } catch (e) {
+      setTeamMoveError("Couldn't reach the server — try again.");
+    } finally {
+      setTeamMoveSaving(false);
+    }
+  }
+  async function removeTeamMove(consultantId, date) {
+    if (!window.confirm("Remove this recorded move? Results will be attributed as if it never happened.")) return;
+    setTeamMoveError("");
+    try {
+      const res = await fetch("/api/league?action=remove-team-move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
+        body: JSON.stringify({ consultantId, date }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setTeamMoveError(data.error || "Couldn't remove the move."); return; }
+      setTeamOverrides(data.teams || {});
+      await loadTeamHistory();
+    } catch (e) {
+      setTeamMoveError("Couldn't reach the server — try again.");
     }
   }
   const loadDealDetails = useCallback(async () => {
@@ -2051,6 +2108,7 @@ function App() {
       loadDealDetails();
       loadFxRates();
       loadUserAccounts();
+      loadTeamHistory();
     }
   }, [isSuperAdmin, dealsYear]);
 
@@ -2496,12 +2554,15 @@ function App() {
         `/api/team-lead-bonus?action=compute&teamLeadId=${encodeURIComponent(teamLeadViewId)}&period=${teamLeadPeriod}`,
         { headers: { Authorization: `Bearer ${authUser.token}` } }
       );
-      if (!res.ok) throw new Error("bad response");
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw Object.assign(new Error(errBody.error || "bad response"), { fromServer: !!errBody.error });
+      }
       const data = await res.json();
       setTeamLeadData(data);
       setFinalizeDateDraft(data.finalizedAt ? data.finalizedAt.slice(0, 10) : todayStr());
     } catch (e) {
-      setTeamLeadError("Couldn't load this team's bonus data — try again.");
+      setTeamLeadError(e && e.fromServer ? e.message : "Couldn't load this team's bonus data — try again.");
     } finally {
       setTeamLeadLoading(false);
     }
@@ -2539,18 +2600,32 @@ function App() {
       // no-op
     }
   }
-  async function finalizeTeamLeadBonus(finalized) {
+  async function finalizeTeamLeadBonus(finalized, confirmUnrecordedMoves, action) {
     setFinalizeSaving(true);
+    setFinalizeError("");
     try {
-      const res = await fetch("/api/team-lead-bonus?action=finalize", {
+      const isFreeze = action === "freeze";
+      const res = await fetch(`/api/team-lead-bonus?action=${isFreeze ? "freeze" : "finalize"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${authUser.token}` },
-        body: JSON.stringify({ teamLeadId: teamLeadViewId, period: teamLeadPeriod, finalized, finalizedAt: finalized ? finalizeDateDraft : null })
+        body: JSON.stringify(isFreeze
+          ? { teamLeadId: teamLeadViewId, period: teamLeadPeriod, confirmUnrecordedMoves: !!confirmUnrecordedMoves }
+          : { teamLeadId: teamLeadViewId, period: teamLeadPeriod, finalized, finalizedAt: finalized ? finalizeDateDraft : null, confirmUnrecordedMoves: !!confirmUnrecordedMoves })
       });
-      if (!res.ok) throw new Error("save failed");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409 && data.unrecordedMoves && data.unrecordedMoves.length > 0) {
+          if (window.confirm(`${data.error}\n\nFreeze these numbers anyway?`)) {
+            return await finalizeTeamLeadBonus(finalized, true, action);
+          }
+          return;
+        }
+        setFinalizeError(data.error || "Couldn't save. Try again.");
+        return;
+      }
       await loadTeamLeadData();
     } catch (e) {
-      // no-op
+      setFinalizeError("Couldn't reach the server. Try again.");
     } finally {
       setFinalizeSaving(false);
     }
@@ -3107,7 +3182,7 @@ function App() {
       fontSize: 15,
       color: WHITE
     }
-  }, "Team Josh"), /*#__PURE__*/React.createElement(Badge, {
+  }, "New Team"), /*#__PURE__*/React.createElement(Badge, {
     teamId: "josh",
     size: 30
   }))), /*#__PURE__*/React.createElement("div", {
@@ -4806,6 +4881,9 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
     teamLeadError ? React.createElement(Panel, null, React.createElement("div", { style: { color: MELON_LINK, fontSize: 13 } }, teamLeadError)) :
     !teamLeadData ? null :
     React.createElement(React.Fragment, null,
+      (teamLeadData.unrecordedMoves && teamLeadData.unrecordedMoves.length > 0) && React.createElement("div", { style: { padding: "10px 14px", borderRadius: 6, background: "rgba(181,116,79,0.08)", border: "1px solid rgba(181,116,79,0.25)", fontSize: 12.5, color: INDIGO, lineHeight: 1.5 } },
+        `Check before relying on these numbers: ${teamLeadData.unrecordedMoves.map(u => u.consultantName).join(", ")} ${teamLeadData.unrecordedMoves.length === 1 ? "has" : "have"} been moved to a different team with no move date recorded, so all of their results are counted under their current team, which can put some under the wrong lead. A Super Admin can record the move under Team moves on the Manage Logins tab.`
+      ),
       React.createElement(Panel, null,
         React.createElement("div", { style: labelStyle }, "Pillar 1 — Desk CV Volume (target: 30/consultant/month)"),
         React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16, marginTop: 4 } },
@@ -4914,6 +4992,14 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
             style: { ...payoutStatusStyle(inst.status), borderRadius: 5, padding: "6px 10px", fontSize: 12.5 }
           }, `${inst.label}: £${Math.round(inst.amount).toLocaleString()}`))
         ),
+        teamLeadData.frozen && React.createElement("div", { style: { marginTop: 12, fontSize: 12.5, color: VERDIGRIS } },
+          `Frozen: these numbers were saved when this bonus was finalised (${toDayMonthYear(teamLeadData.frozenAt)}) and will not change if teams, deals or KPI figures change later.`
+        ),
+        (teamLeadData.finalized && !teamLeadData.frozen) && React.createElement("div", { style: { marginTop: 12, padding: "8px 12px", borderRadius: 6, background: "rgba(181,116,79,0.08)", border: "1px solid rgba(181,116,79,0.25)", fontSize: 12.5, color: INDIGO, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } },
+          React.createElement("span", null, teamLeadData.notFrozenReason || "These numbers are not frozen."),
+          isSuperAdmin && React.createElement("button", { onClick: () => finalizeTeamLeadBonus(true, false, "freeze"), disabled: finalizeSaving, style: ghostStyle }, finalizeSaving ? "Saving…" : "Freeze these numbers")
+        ),
+        finalizeError && React.createElement("div", { style: { marginTop: 10, fontSize: 12.5, color: MELON_LINK } }, finalizeError),
         isSuperAdmin && React.createElement("div", { style: { marginTop: 16, paddingTop: 16, borderTop: `1px solid ${INDIGO_HAIRLINE}`, display: "flex", gap: 8, alignItems: "center" } },
           !teamLeadData.finalized
             ? React.createElement(React.Fragment, null,
@@ -4935,7 +5021,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
               )
         ),
         React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
-          "All incentive payments remain discretionary per the Team Lead Incentive Agreement. Finalizing locks in the total and starts the 50% now / 4-month payout — Super Admin only."
+          "All incentive payments remain discretionary per the Team Lead Incentive Agreement. Finalizing freezes the numbers as they stand and starts the 50% now / 4-month payout. Super Admin only."
         )
       )
     )
@@ -5014,6 +5100,64 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
       ),
       React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: INDIGO_MUTED } },
         "Admin can save manual weekly entries. Super Admin also gets Yearly Deal Table's financial details, exchange rates, and this page. A password must be set before roles can be granted. Changing someone's Team only affects weeks logged from now on — past League Table results stay exactly as they were."
+      )
+    ),
+    isSuperAdmin && React.createElement(Panel, null,
+      React.createElement(SectionTitle, { eyebrow: "Scott & Lee only", title: "Team moves" }),
+      React.createElement("div", { style: { marginBottom: 12, fontSize: 12.5, color: INDIGO_MUTED, lineHeight: 1.5 } },
+        "Record when someone changes team, so their results stay with the lead they were achieved under. Deals and development milestones follow the exact date. CVs, interviews and the ratio are worked out per month: a move on the 1st to the 15th means the old team keeps that whole month and the new team starts the month after; a move from the 16th means the new team gets that month."
+      ),
+      (() => {
+        const unrecorded = consultants.filter(c => {
+          const def = INITIAL_CONSULTANTS.find(x => x.id === c.id);
+          return def && c.team !== def.team && !(teamHistory[c.id] && teamHistory[c.id].length);
+        });
+        if (unrecorded.length === 0) return null;
+        return React.createElement("div", { style: { marginBottom: 12, padding: "8px 12px", borderRadius: 6, background: "rgba(181,116,79,0.08)", border: "1px solid rgba(181,116,79,0.25)", fontSize: 12.5, color: INDIGO } },
+          `No move date recorded yet for: ${unrecorded.map(c => `${c.name} (now ${TEAMS[c.team].label})`).join(", ")}. Until you record it below, all of their results count under their current team.`
+        );
+      })(),
+      React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 } },
+        React.createElement("select", {
+          value: teamMoveDraft.consultantId,
+          onChange: e => setTeamMoveDraft(d => ({ ...d, consultantId: e.target.value })),
+          style: { ...inputStyleSmall, width: 170 }
+        },
+          React.createElement("option", { value: "" }, "Who moved…"),
+          consultants.map(c => React.createElement("option", { key: c.id, value: c.id }, c.name))
+        ),
+        React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, "moved to"),
+        React.createElement("select", {
+          value: teamMoveDraft.team,
+          onChange: e => setTeamMoveDraft(d => ({ ...d, team: e.target.value })),
+          style: { ...inputStyleSmall, width: 130 }
+        },
+          Object.keys(TEAMS).map(teamId => React.createElement("option", { key: teamId, value: teamId }, TEAMS[teamId].label))
+        ),
+        React.createElement("span", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, "from"),
+        React.createElement("input", {
+          type: "date", value: teamMoveDraft.date || todayStr(), max: todayStr(),
+          onChange: e => setTeamMoveDraft(d => ({ ...d, date: e.target.value })),
+          style: { ...inputStyleSmall, width: 140 }
+        }),
+        React.createElement("button", { onClick: recordTeamMove, disabled: teamMoveSaving, style: primaryButtonStyle(teamMoveSaving) }, teamMoveSaving ? "Saving…" : "Record move")
+      ),
+      teamMoveError && React.createElement("div", { style: { marginTop: 6, fontSize: 12, color: MELON_LINK } }, teamMoveError),
+      React.createElement("div", { style: { marginTop: 14 } },
+        (() => {
+          const rows = Object.entries(teamHistory)
+            .filter(([, entries]) => entries && entries.length)
+            .map(([cid, entries]) => ({ cid, entries, name: (consultants.find(c => c.id === cid) || {}).name || cid }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+          if (rows.length === 0) return React.createElement("div", { style: { fontSize: 12.5, color: INDIGO_MUTED } }, "No moves recorded yet.");
+          return rows.map(row => React.createElement("div", { key: row.cid, style: { marginBottom: 8 } },
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: INDIGO } }, row.name),
+            row.entries.map(e => React.createElement("div", { key: e.date, style: { display: "flex", gap: 10, alignItems: "center", fontSize: 12.5, color: INDIGO_MUTED, marginLeft: 8 } },
+              React.createElement("span", null, `${TEAMS[e.team] ? TEAMS[e.team].label : e.team} from ${toDayMonthYear(e.date)}`),
+              React.createElement("button", { onClick: () => removeTeamMove(row.cid, e.date), style: { ...ghostStyle, padding: "2px 8px" } }, "Remove")
+            ))
+          ));
+        })()
       )
     )
   ), tab === "pipeline" && React.createElement("div", {
@@ -5300,7 +5444,7 @@ React.createElement("div", { style: { display: "flex", flexDirection: "column", 
         React.createElement("button", {
           onClick: () => setPipelineFocusId("team-josh"),
           style: { ...chipStyle, background: pipelineFocusId === "team-josh" ? TEAMS.josh.color : "rgba(46,64,91,0.06)", color: pipelineFocusId === "team-josh" ? WHITE : INDIGO, fontWeight: pipelineFocusId === "team-josh" ? 700 : 500 }
-        }, "Team Josh"),
+        }, "New Team"),
         ALL_PIPELINE_PEOPLE.map(p => React.createElement("button", {
           key: p.id,
           onClick: () => setPipelineFocusId(p.id),
