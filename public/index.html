@@ -285,6 +285,7 @@ function describeWeekRefresh(data) {
   if (r.outcome === "incomplete") return `The recalculation didn't finish in time${s}, so these are the last complete numbers. Press again to carry on.`;
   if (r.outcome === "failed") return "Couldn't reach Atlas. These are the last numbers that loaded.";
   if (r.outcome === "not-signed-in") return "Sign in to recalculate from Atlas.";
+  if (r.outcome === "in-progress") return "Another recalculation is already running, so these are the previous numbers. Try again in a moment.";
   return "";
 }
 function weekNoteLine(note, data) {
@@ -3319,7 +3320,7 @@ function App() {
             })
           ),
           !viewingPast && React.createElement("div", { style: { marginTop: 14, fontSize: 12, color: INDIGO_MUTED } },
-            "Live, direct from Atlas — refreshes automatically. This week locks in automatically once Sunday ends, and stays reviewable afterwards from Past weeks below."
+            "Calculated from Atlas and refreshed about every 15 minutes while this page is open. Press Refresh now for the very latest. This week locks in automatically once Sunday ends, and stays reviewable afterwards from Past weeks below."
           )
         )
       );
