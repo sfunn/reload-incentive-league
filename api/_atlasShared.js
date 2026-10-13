@@ -477,6 +477,52 @@ const CANDIDATE_DETAILS_CACHE_PREFIX = "atlas-candidate-detail:"; // one key per
 // as before. A recent pair is re-asked of Atlas only when its cached
 // owner is at least OWNER_RECHECK_MIN_AGE_MS old, so a busy period does
 // not turn into one Atlas call per pair per computation.
+// How long a saved copy of a week or month stays valid before the next
+// request recalculates it. Defined ONCE, here, and used by the weekly page,
+// the KPI page and the team lead bonus, because the same number written out
+// in three places is how they drifted apart before (the bonus reads the same
+// saved month the KPI page does and must agree with it).
+//   current week     15 minutes   (the live tally)
+//   current month    1 hour       (a month recalculation is much heavier)
+//   a week that ended in the last two weeks: 6 hours (late corrections)
+//   anything older   30 days      (settled)
+const CURRENT_WEEK_CACHE_TTL_MS = 15 * 60 * 1000;
+const CURRENT_MONTH_CACHE_TTL_MS = 60 * 60 * 1000;
+const RECENT_WEEK_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const SETTLED_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+function weekCacheTtlMs({ isCurrentWeek, isRecent }) {
+  if (isCurrentWeek) return CURRENT_WEEK_CACHE_TTL_MS;
+  return isRecent ? RECENT_WEEK_CACHE_TTL_MS : SETTLED_CACHE_TTL_MS;
+}
+function monthCacheTtlMs(isCurrentMonth) {
+  return isCurrentMonth ? CURRENT_MONTH_CACHE_TTL_MS : SETTLED_CACHE_TTL_MS;
+}
+
+// One recalculation of a given week or month at a time. This is what makes a
+// short lifetime safe: the weekly page asks every 20 seconds from every open
+// browser, so without it, the moment a copy expired EVERY open browser would
+// start its own recalculation of up to 45 seconds, all at once. With it, the
+// first request recalculates and everyone else keeps being served the
+// previous copy until the new one is saved. The lock expires on its own after
+// 90 seconds (the function limit is 60), so a recalculation that dies
+// part-way can never leave a week stuck. If the lock itself cannot be
+// reached it fails OPEN: the page must never stop working because the
+// safeguard did.
+const RECALC_LOCK_PREFIX = "atlas-recalc-lock:";
+const RECALC_LOCK_SECONDS = 90;
+async function tryAcquireRecalcLock(kv, kind, periodKey) {
+  try {
+    const got = await kv.set(`${RECALC_LOCK_PREFIX}${kind}:${periodKey}`, Date.now(), { nx: true, ex: RECALC_LOCK_SECONDS });
+    return !!got;
+  } catch (e) {
+    console.error("[atlas-shared] recalculation lock unavailable, proceeding without it:", e.message);
+    return true;
+  }
+}
+async function releaseRecalcLock(kv, kind, periodKey) {
+  try { await kv.del(`${RECALC_LOCK_PREFIX}${kind}:${periodKey}`); } catch (e) { /* it expires by itself */ }
+}
+
 const OWNER_RECHECK_RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const OWNER_RECHECK_MIN_AGE_MS = 3 * 60 * 60 * 1000;
 
@@ -1255,6 +1301,16 @@ module.exports = {
   lookupCandidateDetails,
   lookupCandidateDetailsCached,
   OWNER_RECHECK_RECENT_MS,
+  CURRENT_WEEK_CACHE_TTL_MS,
+  CURRENT_MONTH_CACHE_TTL_MS,
+  RECENT_WEEK_CACHE_TTL_MS,
+  SETTLED_CACHE_TTL_MS,
+  weekCacheTtlMs,
+  monthCacheTtlMs,
+  tryAcquireRecalcLock,
+  releaseRecalcLock,
+  RECALC_LOCK_PREFIX,
+  RECALC_LOCK_SECONDS,
   OWNER_RECHECK_MIN_AGE_MS,
   isoWeekToDates,
   computeKpiLiveForRange,
