@@ -14,6 +14,7 @@ const {
   tryAcquireRecalcLock,
   releaseRecalcLock,
 } = require("./_atlasShared.js");
+const { TEAM_HISTORY_KEY, teamOnDate, applyMove, removeMove, latestTeam, hasHistory } = require("./_teamHistory.js");
 
 const WEEKS_KEY = "reload-league-weeks";
 const CONFIG_KEY = "reload-current-week-config";
@@ -205,10 +206,15 @@ async function autoFinalizePastWeeks() {
   if (!alreadySaved) {
     const tally = (await kv.get(`${TALLY_PREFIX}${config.weekKey}`)) || {};
     const teamOverrides = (await kv.get(TEAMS_KEY)) || {};
+    const teamHistory = (await kv.get(TEAM_HISTORY_KEY)) || {};
     const rows = {};
     for (const consultantId of Object.keys(DEFAULT_TEAM_BY_CONSULTANT)) {
       const t = tally[consultantId] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
-      const team = teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId];
+      // The team they were on at the END of that week (its Sunday), from the
+      // recorded move history, so a week that gets locked in AFTER someone is
+      // moved is still stamped with the team they were actually on then. Anyone
+      // with no recorded move falls back to the current team, exactly as before.
+      const team = teamOnDate(consultantId, sunday, { history: teamHistory, overrides: teamOverrides, defaults: DEFAULT_TEAM_BY_CONSULTANT });
       const cvs = t.cvsOut || 0;
       const interviews = t.interviews || 0;
       // onsite/offers may be missing entirely on tally entries recorded
@@ -276,13 +282,14 @@ module.exports = async (req, res) => {
     const { weeks, config } = await autoFinalizePastWeeks();
     const tally = (await kv.get(`${TALLY_PREFIX}${config.weekKey}`)) || {};
     const teamOverrides = (await kv.get(TEAMS_KEY)) || {};
+    const teamHistory = (await kv.get(TEAM_HISTORY_KEY)) || {};
     const { monday, sunday } = isoWeekToDates(config.weekKey);
     const excluded = config.excludedConsultants || [];
     const consultants = Object.keys(DEFAULT_TEAM_BY_CONSULTANT).map((consultantId) => {
       const t = tally[consultantId] || { cvsOut: 0, interviews: 0, onsite: 0, offers: 0 };
       return {
         consultantId,
-        team: teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId],
+        team: teamOnDate(consultantId, sunday, { history: teamHistory, overrides: teamOverrides, defaults: DEFAULT_TEAM_BY_CONSULTANT }),
         cvsOut: t.cvsOut || 0,
         interviews: t.interviews || 0,
         onsite: t.onsite || 0,
@@ -1025,6 +1032,7 @@ module.exports = async (req, res) => {
     }
     const excluded = weekConfig.excludedConsultants || [];
     const teamOverrides = (await kv.get(TEAMS_KEY)) || {};
+    const teamHistory = (await kv.get(TEAM_HISTORY_KEY)) || {};
 
     const applyOverrides = (consultantId, computedForPerson) => {
       const personOverrides = weekOverrides[consultantId] || {};
@@ -1044,7 +1052,8 @@ module.exports = async (req, res) => {
 
     const consultants = Object.keys(DEFAULT_TEAM_BY_CONSULTANT).map((consultantId) => ({
       consultantId,
-      team: teamOverrides[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId],
+      // Viewing a PAST week now shows the team they were on THEN, not today.
+      team: teamOnDate(consultantId, sunday, { history: teamHistory, overrides: teamOverrides, defaults: DEFAULT_TEAM_BY_CONSULTANT }),
       excluded: excluded.includes(consultantId),
       ...applyOverrides(consultantId, computed[consultantId] || {}),
       candidates: computedDetails[consultantId] || null,
@@ -1728,19 +1737,63 @@ module.exports = async (req, res) => {
     const teams = (await kv.get(TEAMS_KEY)) || {};
     return res.status(200).json({ teams });
   }
+  // The full recorded history of team moves (who moved, to which team, from
+  // which date). Super Admin only: it is only needed to manage and review moves.
+  if (req.method === "GET" && action === "team-history") {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    return res.status(200).json({ history: (await kv.get(TEAM_HISTORY_KEY)) || {}, teams: (await kv.get(TEAMS_KEY)) || {} });
+  }
+  // Moves a person to a team, FROM a date. effectiveDate (YYYY-MM-DD) is optional
+  // and defaults to today, so the existing team dropdown keeps working and
+  // records "moved today". Recording a past move (including one already made
+  // without a date) is the same call with an earlier date. The move is kept in
+  // a dated history so team lead bonus results stay with the lead they were
+  // achieved under; the current team (consultant-teams) is always set to the
+  // team of the most recent recorded move.
   if (req.method === "POST" && action === "set-team") {
     const user = await getUserFromRequest(req);
     if (!user || !user.isSuperAdmin) {
       return res.status(401).json({ error: "Super Admin access required" });
     }
-    const { consultantId, team } = req.body || {};
+    const { consultantId, team, effectiveDate } = req.body || {};
     if (!consultantId || (team !== "james" && team !== "josh")) {
       return res.status(400).json({ error: "consultantId and a valid team (james/josh) are required" });
     }
+    if (!DEFAULT_TEAM_BY_CONSULTANT[consultantId]) {
+      return res.status(400).json({ error: "That is not a consultant whose team can be changed." });
+    }
+    const today = new Date().toISOString().slice(0, 10);
     const teams = (await kv.get(TEAMS_KEY)) || {};
-    teams[consultantId] = team;
+    const history = (await kv.get(TEAM_HISTORY_KEY)) || {};
+    // Re-choosing the team they are already on, with no date given, changes nothing.
+    const currentTeam = teams[consultantId] || DEFAULT_TEAM_BY_CONSULTANT[consultantId];
+    if (!effectiveDate && currentTeam === team && !hasHistory(history, consultantId)) {
+      return res.status(200).json({ ok: true, teams, history: history[consultantId] || [] });
+    }
+    const applied = applyMove(history, consultantId, team, effectiveDate || today, today);
+    if (applied.error) return res.status(400).json({ error: applied.error });
+    teams[consultantId] = latestTeam(applied.history, consultantId) || team;
+    await kv.set(TEAM_HISTORY_KEY, applied.history);
     await kv.set(TEAMS_KEY, teams);
-    return res.status(200).json({ ok: true, teams });
+    return res.status(200).json({ ok: true, teams, history: applied.history[consultantId] || [] });
+  }
+  // Removes one wrongly recorded move. The current team follows the most recent
+  // move that remains (unchanged if none remain).
+  if (req.method === "POST" && action === "remove-team-move") {
+    const user = await getUserFromRequest(req);
+    if (!user || !user.isSuperAdmin) return res.status(401).json({ error: "Super Admin access required" });
+    const { consultantId, date } = req.body || {};
+    if (!consultantId || !date) return res.status(400).json({ error: "consultantId and date are required" });
+    const history = (await kv.get(TEAM_HISTORY_KEY)) || {};
+    const removed = removeMove(history, consultantId, date);
+    if (removed.error) return res.status(400).json({ error: removed.error });
+    const teams = (await kv.get(TEAMS_KEY)) || {};
+    const latest = latestTeam(removed.history, consultantId);
+    if (latest) teams[consultantId] = latest;
+    await kv.set(TEAM_HISTORY_KEY, removed.history);
+    await kv.set(TEAMS_KEY, teams);
+    return res.status(200).json({ ok: true, teams, history: removed.history[consultantId] || [] });
   }
 
   if (req.method === "POST" && action === "toggle-exclude") {
