@@ -1,6 +1,6 @@
 const { kv } = require("@vercel/kv");
 const { getUserFromRequest } = require("./_authHelpers");
-const { computeMonthlyKpiLive } = require("./_atlasShared");
+const { computeMonthlyKpiLive, monthCacheTtlMs } = require("./_atlasShared");
 
 const KPI_CACHE_PREFIX = "atlas-kpi-cache-v4:"; // same cache the KPI page itself reads/writes -- see api/league.js's own ?action=kpi-live-monthly
 const KPI_OVERRIDES_KEY = "kpi-overrides"; // same store the KPI page's own editable override cells write to
@@ -123,7 +123,9 @@ async function getMonthlyKpiData(monthlyKpiCache, year, month) {
   if (monthlyKpiCache[monthKey]) return monthlyKpiCache[monthKey];
   const now = new Date();
   const isCurrentMonth = monthKey === `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+  // Shared with the KPI page (monthCacheTtlMs), so the bonus can never accept
+  // a saved month the KPI page itself would already have recalculated.
+  const CACHE_TTL_MS = monthCacheTtlMs(isCurrentMonth);
   const cached = await kv.get(`${KPI_CACHE_PREFIX}${monthKey}`);
   let monthly, monthlyDetails;
   if (cached && cached.cachedAt && cached.monthlyDetails && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
