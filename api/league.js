@@ -9,6 +9,10 @@ const {
   lookupProjectDetails,
   lookupCandidateDetails,
   EMAIL_TO_CONSULTANT,
+  weekCacheTtlMs,
+  monthCacheTtlMs,
+  tryAcquireRecalcLock,
+  releaseRecalcLock,
 } = require("./_atlasShared.js");
 
 const WEEKS_KEY = "reload-league-weeks";
@@ -856,19 +860,21 @@ module.exports = async (req, res) => {
     // wholesale, guaranteeing a genuinely fresh recompute rather than
     // needing to detect "peopleDetails exists but is secretly poisoned"
     // as its own special case.
-    // 6 hours, not 15 minutes — the background job that keeps this warm
-    // (atlas-reconcile-cron.js) can only run once a day on this Vercel
-    // plan (Hobby caps cron at daily; a more frequent schedule fails
-    // deployment outright, discovered the hard way). A 15-minute window
-    // against a once-daily refresh meant the cache would expire roughly
-    // 95 times between each real warm-up, sending far more people than
-    // necessary down the slower, live-computed path for no actual
-    // freshness benefit. 6 hours roughly matches the gap between the
-    // two daily warm runs (6am and noon), so the cache stays genuinely
-    // warm through the parts of the day people are actually using this.
-    // The "Warm this month's KPI cache now" button remains the right
-    // tool for anyone who wants it fresher than that, on demand.
-    const CACHE_TTL_MS = isRecent ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    // How long a saved copy stays valid is defined once, in
+    // _atlasShared.js (weekCacheTtlMs), shared with the month and the team
+    // lead bonus so the three can never drift apart: 15 minutes for the
+    // current week, 6 hours for a week that ended in the last two weeks,
+    // 30 days for anything older.
+    //
+    // History worth knowing: this was 15 minutes originally and was
+    // raised to 6 hours because every expiry sent whoever came next down
+    // the slow, live-computed path, and with the page asking every 20
+    // seconds from every open browser that meant many people at once. It
+    // is back to 15 minutes only because a recalculation is now guarded
+    // by a lock (see tryAcquireRecalcLock): when a copy expires, ONE
+    // request recalculates and everyone else keeps being served the
+    // previous copy until the new one is saved.
+    const CACHE_TTL_MS = weekCacheTtlMs({ isCurrentWeek, isRecent });
     const cached = await kv.get(CACHE_KEY);
     let computed, computedDetails;
     // Set when Atlas is unreachable and a genuinely usable, if merely
@@ -913,6 +919,23 @@ module.exports = async (req, res) => {
           await kv.set(forceLockKey, Date.now());
           useCache = false;
           refresh = { requested: true, outcome: "recomputed" };
+        }
+      }
+    }
+
+    // Only one recalculation of this week at a time. If another request
+    // is already doing it and there is a previous complete copy, serve
+    // that copy (its own computedAt tells the page how old it is) instead
+    // of starting a second, overlapping recalculation. With no copy at
+    // all there is nothing to show, so it proceeds regardless.
+    let recalcLockHeld = false;
+    if (!useCache) {
+      recalcLockHeld = await tryAcquireRecalcLock(kv, "week", weekKey);
+      if (!recalcLockHeld && cached && cached.peopleDetails) {
+        useCache = true;
+        if (refresh && refresh.outcome === "recomputed") {
+          refresh = { requested: true, outcome: "in-progress" };
+          await kv.del(forceLockKey);
         }
       }
     }
@@ -973,6 +996,8 @@ module.exports = async (req, res) => {
         } else {
           return res.status(502).json({ error: `Couldn't reach Atlas: ${e.message}` });
         }
+      } finally {
+        if (recalcLockHeld) await releaseRecalcLock(kv, "week", weekKey);
       }
     }
 
@@ -1115,12 +1140,13 @@ module.exports = async (req, res) => {
     // exist" check alone wasn't strict enough to catch.
     const now = new Date();
     const isCurrentMonth = year === now.getUTCFullYear() && month === now.getUTCMonth() + 1;
-    // 6 hours, not 15 minutes — see the matching comment on week-live's
-    // own CACHE_TTL_MS just above for the full reasoning: the background
-    // warming job can only run once a day on this plan, so the cache
-    // window is set to roughly match that instead of expiring itself
-    // many times between each real refresh.
-    const CACHE_TTL_MS = isCurrentMonth ? 6 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    // Defined once in _atlasShared.js (monthCacheTtlMs) and shared with
+    // the weekly page and the team lead bonus: 1 hour for the current
+    // month (a month recalculation is much heavier than a week's, so it
+    // is not made as short), 30 days for a past month. See week-live's
+    // own comment for why a short lifetime is only safe because a
+    // recalculation is guarded by a lock.
+    const CACHE_TTL_MS = monthCacheTtlMs(isCurrentMonth);
     const cached = await kv.get(CACHE_KEY);
     // Fetched once, applied to whichever of the three response paths
     // below actually gets used — see applyKpiExclusions's own
@@ -1138,6 +1164,16 @@ module.exports = async (req, res) => {
       return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails } });
     }
 
+    // One recalculation of this month at a time. If another request is
+    // already doing it and there is a previous complete copy, serve that
+    // copy rather than start a second, overlapping recalculation of a
+    // month (the heaviest calculation in the app). With no copy at all
+    // there is nothing to show, so it proceeds regardless.
+    const recalcLockHeld = await tryAcquireRecalcLock(kv, "month", requestedMonthKey);
+    if (!recalcLockHeld && cached && cached.monthlyDetails) {
+      return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(cached.monthly, cached.monthlyDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: cached.monthlyDetails }, computedAt: cached.cachedAt || null });
+    }
+    try {
     const ALL_PEOPLE_IDS = [...Object.keys(DEFAULT_TEAM_BY_CONSULTANT), ...Object.keys(TEAM_LEAD_BY_CONSULTANT)];
     let live;
     let isStale = false;
@@ -1195,6 +1231,9 @@ module.exports = async (req, res) => {
     await kv.set(CACHE_KEY, { monthly: live.people, monthlyDetails: live.peopleDetails, cachedAt: Date.now() });
 
     return res.status(200).json({ year, month, monthly: { [requestedMonthKey]: applyKpiExclusions(live.people, live.peopleDetails, kpiExclusions) }, monthlyDetails: { [requestedMonthKey]: live.peopleDetails }, stale: isStale, staleReason });
+    } finally {
+      if (recalcLockHeld) await releaseRecalcLock(kv, "month", requestedMonthKey);
+    }
   }
 
   if (req.method === "GET" && action === "placement-counts") {
